@@ -26,7 +26,7 @@ app.post("/api/auth/login", async (c) => {
 });
 
 app.post("/api/auth/logout", (c) => {
-  logout(c);
+  logout(c, env);
   return c.json({ ok: true });
 });
 

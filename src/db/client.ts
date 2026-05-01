@@ -16,8 +16,10 @@ export function getDb(connectionString: string): Database {
 }
 
 export async function closeDb(): Promise<void> {
-  if (_client) {
+  if (!_client) return;
+  try {
     await _client.end();
+  } finally {
     _client = undefined;
     _db = undefined;
   }

@@ -26,7 +26,7 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgres://cratedigger:cratedigger@postgres:5432/cratedigger
-      ADMIN_PASSPHRASE: ${ADMIN_PASSPHRASE:-change-me}
+      ADMIN_PASSPHRASE: ${ADMIN_PASSPHRASE:?ADMIN_PASSPHRASE is required — set it in .env}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
       SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}

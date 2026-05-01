@@ -13,11 +13,7 @@ const schema = z.object({
     .default("http://localhost:3000/api/auth/spotify/callback"),
   LASTFM_API_KEY: z.string().optional().default(""),
   VIBERATE_API_KEY: z.string().optional().default(""),
-  PORT: z
-    .string()
-    .optional()
-    .default("3000")
-    .transform((v) => Number.parseInt(v, 10)),
+  PORT: z.coerce.number().int().positive().default(3000),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
 });
 
@@ -26,14 +22,14 @@ export type Env = z.infer<typeof schema>;
 let _env: Env | undefined;
 
 export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
-  if (_env) return _env;
+  if (_env && source === process.env) return _env;
   const parsed = schema.safeParse(source);
   if (!parsed.success) {
     console.error("Invalid environment variables:", z.treeifyError(parsed.error));
     throw new Error("Environment validation failed");
   }
-  _env = parsed.data;
-  return _env;
+  if (source === process.env) _env = parsed.data;
+  return parsed.data;
 }
 
 export function isPaidSourceConfigured(env: Env, source: "viberate"): boolean {

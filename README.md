@@ -32,7 +32,7 @@ docker-compose for local · Fly.io terraform for cloud.
 
 ## Layout
 
-```
+```text
 src/server/   Hono + tRPC + auth + cron entry point
 src/db/       Drizzle schema, client, pgvector helpers
 src/lib/      Deterministic core (ingestion, enrichment, bucketing, ranking, surfacing, feedback, evals)

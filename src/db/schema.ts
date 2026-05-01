@@ -1,4 +1,5 @@
 import {
+  type AnyPgColumn,
   boolean,
   doublePrecision,
   index,
@@ -137,7 +138,9 @@ export const modelVersion = pgTable(
     trainingWindowStart: timestamp("training_window_start", { withTimezone: true }),
     trainingWindowEnd: timestamp("training_window_end", { withTimezone: true }),
     trainedAt: timestamp("trained_at", { withTimezone: true }).notNull().defaultNow(),
-    parentId: integer("parent_id"),
+    parentId: integer("parent_id").references((): AnyPgColumn => modelVersion.id, {
+      onDelete: "set null",
+    }),
     note: text("note"),
   },
   (t) => [index("model_version_kind_trained_idx").on(t.kind, t.trainedAt)],

@@ -34,7 +34,7 @@ Open architectural fork I'm resolving with a default (push back if wrong):
 
 ## Repo layout (single package, co-located UI)
 
-```
+```text
 crate-digger/
 ├── docker-compose.yml              # Postgres+pgvector + app (Tier 1 bootstrap)
 ├── Dockerfile                      # multi-stage: build web, run server
