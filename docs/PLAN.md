@@ -339,6 +339,119 @@ the actual code being touched. The plan stays authoritative; conversation histor
 - `src/server/index.ts` + `src/server/trpc.ts` (Hono+tRPC mount)
 - `docker-compose.yml`, `Dockerfile`, `.env.example` (Constraint #9 + #10)
 
+## Testing strategy
+
+Targeted coverage. Tests are added where they catch a specific class of bug otherwise hard to
+detect, not for coverage's sake. This section supersedes the brief test list previously in
+Verification.
+
+### Principles
+
+- **No retrofit-to-shape testing.** Tests that describe what the code currently does — rather
+  than what it should do — give false confidence. Skip them.
+- **No full TDD.** Implementation is in flight. Tests are added at well-defined seams, not
+  driving design.
+- **Tests guard contracts and constraints**, not implementation details. A test that breaks on
+  every refactor is a liability.
+- **Evals replace unit tests for tunable logic.** Anything tuned as the system learns (ranker
+  scoring, similarity weights) is governed by eval metrics over time, not pinned by tests.
+
+### Required coverage
+
+#### 1. Eval substrate — highest priority (lands Phase 4)
+
+If `surface_event` logging is broken, every downstream eval is silently wrong. The dashboard
+keeps drawing charts; the data is corrupt. Worst class of bug in the system.
+
+- Surface event captures the full candidate pool with scores, not just the surfaced winner.
+- Scores recorded in the surface event match what the ranker produced for the same inputs.
+- `model_version` is correctly attributed to every surface event.
+- Counterfactual replay: given a historical candidate pool, re-running the ranker at that
+  pool's `model_version` produces the same ranking originally recorded.
+
+#### 2. Bucketing assignment (lands Phase 3)
+
+A track joining the wrong bucket corrupts that bucket's centroid; corruption compounds with
+every subsequent assignment. Visual review won't catch subtle mis-assignments.
+
+Fixture-based cases covering the hybrid algorithm's decision points:
+
+- Track within spawn threshold of an existing bucket joins that bucket.
+- Track outside spawn threshold of all candidates spawns a new bucket.
+- Track with no genre match against any existing bucket spawns regardless of embedding similarity.
+- Centroid update on join produces the expected new centroid (Welford correctness).
+
+These tests pin the algorithm's contract (input → assignment), not the implementation. The one
+place retrofitting is appropriate, because the contract is stable even as internals change.
+
+#### 3. Source adapter contract (lands Phase 2)
+
+The open-source promise requires the system to run on free-tier sources only. A contributor
+adding a new adapter that subtly breaks degraded-mode behavior won't be caught by manual review.
+
+A single contract test file run against every registered adapter:
+
+- Adapter implements the common `SourceAdapter` interface.
+- Adapter handles missing credentials gracefully — returns empty / degraded result, does not throw.
+- Rate-limit and error responses don't crash the ingestion pipeline.
+
+Adding adapters → contract test runs against them automatically. No per-adapter test duplication.
+
+#### 4. Constraint guards (across phases)
+
+Direct assertions of the non-negotiable constraints listed in `CLAUDE.md` and the spec. Each
+guard catches refactors that accidentally violate documented constraints.
+
+- **Soft penalties, not hard filters** (Constraint #4 — Phase 4): given a user has disliked
+  genre X, candidates of genre X still appear in the candidate pool with reduced scores. They
+  are not excluded.
+- **Daily cap and queue ceiling enforced at surfacing, not ingestion** (Constraint #5 —
+  Phase 4): ingestion captures all candidates regardless of cap; surfacing trims to the cap.
+- **Enrichment idempotency** (Phase 2): running enrichment twice on the same input produces
+  identical `Track` records and does not duplicate.
+- **Ratings tag the surface-time `model_version`** (Constraint #3 — Phase 5): not the version
+  current at rating time.
+
+#### 5. End-to-end smoke (lands Phase 6+)
+
+Integration territory where unit tests have low signal. One real run catches more than ten
+mocked workflow tests.
+
+A single end-to-end run with fixture source data covering ingest → enrich → bucket → rank →
+surface. Asserts that a candidate makes it through every stage and lands in the queue with a
+complete `surface_event` logged.
+
+Not a full integration suite. One smoke test, runs on every CI pass.
+
+### Not required
+
+These would add maintenance friction without proportional value:
+
+- **Ranker scoring math.** Will change as the system tunes. Eval metrics (precision@N, keep
+  rate by version) catch regressions over time, not unit tests.
+- **tRPC routes.** End-to-end types catch most of what unit tests would; manual dashboard
+  exercise catches the rest.
+- **Mastra workflow orchestration unit tests.** The end-to-end smoke covers this.
+- **UI components.** Designer iterates; components churn. Visual review beats RTL tests at
+  this scope.
+- **Database schema / migrations.** Exercised constantly in dev; explicit tests would shadow
+  the migrations themselves.
+- **Exhaustive bucketing edge cases beyond the contract.** The fixture set above is
+  sufficient; more becomes refactor friction.
+
+### Infrastructure
+
+- Vitest as runner. `@testcontainers/postgresql` for DB-touching tests.
+- Fixture data lives in the repo. No fetching real APIs in tests.
+- All categorized tests run on CI on every PR push.
+- No coverage thresholds. Coverage as a number is not a goal; the targeted tests above are.
+
+### Adding tests later
+
+A real bug found in production-ish use is paired with a regression test only if it falls into
+one of the categories above. Bugs in tunable logic get fixed; eval metrics catch the
+regression, not a unit test.
+
 ## Verification
 
 End-to-end smoke (after Phase 7):
@@ -356,13 +469,6 @@ End-to-end smoke (after Phase 7):
 10. Export taste profile JSON → wipe DB → import → buckets + ratings round-trip cleanly
     (Constraint #8).
 
-Tests:
-
-- Vitest + `@testcontainers/postgresql` for DB-touching units.
-- One specific guardrail test: surfacing pipeline always writes `surface_event.candidate_pool`
-  containing the full pool, including unsurfaced candidates with their scores.
-- One guardrail test: genre dislikes downweight but never zero out a candidate (Constraint #4).
-- One guardrail test: any `app_config` mutation that affects ranking writes a new `model_version`
-  row (Constraint #3).
+Tests: see "Testing strategy" above for the full coverage plan and per-phase mapping.
 
 `pnpm check && pnpm typecheck && pnpm test` — green is the gate.
