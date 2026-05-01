@@ -1,0 +1,19 @@
+pre-commit:
+  parallel: true
+  commands:
+    lint:
+      run: pnpm check
+    typecheck:
+      run: pnpm typecheck
+
+commit-msg:
+  commands:
+    conventional-commit:
+      run: >
+        echo "$(head -1 {1})" | grep -qE '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\(.+\))?!?:\s.+' || {
+          echo "ERROR: Commit message must follow Conventional Commits format.";
+          echo "  e.g., feat: add user login";
+          echo "  e.g., fix(parser): handle null input";
+          echo "  Valid types: feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert";
+          exit 1;
+        }

@@ -1,0 +1,43 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cratedigger
+      POSTGRES_PASSWORD: cratedigger
+      POSTGRES_DB: cratedigger
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cratedigger -d cratedigger"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://cratedigger:cratedigger@postgres:5432/cratedigger
+      ADMIN_PASSPHRASE: ${ADMIN_PASSPHRASE:-change-me}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
+      SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
+      LASTFM_API_KEY: ${LASTFM_API_KEY:-}
+      VIBERATE_API_KEY: ${VIBERATE_API_KEY:-}
+      PORT: "3000"
+      NODE_ENV: production
+    ports:
+      - "3000:3000"
+    profiles:
+      - app
+
+volumes:
+  postgres_data:
