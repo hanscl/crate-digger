@@ -1,6 +1,7 @@
 import {
   type AnyPgColumn,
   boolean,
+  check,
   doublePrecision,
   index,
   integer,
@@ -223,27 +224,30 @@ export const bucketRecommendation = pgTable(
   (t) => [index("bucket_recommendation_status_idx").on(t.status)],
 );
 
-export const appConfig = pgTable("app_config", {
-  id: integer("id").primaryKey().default(1),
-  novelty: doublePrecision("novelty").notNull().default(0.5),
-  sourceMix: doublePrecision("source_mix").notNull().default(0.5),
-  dailySurfaceCap: integer("daily_surface_cap").notNull().default(15),
-  queueCeiling: integer("queue_ceiling").notNull().default(50),
-  retrainCadence: text("retrain_cadence").notNull().default("daily"),
-  spawnThreshold: doublePrecision("spawn_threshold").notNull().default(0.7),
-  refillLambda: doublePrecision("refill_lambda").notNull().default(0.3),
-  mergeThreshold: doublePrecision("merge_threshold").notNull().default(0.92),
-  splitDislikeRate: doublePrecision("split_dislike_rate").notNull().default(0.5),
-  sourcesEnabled: jsonb("sources_enabled")
-    .$type<Record<string, boolean>>()
-    .notNull()
-    .default(sql`'{"spotify":true,"lastfm":true,"viberate":false}'::jsonb`),
-  activeRefillVersionId: integer("active_refill_version_id").references(() => modelVersion.id),
-  activeBroadVersionId: integer("active_broad_version_id").references(() => modelVersion.id),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  schemaGuard: integer("schema_guard").notNull().default(1),
-});
+export const appConfig = pgTable(
+  "app_config",
+  {
+    id: integer("id").primaryKey().default(1),
+    novelty: doublePrecision("novelty").notNull().default(0.5),
+    sourceMix: doublePrecision("source_mix").notNull().default(0.5),
+    dailySurfaceCap: integer("daily_surface_cap").notNull().default(15),
+    queueCeiling: integer("queue_ceiling").notNull().default(50),
+    retrainCadence: text("retrain_cadence").notNull().default("daily"),
+    spawnThreshold: doublePrecision("spawn_threshold").notNull().default(0.7),
+    refillLambda: doublePrecision("refill_lambda").notNull().default(0.3),
+    mergeThreshold: doublePrecision("merge_threshold").notNull().default(0.92),
+    splitDislikeRate: doublePrecision("split_dislike_rate").notNull().default(0.5),
+    sourcesEnabled: jsonb("sources_enabled")
+      .$type<Record<string, boolean>>()
+      .notNull()
+      .default(sql`'{"spotify":true,"lastfm":true,"viberate":false}'::jsonb`),
+    activeRefillVersionId: integer("active_refill_version_id").references(() => modelVersion.id),
+    activeBroadVersionId: integer("active_broad_version_id").references(() => modelVersion.id),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [check("app_config_singleton_chk", sql`${t.id} = 1`)],
+);
 
 export type AudioFeatures = {
   tempo: number;

@@ -2,6 +2,7 @@
   "name": "crate-digger",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "docker compose up -d postgres && concurrently -n api,web -c green,cyan \"pnpm dev:api\" \"pnpm dev:web\"",
