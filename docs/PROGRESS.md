@@ -4,9 +4,9 @@ Phase tracker. Update at the end of every phase. Newest at the top.
 
 ## Phase 1 — Skeleton + DB
 
-- **Status:** in_progress
+- **Status:** review
 - **Branch:** `phase-1-skeleton`
-- **PR:** —
+- **PR:** https://github.com/hanscl/crate-digger/pull/1
 - **Scope landed:** repo scaffold, pnpm + Node 24 + TS strict, oxlint + oxfmt + lefthook,
   docker-compose with pgvector, Dockerfile, `.env.example`, Drizzle schema for all 10 tables
   (`track`, `track_source`, `bucket`, `bucket_member`, `model_version`, `surface_event`, `rating`,
