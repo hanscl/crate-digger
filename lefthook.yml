@@ -1,8 +1,14 @@
 pre-commit:
-  parallel: true
+  piped: true
   commands:
-    lint:
-      run: pnpm check
+    lint-fix:
+      glob: "*.{ts,tsx,js,jsx,mjs,cjs}"
+      run: pnpm exec oxlint --fix {staged_files}
+      stage_fixed: true
+    format:
+      glob: "*.{ts,tsx,js,jsx,mjs,cjs,json}"
+      run: pnpm exec oxfmt --write {staged_files}
+      stage_fixed: true
     typecheck:
       run: pnpm typecheck
 
