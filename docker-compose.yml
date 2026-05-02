@@ -3,11 +3,14 @@ services:
     image: pgvector/pgvector:pg17
     restart: unless-stopped
     environment:
-      POSTGRES_USER: cratedigger
-      POSTGRES_PASSWORD: cratedigger
-      POSTGRES_DB: cratedigger
+      POSTGRES_USER: ${POSTGRES_USER:-cratedigger}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cratedigger}
+      POSTGRES_DB: ${POSTGRES_DB:-cratedigger}
+    # Bound to loopback so the DB is reachable from host tools (psql, drizzle-kit,
+    # GUI clients) but not exposed to the network on shared hosts (VPS, etc.).
+    # The app container reaches Postgres over the compose network on `postgres:5432`.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -25,7 +28,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgres://cratedigger:cratedigger@postgres:5432/cratedigger
+      DATABASE_URL: postgres://${POSTGRES_USER:-cratedigger}:${POSTGRES_PASSWORD:-cratedigger}@postgres:5432/${POSTGRES_DB:-cratedigger}
       ADMIN_PASSPHRASE: ${ADMIN_PASSPHRASE:?ADMIN_PASSPHRASE is required — set it in .env}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
