@@ -20,6 +20,7 @@ Phase tracker. Update at the end of every phase. Newest at the top.
 - **Status:** review
 - **Branch:** `phase-2-ingestion` (based on `phase-1-skeleton`; rebase to `main`
   once PR #1 lands)
+- **PR:** https://github.com/hanscl/crate-digger/pull/2
 - **Scope landed:** `SourceAdapter` interface + registry; Spotify adapter
   (Client Credentials, search/trending/similar, ISRC pass-through); Last.fm
   adapter (search/similar/chart top tracks); Viberate adapter stub; ISRC-first
