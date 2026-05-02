@@ -1,4 +1,5 @@
 import { serve } from "@hono/node-server";
+import { serveStatic } from "@hono/node-server/serve-static";
 import { trpcServer } from "@hono/trpc-server";
 import { Hono } from "hono";
 import { logger } from "hono/logger";
@@ -38,6 +39,13 @@ app.use("/trpc/*", async (c, next) => {
     endpoint: "/trpc",
   })(c, next);
 });
+
+// Serve the built SPA. Registered as GET-only so unmatched POST/PUT/DELETE
+// requests under /api or /trpc still produce 404s rather than HTML responses.
+// First handler resolves real files (index.html for /, assets/*, etc.); the
+// second is the SPA fallback for client-side routes like /queue, /buckets.
+app.get("/*", serveStatic({ root: "./dist/web" }));
+app.get("/*", serveStatic({ path: "./dist/web/index.html" }));
 
 const port = env.PORT;
 serve({ fetch: app.fetch, port }, (info) => {

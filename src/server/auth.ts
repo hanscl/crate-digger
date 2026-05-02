@@ -38,8 +38,10 @@ export function isAuthenticated(c: HonoContext, env: Env): boolean {
 
 export function login(c: HonoContext, env: Env, passphrase: string): boolean {
   if (!safeEqual(passphrase, env.ADMIN_PASSPHRASE)) return false;
+  const now = Date.now();
+  pruneExpired(now);
   const token = randomBytes(32).toString("base64url");
-  sessions.set(token, Date.now() + SESSION_TTL_MS);
+  sessions.set(token, now + SESSION_TTL_MS);
   setCookie(c, COOKIE_NAME, token, cookieOptions(env, COOKIE_MAX_AGE));
   return true;
 }
