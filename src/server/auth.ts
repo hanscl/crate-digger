@@ -1,6 +1,6 @@
 import type { Context as HonoContext } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Env } from "./env";
 
 const COOKIE_NAME = "crate_digger_auth";
@@ -50,9 +50,11 @@ export function logout(c: HonoContext, env: Env): void {
   setCookie(c, COOKIE_NAME, "", cookieOptions(env, 0));
 }
 
+// Compare via SHA-256 digests so the comparison runs over fixed-length (32-byte)
+// buffers regardless of input length. The early-exit length check this replaces
+// leaked the passphrase length via response timing.
 function safeEqual(a: string, b: string): boolean {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) return false;
-  return timingSafeEqual(bufA, bufB);
+  const hashA = createHash("sha256").update(a).digest();
+  const hashB = createHash("sha256").update(b).digest();
+  return timingSafeEqual(hashA, hashB);
 }
