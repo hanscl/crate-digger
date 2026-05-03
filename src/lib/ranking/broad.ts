@@ -62,9 +62,14 @@ function sigmoid(z: number): number {
 }
 
 function dot(w: readonly number[], x: readonly number[]): number {
+  // Strict dim check — silently truncating to the shorter side would mask
+  // embedding/config corruption (e.g., a model trained at one EMBEDDING_DIM
+  // being scored against a candidate built at another). Better to fail loudly.
+  if (w.length !== x.length) {
+    throw new Error(`dot: dim mismatch ${w.length} vs ${x.length}`);
+  }
   let s = 0;
-  const n = Math.min(w.length, x.length);
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < w.length; i++) {
     s += (w[i] ?? 0) * (x[i] ?? 0);
   }
   return s;

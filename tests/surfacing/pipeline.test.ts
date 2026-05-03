@@ -147,10 +147,12 @@ describe("runSurfacingBatch — Constraint #2 (full candidate pool persistence)"
       expect(pool).toHaveLength(5);
       const ids = pool.map((p: CandidatePoolEntry) => p.trackId).sort();
       expect(ids).toEqual(tracks.map((t) => t.id).sort());
+      // Each event's pool flags ONLY its own winner as surfaced — read in
+      // isolation, a single row identifies its own winner. Other broad
+      // winners in the same batch live in their own surface_event rows.
       const surfacedFlags = pool.filter((p: CandidatePoolEntry) => p.surfaced);
-      // Both broad winners are tagged surfaced=true within each event's pool —
-      // the snapshot identifies the entire batch winners.
-      expect(surfacedFlags.length).toBe(2);
+      expect(surfacedFlags).toHaveLength(1);
+      expect(surfacedFlags[0]?.trackId).toBe(event.trackId);
       const myWinner = pool.find((p: CandidatePoolEntry) => p.trackId === event.trackId);
       expect(myWinner?.surfaced).toBe(true);
       expect(myWinner?.score).toBeCloseTo(event.winnerScore, 9);

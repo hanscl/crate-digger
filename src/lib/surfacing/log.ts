@@ -15,9 +15,9 @@ import type { RankerKind, ScoredCandidate } from "@/lib/ranking/types";
  * counterfactual replay. If this is broken, every downstream eval is silently
  * wrong. There is a guard test in `tests/surfacing/log.test.ts`.
  *
- * The candidate pool snapshot is identical across all `surface_event` rows
- * minted in the same surfacing run for the same ranker mode — only the
- * `surfaced` boolean shifts to flag which row is the winner being persisted.
+ * Each row's `candidate_pool` carries the same scored entries; the `surfaced`
+ * flag is scoped to THAT row's winner only. So a single surface_event read in
+ * isolation identifies its own winner without needing the rest of the batch.
  */
 
 export type SurfaceLogInput = {
@@ -48,15 +48,29 @@ export async function logSurfaceEvents(
   const { pool, winners, modelVersionId, bucketId, surfacedReason } = input;
   if (winners.length === 0) return [];
 
-  const winnerIds = new Set(winners.map((w) => w.candidate.trackId));
-  const candidatePool: CandidatePoolEntry[] = pool.map((s) => ({
-    trackId: s.candidate.trackId,
-    score: s.score,
-    subScores: s.subScores,
-    surfaced: winnerIds.has(s.candidate.trackId),
-  }));
+  const poolIds = new Set(pool.map((s) => s.candidate.trackId));
+  for (const w of winners) {
+    if (!poolIds.has(w.candidate.trackId)) {
+      // Catching this here rather than at insert-time: a winner that isn't in
+      // the recorded pool means the eval substrate would be inconsistent.
+      // Better to refuse to write than to write a corrupt snapshot.
+      throw new Error(
+        `logSurfaceEvents: winner trackId=${w.candidate.trackId} not present in pool`,
+      );
+    }
+  }
 
   const rows: NewSurfaceEvent[] = winners.map((w) => {
+    // One pool snapshot per event, with `surfaced` flagging only THIS event's
+    // winner — every other entry (including other winners in the same batch)
+    // is surfaced=false within this row's pool.
+    const candidatePool: CandidatePoolEntry[] = pool.map((s) => ({
+      trackId: s.candidate.trackId,
+      score: s.score,
+      subScores: s.subScores,
+      surfaced: s.candidate.trackId === w.candidate.trackId,
+    }));
+
     const features = w.candidate.audioFeatures ?? null;
     const row: NewSurfaceEvent = {
       trackId: w.candidate.trackId,

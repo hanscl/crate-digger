@@ -127,6 +127,12 @@ export async function runSurfacingBatch(
     dryRun,
   });
 
+  // Refill can underdeliver — e.g., a target bucket has no embeddable members,
+  // or the round-robin runs out of unique candidates. Roll any unfilled slots
+  // forward into the broad quota so we still surface up to `effectiveCap`.
+  const refillShortfall = Math.max(0, refillQuota - refillResults.surfaced.length);
+  const effectiveBroadQuota = broadQuota + refillShortfall;
+
   // Broad phase scores ALL candidates (not just leftovers): Constraint #4 —
   // candidates rejected by refill stay in the broader pool with their broad
   // score. Soft penalties only.
@@ -136,7 +142,7 @@ export async function runSurfacingBatch(
     .filter((s) => !alreadySurfacedIds.has(s.candidate.trackId))
     .sort((a, b) => b.score - a.score || a.candidate.trackId - b.candidate.trackId);
 
-  const broadWinners = pickWithSourceMix(broadEligible, broadQuota, cfg.sourceMix);
+  const broadWinners = pickWithSourceMix(broadEligible, effectiveBroadQuota, cfg.sourceMix);
 
   let broadEvents: SurfaceEvent[] = [];
   if (broadWinners.length > 0 && !dryRun) {
@@ -251,17 +257,22 @@ function pickWithSourceMix(
   let total = 0;
 
   // First pass: take strictly best by score, but allow at most `target * quota + 1`
-  // from spotify and `(1 − target) * quota + 1` from non-spotify before deferring.
+  // from spotify and `(1 − target) * quota + 1` from KNOWN non-spotify before
+  // deferring. Unknown-source candidates compete purely on score and don't
+  // count against either quota — otherwise a flood of unknowns would lock out
+  // legitimate non-spotify (e.g., Last.fm) picks.
   for (const c of scored) {
     if (winners.length >= quota) break;
     const src = c.candidate.source ?? "unknown";
     const isSpotify = src === "spotify";
+    const isUnknown = src === "unknown";
     const allowedSpotify = Math.ceil(target * quota) + 1;
     const allowedOther = Math.ceil((1 - target) * quota) + 1;
     const spotifyCount = counts.spotify ?? 0;
-    const otherCount = total - spotifyCount;
+    const unknownCount = counts.unknown ?? 0;
+    const knownOtherCount = total - spotifyCount - unknownCount;
     if (isSpotify && spotifyCount >= allowedSpotify) continue;
-    if (!isSpotify && src !== "unknown" && otherCount >= allowedOther) continue;
+    if (!isSpotify && !isUnknown && knownOtherCount >= allowedOther) continue;
     winners.push(c);
     counts[src] = (counts[src] ?? 0) + 1;
     total += 1;

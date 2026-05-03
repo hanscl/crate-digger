@@ -59,15 +59,28 @@ export type BroadConfig = {
   prior?: number;
 };
 
-/** Structural narrowing helpers — model_version.config is jsonb<unknown> from drizzle. */
+/**
+ * Structural narrowing helpers — model_version.config is jsonb<unknown> from
+ * drizzle. NaN/Infinity must be rejected: jsonb passing through Postgres
+ * stays valid JSON, but a value that decoded into NaN here would silently
+ * corrupt every score and every counterfactual replay. Number.isFinite
+ * eliminates that whole class of bug at the trust boundary.
+ */
 export function isRefillConfig(x: unknown): x is RefillConfig {
-  return typeof x === "object" && x !== null && typeof (x as RefillConfig).lambda === "number";
+  if (typeof x !== "object" || x === null) return false;
+  return Number.isFinite((x as RefillConfig).lambda);
 }
 
 export function isBroadConfig(x: unknown): x is BroadConfig {
   if (typeof x !== "object" || x === null) return false;
   const c = x as BroadConfig;
-  if (typeof c.bias !== "number" || typeof c.trainedSampleCount !== "number") return false;
-  if (c.weights !== null && !Array.isArray(c.weights)) return false;
+  if (!Number.isFinite(c.bias) || !Number.isFinite(c.trainedSampleCount)) return false;
+  if (c.weights !== null) {
+    if (!Array.isArray(c.weights)) return false;
+    for (const w of c.weights) {
+      if (typeof w !== "number" || !Number.isFinite(w)) return false;
+    }
+  }
+  if (c.prior !== undefined && !Number.isFinite(c.prior)) return false;
   return true;
 }

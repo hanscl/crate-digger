@@ -86,6 +86,21 @@ describe("trainBroadClassifier — logistic regression on embeddings", () => {
     ];
     expect(() => trainBroadClassifier(samples)).toThrow(/dim mismatch/);
   });
+
+  it("scoreBroad throws on a candidate whose embedding dim doesn't match the trained weights", () => {
+    // Training-time mismatch is caught by trainBroadClassifier; inference-time
+    // mismatch must be caught by scoreBroad too — silently truncating to the
+    // shorter side would mask embedding/config corruption (e.g., a model
+    // trained at one EMBEDDING_DIM scored against candidates built at another).
+    const samples: { embedding: number[]; label: 0 | 1 }[] = [];
+    for (let i = 0; i < 10; i++) {
+      samples.push({ embedding: [1, 1, 0], label: 1 });
+      samples.push({ embedding: [0, 0, 1], label: 0 });
+    }
+    const trained = trainBroadClassifier(samples, { iterations: 50 });
+    expect(trained.config.weights).toHaveLength(3);
+    expect(() => scoreBroad(candidate(1, [1, 0]), trained.config)).toThrow(/dim mismatch/);
+  });
 });
 
 /** Tiny deterministic noise — enough variance to keep the optimizer honest. */

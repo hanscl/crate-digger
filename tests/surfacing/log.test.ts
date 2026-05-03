@@ -100,6 +100,83 @@ describe("logSurfaceEvents — eval-substrate guard (Constraint #2)", () => {
     }
   });
 
+  it("multi-winner: each event's pool flags only its own winner as surfaced", async () => {
+    // Two winners in one batch → two surface_event rows. Each row's pool must
+    // identify exactly its own winner via the surfaced flag. Reading any row
+    // alone tells you which trackId it surfaced — no need to cross-reference
+    // siblings — which is what makes counterfactual replay self-contained.
+    const trackIds: number[] = [];
+    for (let i = 0; i < 5; i++) trackIds.push(await insertTrackId(`T${i}`));
+    const broadVer = await ensureActiveModelVersion(db, "broad");
+
+    const pool = trackIds.map((id, i) => ({
+      candidate: { trackId: id, embedding: [0.1 * i, 0.2 * i] },
+      score: 0.5 - i * 0.05,
+      subScores: { logit: 0.1 * i, prior: 0.5 } as Record<string, number>,
+      rankerKind: "broad" as const,
+    }));
+    const winners = [pool[1]!, pool[3]!];
+
+    const events = await logSurfaceEvents(db, {
+      pool,
+      winners,
+      modelVersionId: broadVer.id,
+    });
+    expect(events).toHaveLength(2);
+
+    for (const event of events) {
+      const surfaced = event.candidatePool.filter((p: CandidatePoolEntry) => p.surfaced);
+      expect(surfaced).toHaveLength(1);
+      expect(surfaced[0]?.trackId).toBe(event.trackId);
+
+      // The other winner appears in this row's pool but as surfaced=false.
+      const otherWinnerId = winners.find((w) => w.candidate.trackId !== event.trackId)?.candidate
+        .trackId;
+      const otherEntry = event.candidatePool.find(
+        (p: CandidatePoolEntry) => p.trackId === otherWinnerId,
+      );
+      expect(otherEntry?.surfaced).toBe(false);
+
+      // Score and sub-scores still round-trip per the single-winner contract.
+      for (const entry of event.candidatePool) {
+        const original = pool.find((p) => p.candidate.trackId === entry.trackId);
+        expect(entry.score).toBeCloseTo(original?.score ?? 0, 9);
+        expect(entry.subScores?.logit).toBeCloseTo(original?.subScores.logit ?? 0, 9);
+      }
+    }
+  });
+
+  it("throws when a winner is not present in the recorded pool", async () => {
+    // Sanity guard at the eval-substrate boundary: a winner that isn't in the
+    // pool means the snapshot would be inconsistent. Refuse to write rather
+    // than persist a corrupt one.
+    const id = await insertTrackId("in-pool");
+    const broadVer = await ensureActiveModelVersion(db, "broad");
+    const pool = [
+      {
+        candidate: { trackId: id, embedding: [0] },
+        score: 0.4,
+        subScores: {} as Record<string, number>,
+        rankerKind: "broad" as const,
+      },
+    ];
+    const orphan = {
+      candidate: { trackId: id + 9999, embedding: [0] },
+      score: 0.99,
+      subScores: {} as Record<string, number>,
+      rankerKind: "broad" as const,
+    };
+    await expect(
+      logSurfaceEvents(db, {
+        pool,
+        winners: [orphan],
+        modelVersionId: broadVer.id,
+      }),
+    ).rejects.toThrow(/not present in pool/);
+    const persisted = await db.select().from(schema.surfaceEvent);
+    expect(persisted).toHaveLength(0);
+  });
+
   it("returns [] without inserting when winners is empty", async () => {
     const id = await insertTrackId("solo");
     const broadVer = await ensureActiveModelVersion(db, "broad");

@@ -54,6 +54,70 @@ export async function getModelVersion(db: Database, id: number): Promise<ModelVe
   return row ?? null;
 }
 
+type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
+
+/**
+ * Internal: mint a new model_version row and swing the active pointer,
+ * inside an existing transaction. Caller is responsible for the FOR UPDATE
+ * lock on the app_config singleton row (so that callers composing this with
+ * a check-and-create stay race-safe). The public `bumpModelVersion` opens
+ * its own tx + lock; `ensureActiveModelVersion` reuses a single tx so that
+ * its read of "active version id" and the subsequent insert serialize.
+ */
+async function bumpInTx(
+  tx: Tx,
+  kind: RankerKind,
+  config: RefillConfig | BroadConfig,
+  options: BumpOptions,
+): Promise<ModelVersion> {
+  if (kind === "refill" && !isRefillConfig(config)) {
+    throw new Error("bumpModelVersion: refill kind requires RefillConfig");
+  }
+  if (kind === "broad" && !isBroadConfig(config)) {
+    throw new Error("bumpModelVersion: broad kind requires BroadConfig");
+  }
+
+  const [cfg] = await tx
+    .select({
+      activeRefill: appConfig.activeRefillVersionId,
+      activeBroad: appConfig.activeBroadVersionId,
+    })
+    .from(appConfig)
+    .where(eq(appConfig.id, 1))
+    .limit(1);
+
+  const previousId = kind === "refill" ? cfg?.activeRefill : cfg?.activeBroad;
+  const insert: NewModelVersion = {
+    kind,
+    config,
+    parentId: previousId ?? null,
+    note: options.note ?? null,
+    trainingWindowStart: options.trainingWindowStart ?? null,
+    trainingWindowEnd: options.trainingWindowEnd ?? null,
+  };
+  const [row] = await tx.insert(modelVersion).values(insert).returning();
+  if (!row) throw new Error("bumpModelVersion: insert returned no rows");
+
+  const setUpdate =
+    kind === "refill"
+      ? { activeRefillVersionId: row.id, updatedAt: sql`NOW()` }
+      : { activeBroadVersionId: row.id, updatedAt: sql`NOW()` };
+  await tx.update(appConfig).set(setUpdate).where(eq(appConfig.id, 1));
+
+  return row;
+}
+
+/** Lock the singleton app_config row, creating it on first use. */
+async function lockAppConfig(tx: Tx): Promise<void> {
+  await tx.insert(appConfig).values({ id: 1 }).onConflictDoNothing({ target: appConfig.id });
+  await tx
+    .select({ id: appConfig.id })
+    .from(appConfig)
+    .where(eq(appConfig.id, 1))
+    .for("update")
+    .limit(1);
+}
+
 /**
  * Mint a new model_version row and atomically swing the active pointer.
  * Returns the freshly-inserted row. The previous active version remains in
@@ -67,73 +131,61 @@ export async function bumpModelVersion(
   config: RefillConfig | BroadConfig,
   options: BumpOptions = {},
 ): Promise<ModelVersion> {
-  if (kind === "refill" && !isRefillConfig(config)) {
-    throw new Error("bumpModelVersion: refill kind requires RefillConfig");
-  }
-  if (kind === "broad" && !isBroadConfig(config)) {
-    throw new Error("bumpModelVersion: broad kind requires BroadConfig");
-  }
-
   return db.transaction(async (tx) => {
-    await tx.insert(appConfig).values({ id: 1 }).onConflictDoNothing({ target: appConfig.id });
-
-    const [cfg] = await tx
-      .select({
-        activeRefill: appConfig.activeRefillVersionId,
-        activeBroad: appConfig.activeBroadVersionId,
-      })
-      .from(appConfig)
-      .where(eq(appConfig.id, 1))
-      .for("update")
-      .limit(1);
-
-    const previousId = kind === "refill" ? cfg?.activeRefill : cfg?.activeBroad;
-    const insert: NewModelVersion = {
-      kind,
-      config,
-      parentId: previousId ?? null,
-      note: options.note ?? null,
-      trainingWindowStart: options.trainingWindowStart ?? null,
-      trainingWindowEnd: options.trainingWindowEnd ?? null,
-    };
-    const [row] = await tx.insert(modelVersion).values(insert).returning();
-    if (!row) throw new Error("bumpModelVersion: insert returned no rows");
-
-    const setUpdate =
-      kind === "refill"
-        ? { activeRefillVersionId: row.id, updatedAt: sql`NOW()` }
-        : { activeBroadVersionId: row.id, updatedAt: sql`NOW()` };
-    await tx.update(appConfig).set(setUpdate).where(eq(appConfig.id, 1));
-
-    return row;
+    await lockAppConfig(tx);
+    return bumpInTx(tx, kind, config, options);
   });
 }
 
 /**
  * Idempotent bootstrap: ensures both rankers have an active model_version
  * row at first surfacing time. Called by the surfacing pipeline so a fresh
- * install can rank without the user having to manually retrain. Default
- * configs come from app_config (refill λ) and a 0.5 prior for broad.
+ * install can rank without the user having to manually retrain.
+ *
+ * Race safety: the entire check-and-create runs inside one transaction with
+ * a FOR UPDATE lock on the app_config singleton. Two concurrent first-run
+ * surfacing calls for the same `kind` therefore serialize — only the first
+ * caller mints a bootstrap row; the second observes the active pointer the
+ * first one set and returns that row instead of minting a duplicate.
  */
 export async function ensureActiveModelVersion(
   db: Database,
   kind: RankerKind,
 ): Promise<ModelVersion> {
-  const existing = await getActiveModelVersion(db, kind);
-  if (existing) return existing;
+  return db.transaction(async (tx) => {
+    await lockAppConfig(tx);
 
-  const [cfg] = await db.select({ refillLambda: appConfig.refillLambda }).from(appConfig).limit(1);
-  const lambda = cfg?.refillLambda ?? DEFAULT_REFILL_LAMBDA;
+    const [cfg] = await tx
+      .select({
+        activeRefill: appConfig.activeRefillVersionId,
+        activeBroad: appConfig.activeBroadVersionId,
+        refillLambda: appConfig.refillLambda,
+      })
+      .from(appConfig)
+      .where(eq(appConfig.id, 1))
+      .limit(1);
 
-  if (kind === "refill") {
-    return bumpModelVersion(db, "refill", { lambda }, { note: "initial bootstrap" });
-  }
-  return bumpModelVersion(
-    db,
-    "broad",
-    { weights: null, bias: 0, trainedSampleCount: 0, prior: DEFAULT_BROAD_PRIOR },
-    { note: "initial bootstrap (untrained)" },
-  );
+    const activeId = kind === "refill" ? cfg?.activeRefill : cfg?.activeBroad;
+    if (activeId) {
+      const [existing] = await tx
+        .select()
+        .from(modelVersion)
+        .where(eq(modelVersion.id, activeId))
+        .limit(1);
+      if (existing) return existing;
+    }
+
+    const lambda = cfg?.refillLambda ?? DEFAULT_REFILL_LAMBDA;
+    if (kind === "refill") {
+      return bumpInTx(tx, "refill", { lambda }, { note: "initial bootstrap" });
+    }
+    return bumpInTx(
+      tx,
+      "broad",
+      { weights: null, bias: 0, trainedSampleCount: 0, prior: DEFAULT_BROAD_PRIOR },
+      { note: "initial bootstrap (untrained)" },
+    );
+  });
 }
 
 /**
