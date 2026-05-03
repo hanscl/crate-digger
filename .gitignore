@@ -1,0 +1,20 @@
+node_modules
+dist
+.mastra
+.env
+.env.local
+*.log
+
+# Editor
+.idea
+.vscode/settings.json
+
+# OS
+.DS_Store
+
+# Test artifacts
+coverage
+.vitest
+
+# Build
+*.tsbuildinfo

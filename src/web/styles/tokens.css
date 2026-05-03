@@ -1,0 +1,348 @@
+/* Music Scout — Cyan Tape design tokens */
+
+:root {
+  /* Surfaces — near-black, layered */
+  --bg-0: #07090b; /* page */
+  --bg-1: #0c0f12; /* panel */
+  --bg-2: #11161a; /* card */
+  --bg-3: #161b20; /* raised */
+  --bg-4: #1c2228; /* input bg, hover */
+
+  /* Inks */
+  --ink-1: #e8eef2; /* primary text */
+  --ink-2: #a8b3bc; /* secondary */
+  --ink-3: #6c7681; /* tertiary, axis labels */
+  --ink-4: #424b54; /* faint, dividers / off LEDs */
+  --ink-5: #232a31; /* hairline */
+
+  /* Accent — electric cyan */
+  --accent: #22d3ee;
+  --accent-soft: #22d3ee33;
+  --accent-glow: 0 0 14px rgba(34, 211, 238, 0.35);
+  --accent-dim: #0e9bb1;
+
+  /* Signals */
+  --keep: #34d399; /* green keep */
+  --skip: #f59e0b; /* amber neutral/defer */
+  --pass: #f87171; /* red dislike */
+  --warn: #fbbf24;
+  --bad: #ef4444;
+
+  /* Bucket palette (HSL hues for variety) */
+  --b1: #22d3ee;
+  --b2: #a78bfa;
+  --b3: #f472b6;
+  --b4: #34d399;
+  --b5: #fbbf24;
+  --b6: #fb7185;
+
+  /* Hairline / shadows */
+  --line: rgba(255, 255, 255, 0.06);
+  --line-strong: rgba(255, 255, 255, 0.12);
+  --shadow-1: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 8px 24px rgba(0, 0, 0, 0.5);
+
+  /* Type */
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
+
+  /* Geometry */
+  --r-1: 4px;
+  --r-2: 8px;
+  --r-3: 12px;
+  --r-4: 16px;
+
+  /* Density (overridden by tweak) */
+  --pad: 16px;
+  --gap: 12px;
+}
+
+[data-density="compact"] {
+  --pad: 12px;
+  --gap: 8px;
+}
+[data-density="comfy"] {
+  --pad: 22px;
+  --gap: 16px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg-0);
+  color: var(--ink-1);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "ss01", "ss02";
+  letter-spacing: -0.005em;
+  overflow: hidden;
+}
+
+#app {
+  height: 100vh;
+  width: 100vw;
+}
+
+button {
+  font-family: inherit;
+}
+
+/* Mono utilities */
+.mono {
+  font-family: var(--font-mono);
+  font-feature-settings: "zero", "ss01";
+}
+.cap {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 11px;
+  font-weight: 500;
+}
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Hairline frame */
+.frame {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-3);
+}
+
+/* Panel — slight gradient, depth */
+.panel {
+  background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
+  border: 1px solid var(--line);
+  border-radius: var(--r-3);
+  box-shadow: var(--shadow-1);
+}
+
+/* Faint chrome screws — no, restraint. Subtle screws as tiny dots in corners optional via class. */
+.screws::before,
+.screws::after,
+.screws > .s-bl,
+.screws > .s-br {
+  content: "";
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, #2a3138, #0a0d10);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+.screws {
+  position: relative;
+}
+.screws::before {
+  top: 8px;
+  left: 8px;
+}
+.screws::after {
+  top: 8px;
+  right: 8px;
+}
+.screws > .s-bl {
+  bottom: 8px;
+  left: 8px;
+}
+.screws > .s-br {
+  bottom: 8px;
+  right: 8px;
+}
+
+/* LED dot */
+.led {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ink-4);
+  box-shadow: inset 0 0 1px rgba(0, 0, 0, 0.6);
+  flex-shrink: 0;
+}
+.led.on {
+  background: var(--accent);
+  box-shadow:
+    0 0 6px var(--accent-soft),
+    inset 0 0 1px rgba(255, 255, 255, 0.4);
+}
+.led.green {
+  background: var(--keep);
+  box-shadow: 0 0 6px rgba(52, 211, 153, 0.4);
+}
+.led.red {
+  background: var(--bad);
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.4);
+}
+.led.amber {
+  background: var(--warn);
+  box-shadow: 0 0 6px rgba(251, 191, 36, 0.4);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.15);
+  background-clip: content-box;
+  border: 2px solid transparent;
+}
+
+/* Headings */
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+h1 {
+  font-size: 24px;
+}
+h2 {
+  font-size: 18px;
+}
+h3 {
+  font-size: 14px;
+}
+
+/* Common chip / pill */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-2);
+}
+.chip.accent {
+  color: var(--accent);
+  border-color: rgba(34, 211, 238, 0.3);
+  background: rgba(34, 211, 238, 0.08);
+}
+.chip.warn {
+  color: var(--warn);
+  border-color: rgba(251, 191, 36, 0.3);
+  background: rgba(251, 191, 36, 0.08);
+}
+.chip.danger {
+  color: var(--bad);
+  border-color: rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.08);
+}
+.chip.green {
+  color: var(--keep);
+  border-color: rgba(52, 211, 153, 0.3);
+  background: rgba(52, 211, 153, 0.08);
+}
+
+/* Buttons */
+.btn {
+  appearance: none;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-3);
+  color: var(--ink-1);
+  height: 32px;
+  padding: 0 14px;
+  border-radius: var(--r-2);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transition:
+    background 0.12s,
+    border-color 0.12s,
+    transform 0.06s;
+}
+.btn:hover {
+  background: var(--bg-4);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+.btn:active {
+  transform: translateY(1px);
+}
+.btn.primary {
+  background: var(--accent);
+  color: #001216;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 0 var(--accent-soft);
+}
+.btn.primary:hover {
+  background: #4ee0f6;
+}
+.btn.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--ink-2);
+}
+.btn.ghost:hover {
+  background: var(--bg-3);
+  color: var(--ink-1);
+}
+.btn.sm {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+.btn.icon {
+  width: 32px;
+  padding: 0;
+  justify-content: center;
+}
+.btn.icon.sm {
+  width: 26px;
+}
+
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-2);
+}
+
+/* Generic divider line */
+.hr {
+  height: 1px;
+  background: var(--line);
+  margin: 12px 0;
+}
+
+/* Selection */
+::selection {
+  background: var(--accent-soft);
+  color: var(--ink-1);
+}
