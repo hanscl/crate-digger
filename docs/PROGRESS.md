@@ -75,6 +75,7 @@ Phase tracker. Update at the end of every phase. Newest at the top.
 
 - **Status:** review
 - **Branch:** `phase-4-ranking`
+- **PR:** https://github.com/hanscl/crate-digger/pull/5
 - **Scope landed:** pure refill ranker (`src/lib/ranking/refill.ts`) — `score
 = mean cosine(c, keep_i) − λ · mean cosine(c, dislike_i)`; broad classifier
   (`src/lib/ranking/broad.ts`) — hand-rolled batch logistic regression on the
