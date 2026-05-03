@@ -1,4 +1,4 @@
-import { count, eq, inArray, isNull } from "drizzle-orm";
+import { count, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Database } from "@/db/client";
 import {
   appConfig,
@@ -97,8 +97,13 @@ export async function runSurfacingBatch(
   const queueCeiling = params.queueCeilingOverride ?? cfg.queueCeiling;
 
   const queueDepth = await unratedSurfacedCount(db);
+  // dailyCap is a per-day budget, not per-batch — count what's already gone
+  // out today and shrink the remaining cap. Without this, repeated
+  // surfacing runs (cron + manual triggers) compound past `dailyCap`.
+  const todaysCount = await todaysSurfacedCount(db);
+  const remainingDailyCap = Math.max(0, dailyCap - todaysCount);
   const ceilingSlots = Math.max(0, queueCeiling - queueDepth);
-  const effectiveCap = Math.max(0, Math.min(dailyCap, ceilingSlots));
+  const effectiveCap = Math.max(0, Math.min(remainingDailyCap, ceilingSlots));
 
   // Quota split. Refill ratio = (1 − novelty); rounded so quotas sum to cap.
   const refillQuotaRaw = Math.round(effectiveCap * (1 - novelty));
@@ -323,6 +328,20 @@ async function unratedSurfacedCount(db: Database): Promise<number> {
     .from(surfaceEvent)
     .leftJoin(rating, eq(rating.surfaceEventId, surfaceEvent.id))
     .where(isNull(rating.id));
+  return Number(row?.n ?? 0);
+}
+
+/**
+ * Count of surface_event rows since the start of today (server timezone).
+ * Drives `remainingDailyCap` so the per-day budget holds across multiple
+ * runs in a single day. Uses the `surface_event_surfaced_at_idx` for a
+ * range scan.
+ */
+async function todaysSurfacedCount(db: Database): Promise<number> {
+  const [row] = await db
+    .select({ n: count() })
+    .from(surfaceEvent)
+    .where(sql`${surfaceEvent.surfacedAt} >= DATE_TRUNC('day', NOW())`);
   return Number(row?.n ?? 0);
 }
 

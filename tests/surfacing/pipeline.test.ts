@@ -371,6 +371,41 @@ describe("runSurfacingBatch — caps live in surfacing, not ingestion (Constrain
     expect(result.events).toHaveLength(0);
     expect(result.surfaced).toHaveLength(0);
   });
+
+  it("daily cap is per-day, not per-batch — second run in the same day sees a shrunken remaining cap", async () => {
+    // Two batches in one day, each with dailyCap=2. Without per-day
+    // accounting, this would surface 4. With it, the second batch sees
+    // remainingDailyCap=0 and emits nothing, even though queueCeiling has
+    // headroom.
+    const tracks = [];
+    for (let i = 0; i < 6; i++) {
+      tracks.push(
+        await insertTrack({
+          title: `T${i}`,
+          audioFeatures: audio({ energy: (i % 6) / 6 }),
+          genres: ["rock"],
+        }),
+      );
+    }
+    const candidates = await Promise.all(tracks.map(asCandidate));
+
+    const first = await runSurfacingBatch(db, {
+      candidates: candidates.slice(0, 3),
+      noveltyOverride: 1,
+      dailyCapOverride: 2,
+      queueCeilingOverride: 50,
+    });
+    expect(first.events).toHaveLength(2);
+
+    const second = await runSurfacingBatch(db, {
+      candidates: candidates.slice(3),
+      noveltyOverride: 1,
+      dailyCapOverride: 2,
+      queueCeilingOverride: 50,
+    });
+    expect(second.effectiveCap).toBe(0);
+    expect(second.events).toHaveLength(0);
+  });
 });
 
 describe("runSurfacingBatch — soft penalties only (Constraint #4)", () => {

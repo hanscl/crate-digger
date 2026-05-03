@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import type { Database } from "@/db/client";
 import { appConfig, type ModelVersion, modelVersion, type NewModelVersion } from "@/db/schema";
 import {
@@ -218,8 +218,11 @@ export async function modelVersionLineage(
   versionId: number,
 ): Promise<ModelVersion[]> {
   const chain: ModelVersion[] = [];
+  const visited = new Set<number>();
   let cursor: number | null = versionId;
   while (cursor !== null) {
+    if (visited.has(cursor)) break;
+    visited.add(cursor);
     const row: ModelVersion | null = await getModelVersion(db, cursor);
     if (!row) break;
     chain.unshift(row);
@@ -302,7 +305,7 @@ export async function latestModelVersionByKind(
   const [row] = await db
     .select()
     .from(modelVersion)
-    .where(and(eq(modelVersion.kind, kind)))
+    .where(eq(modelVersion.kind, kind))
     .orderBy(desc(modelVersion.trainedAt))
     .limit(1);
   return row ?? null;
