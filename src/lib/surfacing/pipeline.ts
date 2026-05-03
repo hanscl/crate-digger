@@ -11,14 +11,8 @@ import {
 } from "@/db/schema";
 import { scoreBroadBatch } from "@/lib/ranking/broad";
 import { scoreRefillBatch } from "@/lib/ranking/refill";
-import type {
-  BroadConfig,
-  Candidate,
-  RatedTrack,
-  RefillConfig,
-  ScoredCandidate,
-} from "@/lib/ranking/types";
-import { ensureActiveModelVersion, getActiveConfig } from "@/lib/ranking/version";
+import type { Candidate, RatedTrack, RefillConfig, ScoredCandidate } from "@/lib/ranking/types";
+import { configFromVersion, ensureActiveModelVersion } from "@/lib/ranking/version";
 import { logSurfaceEvents } from "./log";
 
 /**
@@ -87,11 +81,15 @@ export async function runSurfacingBatch(
 
   // Bootstrap: every surfacing run guarantees both rankers have an active
   // model_version row, so ratings collected against this run can attribute
-  // to a real version.
+  // to a real version. We derive each ranker's config DIRECTLY from the
+  // version row we just got — issuing a fresh `getActiveConfig` lookup here
+  // would race a concurrent `bumpModelVersion`, leading to events logged
+  // with version N's id while candidates were scored with version N+1's
+  // config. That divergence would silently break counterfactual replay.
   const refillVersion = await ensureActiveModelVersion(db, "refill");
   const broadVersion = await ensureActiveModelVersion(db, "broad");
-  const refillConfig = (await getActiveConfig(db, "refill")) as RefillConfig;
-  const broadConfig = (await getActiveConfig(db, "broad")) as BroadConfig;
+  const refillConfig = configFromVersion(refillVersion, "refill");
+  const broadConfig = configFromVersion(broadVersion, "broad");
 
   const cfg = await loadAppConfig(db);
   const novelty = clamp01(params.noveltyOverride ?? cfg.novelty);

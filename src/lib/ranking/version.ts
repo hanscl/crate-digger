@@ -229,9 +229,38 @@ export async function modelVersionLineage(
 }
 
 /**
+ * Pure: narrow a `ModelVersion.config` (jsonb<unknown>) to the typed config
+ * for its kind. Use this when you already have a version row in hand —
+ * surfacing must extract config from the SAME version it logs to
+ * `surface_event.model_version_id`, otherwise a concurrent `bumpModelVersion`
+ * between two DB reads would cause events to be logged at version N's id
+ * while candidates are scored with version N+1's config — silently breaking
+ * counterfactual replay.
+ */
+export function configFromVersion<K extends RankerKind>(
+  version: ModelVersion,
+  kind: K,
+): K extends "refill" ? RefillConfig : BroadConfig {
+  if (kind === "refill") {
+    if (!isRefillConfig(version.config)) {
+      throw new Error(`configFromVersion: refill version ${version.id} has invalid config`);
+    }
+    return version.config as K extends "refill" ? RefillConfig : BroadConfig;
+  }
+  if (!isBroadConfig(version.config)) {
+    throw new Error(`configFromVersion: broad version ${version.id} has invalid config`);
+  }
+  return version.config as K extends "refill" ? RefillConfig : BroadConfig;
+}
+
+/**
  * Convenience: load the active config (typed) for a given ranker. Returns
  * defaults if no version has ever been created — callers can score before
  * `ensureActiveModelVersion` runs.
+ *
+ * Note: this issues a fresh DB read. Surfacing should NOT use this in
+ * combination with `ensureActiveModelVersion` — it would race. Use
+ * `configFromVersion(version, kind)` against the row you already hold.
  */
 export async function getActiveConfig<K extends RankerKind>(
   db: Database,

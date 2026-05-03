@@ -14,6 +14,7 @@ import { scoreRefill } from "@/lib/ranking/refill";
 import type { BroadConfig, Candidate } from "@/lib/ranking/types";
 import {
   bumpModelVersion,
+  configFromVersion,
   ensureActiveModelVersion,
   getActiveConfig,
   getActiveModelVersion,
@@ -470,6 +471,59 @@ describe("ensureActiveModelVersion + bumpModelVersion", () => {
     const broadActive = await getActiveModelVersion(db, "broad");
     expect(refillActive?.id).toBe(r1.id);
     expect(broadActive?.id).toBe(b2.id);
+  });
+
+  it("surfacing pins config to the same version it logs — no config/version-id divergence", async () => {
+    // Regression for the race where a concurrent bumpModelVersion between
+    // ensureActiveModelVersion and a fresh getActiveConfig would log events
+    // at version N's id while scoring with version N+1's config. Replay
+    // against the persisted version's config must reproduce winnerScore
+    // exactly — proving the same version's config was used to score.
+    const t1 = await insertTrack({
+      title: "T1",
+      audioFeatures: audio({ valence: 0.4 }),
+      genres: ["rock"],
+    });
+    const t2 = await insertTrack({
+      title: "T2",
+      audioFeatures: audio({ valence: 0.6 }),
+      genres: ["rock"],
+    });
+    const candidates = await Promise.all([t1, t2].map(asCandidate));
+
+    await runSurfacingBatch(db, {
+      candidates,
+      noveltyOverride: 1,
+      dailyCapOverride: 1,
+    });
+    const eventV1 = (await db.select().from(schema.surfaceEvent))[0]!;
+
+    // Drop a fresh broad version with very different weights — simulating
+    // what a retrain triggered mid-flight would do.
+    await bumpModelVersion(db, "broad", {
+      weights: Array.from({ length: 64 }, () => 99),
+      bias: 99,
+      trainedSampleCount: 1,
+    });
+
+    // Reload the version the event was logged against, narrow its config,
+    // and rescore — winnerScore must match. If divergence were possible,
+    // event.winnerScore would have been computed under the (now-superseded)
+    // bootstrap config, but the active version row at scoring time would be
+    // the new one — replay against either side would mismatch.
+    const persistedVersion = await getActiveModelVersion(db, "broad");
+    expect(persistedVersion?.id).not.toBe(eventV1.modelVersionId);
+    const eventVersionRow = (
+      await db
+        .select()
+        .from(schema.modelVersion)
+        .where(sql`${schema.modelVersion.id} = ${eventV1.modelVersionId}`)
+    )[0]!;
+
+    const replayConfig = configFromVersion(eventVersionRow, "broad");
+    const winnerCand = candidates.find((c) => c.trackId === eventV1.trackId)!;
+    const replayScore = scoreBroad(winnerCand, replayConfig).score;
+    expect(replayScore).toBeCloseTo(eventV1.winnerScore, 9);
   });
 });
 
