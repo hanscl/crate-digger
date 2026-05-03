@@ -41,6 +41,7 @@ Phase tracker. Update at the end of every phase. Newest at the top.
 
 - **Status:** review
 - **Branch:** `phase-3-bucketing`
+- **PR:** https://github.com/hanscl/crate-digger/pull/4
 - **Scope landed:** 64-dim embedding builder (6 audio dims + 58-slot genre
   multi-hot taxonomy, plus `derivePrimaryGenre` and cosine similarity) in
   `src/lib/embedding.ts`; pure Welford helpers (`updateCentroid`,
