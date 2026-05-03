@@ -1,4 +1,4 @@
-import { eq, inArray, isNotNull, isNull, and } from "drizzle-orm";
+import { and, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import type { Database } from "@/db/client";
 import { type AudioFeatures, track } from "@/db/schema";
 import type { Env } from "@/server/env";
@@ -27,6 +27,57 @@ function toAudioFeatures(f: SpotifyAudioFeatures): AudioFeatures {
   };
 }
 
+type FeatureUpdate = { id: number; features: AudioFeatures };
+
+/**
+ * Apply a batch of (id, features) pairs in a single SQL statement using
+ * `UPDATE … SET audio_features = CASE id WHEN … END WHERE id IN (…)`.
+ * Replaces what would otherwise be N round-trips per batch.
+ */
+async function bulkUpdateAudioFeatures(db: Database, updates: FeatureUpdate[]): Promise<void> {
+  if (updates.length === 0) return;
+  const cases = updates.map((u) => sql`WHEN ${u.id} THEN ${JSON.stringify(u.features)}::jsonb`);
+  await db
+    .update(track)
+    .set({
+      audioFeatures: sql`CASE ${track.id} ${sql.join(cases, sql.raw(" "))} END`,
+    })
+    .where(
+      inArray(
+        track.id,
+        updates.map((u) => u.id),
+      ),
+    );
+}
+
+async function fetchAndApplyBatch(
+  db: Database,
+  env: Env,
+  batch: { id: number; spotifyId: string | null }[],
+): Promise<number> {
+  const ids = batch.map((t) => t.spotifyId).filter((s): s is string => s !== null);
+  if (ids.length === 0) return 0;
+
+  const data = await spotifyGet<{ audio_features: (SpotifyAudioFeatures | null)[] }>(
+    "/audio-features",
+    { ids: ids.join(",") },
+    env,
+  );
+  if (!data?.audio_features) return 0;
+
+  const bySpotifyId = new Map<string, SpotifyAudioFeatures>();
+  for (const f of data.audio_features) if (f) bySpotifyId.set(f.id, f);
+
+  const updates: FeatureUpdate[] = [];
+  for (const row of batch) {
+    const features = row.spotifyId ? bySpotifyId.get(row.spotifyId) : undefined;
+    if (!features) continue;
+    updates.push({ id: row.id, features: toAudioFeatures(features) });
+  }
+  await bulkUpdateAudioFeatures(db, updates);
+  return updates.length;
+}
+
 /**
  * Backfill `track.audio_features` for tracks that have a `spotify_id` but no
  * features yet. Idempotent: only acts on rows where features are null, so
@@ -52,28 +103,7 @@ export async function enrichAudioFeatures(
   let updated = 0;
   for (let i = 0; i < targets.length; i += FEATURES_BATCH) {
     const batch = targets.slice(i, i + FEATURES_BATCH);
-    const ids = batch.map((t) => t.spotifyId).filter((s): s is string => s !== null);
-    if (ids.length === 0) continue;
-
-    const data = await spotifyGet<{ audio_features: (SpotifyAudioFeatures | null)[] }>(
-      "/audio-features",
-      { ids: ids.join(",") },
-      env,
-    );
-    if (!data?.audio_features) continue;
-
-    const bySpotifyId = new Map<string, SpotifyAudioFeatures>();
-    for (const f of data.audio_features) if (f) bySpotifyId.set(f.id, f);
-
-    for (const row of batch) {
-      const features = row.spotifyId ? bySpotifyId.get(row.spotifyId) : undefined;
-      if (!features) continue;
-      await db
-        .update(track)
-        .set({ audioFeatures: toAudioFeatures(features) })
-        .where(eq(track.id, row.id));
-      updated++;
-    }
+    updated += await fetchAndApplyBatch(db, env, batch);
   }
 
   return { requested: targets.length, updated };
@@ -103,26 +133,10 @@ export async function enrichAudioFeaturesForTracks(
     );
   if (targets.length === 0) return { updated: 0 };
 
-  const ids = targets.map((t) => t.spotifyId).filter((s): s is string => s !== null);
-  const data = await spotifyGet<{ audio_features: (SpotifyAudioFeatures | null)[] }>(
-    "/audio-features",
-    { ids: ids.join(",") },
-    env,
-  );
-  if (!data?.audio_features) return { updated: 0 };
-
-  const bySpotifyId = new Map<string, SpotifyAudioFeatures>();
-  for (const f of data.audio_features) if (f) bySpotifyId.set(f.id, f);
-
   let updated = 0;
-  for (const row of targets) {
-    const features = row.spotifyId ? bySpotifyId.get(row.spotifyId) : undefined;
-    if (!features) continue;
-    await db
-      .update(track)
-      .set({ audioFeatures: toAudioFeatures(features) })
-      .where(eq(track.id, row.id));
-    updated++;
+  for (let i = 0; i < targets.length; i += FEATURES_BATCH) {
+    const batch = targets.slice(i, i + FEATURES_BATCH);
+    updated += await fetchAndApplyBatch(db, env, batch);
   }
   return { updated };
 }

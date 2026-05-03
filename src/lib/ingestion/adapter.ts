@@ -27,6 +27,9 @@ export class AdapterRegistry {
   private readonly byId = new Map<SourceId, SourceAdapter>();
 
   register(adapter: SourceAdapter): this {
+    if (this.byId.has(adapter.id)) {
+      throw new Error(`Adapter with id "${adapter.id}" already registered`);
+    }
     this.byId.set(adapter.id, adapter);
     return this;
   }

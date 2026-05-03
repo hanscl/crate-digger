@@ -1,4 +1,4 @@
-import { eq, isNull, or, sql } from "drizzle-orm";
+import { and, eq, ilike, isNull, or, sql } from "drizzle-orm";
 import { fuzzy } from "fast-fuzzy";
 import type { Database } from "@/db/client";
 import { track, trackSource } from "@/db/schema";
@@ -72,15 +72,22 @@ export async function resolveCandidate(
       const spotifyGuard = candidate.spotifyId
         ? or(isNull(track.spotifyId), eq(track.spotifyId, candidate.spotifyId))
         : undefined;
-      const where =
-        isrcGuard && spotifyGuard
-          ? sql`${isrcGuard} AND ${spotifyGuard}`
-          : (isrcGuard ?? spotifyGuard);
+      const guard = and(isrcGuard, spotifyGuard);
+
+      // Coarse, indexed prefilter so we don't pull the entire `track` table
+      // into the JS heap before fuzzy-matching. Last.fm candidates carry no
+      // ISRC or spotify_id, so without this they would force a full scan on
+      // every unresolved sighting. TODO: switch to `pg_trgm` GIN once the
+      // catalog grows past ~10k rows — leading-prefix is cheap but coarse.
+      const artistPrefix = normalize(candidate.artist).slice(0, 4);
+      const prefilter =
+        artistPrefix.length > 0 ? ilike(track.artist, `${artistPrefix}%`) : undefined;
+      const where = and(guard, prefilter);
 
       const baseQuery = tx
         .select({ id: track.id, artist: track.artist, title: track.title })
         .from(track);
-      const all = where ? await baseQuery.where(where) : await baseQuery;
+      const all = where ? await baseQuery.where(where) : await baseQuery.limit(500);
 
       const needle = fuzzyKey(candidate);
       let best: { id: number; score: number } | null = null;
