@@ -31,6 +31,16 @@ function parseDurationMs(d: string | number | undefined, unit: DurationUnit): nu
   return unit === "seconds" ? n * 1000 : n;
 }
 
+const LASTFM_TIMEOUT_MS = 8_000;
+const DEFAULT_LIMIT = 25;
+const MAX_LIMIT = 100;
+
+/** Coerce caller-supplied limit to a positive integer in [1, MAX_LIMIT]. */
+function clampLimit(raw: number | undefined): number {
+  if (raw === undefined || !Number.isFinite(raw)) return DEFAULT_LIMIT;
+  return Math.max(1, Math.min(Math.floor(raw), MAX_LIMIT));
+}
+
 async function lastfmGet<T>(
   method: string,
   query: Record<string, string | number>,
@@ -41,12 +51,21 @@ async function lastfmGet<T>(
   url.searchParams.set("api_key", env.LASTFM_API_KEY);
   url.searchParams.set("format", "json");
   for (const [k, v] of Object.entries(query)) url.searchParams.set(k, String(v));
-  const res = await fetch(url);
-  if (!res.ok) {
-    console.error(`[lastfm] ${method} ${res.status}`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), LASTFM_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) {
+      console.error(`[lastfm] ${method} ${res.status}`);
+      return null;
+    }
+    return (await res.json()) as T;
+  } catch (err) {
+    console.error(`[lastfm] ${method} threw`, err);
     return null;
+  } finally {
+    clearTimeout(timeout);
   }
-  return (await res.json()) as T;
 }
 
 export function lastfmTrackToCandidate(t: LastfmTrack, unit: DurationUnit): RawCandidate {
@@ -116,7 +135,7 @@ export const lastfmAdapter: SourceAdapter = {
   },
   async pullCandidates(params, env) {
     if (!this.isAvailable(env)) return [];
-    const limit = params.limit ?? 25;
+    const limit = clampLimit(params.limit);
     try {
       switch (params.mode) {
         case "search":
