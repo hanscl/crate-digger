@@ -29,5 +29,9 @@ jobs:
       - run: pnpm typecheck
 
       - run: pnpm test
+        env:
+          # Testcontainers' Ryuk reaper times out under some Docker setups.
+          # Vitest's afterAll handles cleanup; disable Ryuk for stability.
+          TESTCONTAINERS_RYUK_DISABLED: "true"
 
       - run: pnpm build

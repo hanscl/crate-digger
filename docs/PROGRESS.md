@@ -17,7 +17,25 @@ Phase tracker. Update at the end of every phase. Newest at the top.
 
 ## Phase 2 — Ingestion + enrichment
 
-- **Status:** pending
+- **Status:** review
+- **Branch:** `phase-2-ingestion` (rebased onto `main` after #1 merged)
+- **PR:** https://github.com/hanscl/crate-digger/pull/3 (supersedes #2)
+- **Scope landed:** `SourceAdapter` interface + registry; Spotify adapter
+  (Client Credentials, search/trending/similar, ISRC pass-through); Last.fm
+  adapter (search/similar/chart top tracks); Viberate adapter stub; ISRC-first
+  enrichment resolver with fuzzy fallback (`fast-fuzzy`) and conflicting-ISRC
+  guard; Spotify audio-features fetcher with widen-only backfill; first drizzle
+  migration generated (`migrations/0000_*`); testcontainers-pg integration
+  harness; adapter contract test (16 cases) + enrichment idempotency test
+  (4 cases including remix / distinct-ISRC guard).
+- **Notes for future phases:**
+  - `drizzle-kit` bumped to `^0.31` so generate works under TS `target: ES2023`.
+  - Tests require a working Docker daemon (testcontainers spins up
+    `pgvector/pgvector:pg16`); CI sets `TESTCONTAINERS_RYUK_DISABLED=true`.
+  - Spotify `/v1/recommendations` and `/v1/audio-features` were retired for
+    apps registered after 2024-11-27. The code paths are present but degrade
+    silently to empty / no-op for new apps; Phase 3+ may need a handcrafted-
+    features fallback.
 
 ## Phase 3 — Embedding + bucketing
 
