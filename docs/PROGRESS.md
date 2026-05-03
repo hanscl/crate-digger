@@ -42,17 +42,18 @@ Phase tracker. Update at the end of every phase. Newest at the top.
 - **Status:** review
 - **Branch:** `phase-3-bucketing`
 - **PR:** https://github.com/hanscl/crate-digger/pull/4
-- **Scope landed:** 64-dim embedding builder (6 audio dims + 58-slot genre
-  multi-hot taxonomy, plus `derivePrimaryGenre` and cosine similarity) in
-  `src/lib/embedding.ts`; pure Welford helpers (`updateCentroid`,
+- **Scope landed:** 64-dim embedding builder (6 audio dims and 58-slot
+  genre multi-hot taxonomy, plus `derivePrimaryGenre` and cosine similarity)
+  in `src/lib/embedding.ts`; pure Welford helpers (`updateCentroid`,
   `addFeatureSample`, `featureVariance`) in `src/lib/bucketing/centroid.ts`;
   transactional spawn-or-join assignment with primary-genre filter in
-  `src/lib/bucketing/assign.ts`; cold-start seeding (track-IDs entry point
-  + Spotify-playlist-URL wrapper around the Phase 2 enrichment pipeline)
-  in `src/lib/bucketing/cold-start.ts`. Tests: pure embedding/centroid
-  suites plus a testcontainers `assign.test.ts` covering the four contract
-  cases (within-threshold join, outside-threshold spawn, no-genre-match
-  spawn, Welford correctness) plus an idempotency guard. 53 tests total.
+  `src/lib/bucketing/assign.ts`; cold-start seeding in
+  `src/lib/bucketing/cold-start.ts` (track-IDs entry point and a
+  Spotify-playlist-URL wrapper that reuses the Phase 2 enrichment pipeline).
+  Tests: pure embedding/centroid suites plus a testcontainers
+  `assign.test.ts` covering the four contract cases (within-threshold join,
+  outside-threshold spawn, no-genre-match spawn, Welford correctness) plus
+  an idempotency guard. 53 tests total.
 - **Notes for future phases:**
   - pgvector stores `real` (float32); centroid precision tops out around
     6-7 decimals when round-tripped through the DB. Keep that in mind when
