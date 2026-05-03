@@ -8,7 +8,7 @@ organizes liked music into similarity-based buckets. Two complementary discovery
 
 Built on TypeScript + Mastra. Open source. Single-command bootstrap. Paid APIs optional.
 
-> **Status:** Phase 1 (skeleton + DB). Most screens are placeholders. See `docs/PROGRESS.md`.
+> **Status:** Phase 2 (ingestion + enrichment). Most screens are placeholders. See `docs/PROGRESS.md`.
 
 ## Quickstart
 
