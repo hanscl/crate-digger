@@ -125,8 +125,13 @@ export const bucketMember = pgTable(
     addedAt: timestamp("added_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    // Enforces one-track-one-bucket at the schema level. Two concurrent
+    // `assignTrack` calls for the same track both probe "no membership"
+    // and proceed; the loser's `bucket_member` insert hits this constraint,
+    // its transaction rolls back (including any new bucket it spawned),
+    // and the caller retries — finding the winner's row on the next probe.
+    uniqueIndex("bucket_member_track_unique_idx").on(t.trackId),
     uniqueIndex("bucket_member_unique_idx").on(t.bucketId, t.trackId),
-    index("bucket_member_track_idx").on(t.trackId),
   ],
 );
 

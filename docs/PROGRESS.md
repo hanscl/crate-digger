@@ -39,7 +39,37 @@ Phase tracker. Update at the end of every phase. Newest at the top.
 
 ## Phase 3 — Embedding + bucketing
 
-- **Status:** pending
+- **Status:** review
+- **Branch:** `phase-3-bucketing`
+- **PR:** https://github.com/hanscl/crate-digger/pull/4
+- **Scope landed:** 64-dim embedding builder (6 audio dims and 58-slot
+  genre multi-hot taxonomy, plus `derivePrimaryGenre` and cosine similarity)
+  in `src/lib/embedding.ts`; pure Welford helpers (`updateCentroid`,
+  `addFeatureSample`, `featureVariance`) in `src/lib/bucketing/centroid.ts`;
+  transactional spawn-or-join assignment with primary-genre filter in
+  `src/lib/bucketing/assign.ts`; cold-start seeding in
+  `src/lib/bucketing/cold-start.ts` (track-IDs entry point and a
+  Spotify-playlist-URL wrapper that reuses the Phase 2 enrichment pipeline).
+  `assignTrack` runs the entire decision (membership probe, candidate
+  fetch, spawn-or-join, centroid math, writes) in one transaction, takes
+  a `SELECT … FOR UPDATE` on the chosen bucket when joining, and relies
+  on a unique index on `bucket_member.track_id` (migration `0001_*`) to
+  detect race-losers; the outer call retries once on a unique-violation.
+  Tests: pure embedding/centroid suites plus a testcontainers
+  `assign.test.ts` covering the four contract cases (within-threshold
+  join, outside-threshold spawn, no-genre-match spawn, Welford
+  correctness), idempotency, and two concurrency regressions (parallel
+  calls for the same track collapse to one membership; parallel joins
+  to the same bucket round-trip the centroid and member count
+  correctly). 55 tests total.
+- **Notes for future phases:**
+  - pgvector stores `real` (float32); centroid precision tops out around
+    6-7 decimals when round-tripped through the DB. Keep that in mind when
+    Phase 4 ranking math compares persisted vs in-memory vectors.
+  - Spawned bucket names default to `"<primaryGenre> (auto)"`. The Phase 6
+    Mastra `bucket-namer` agent is expected to overwrite these on spawn.
+  - `assignTrack` uses `app_config.spawnThreshold` (default 0.7) when no
+    explicit option is passed; tests force the value for determinism.
 
 ## Phase 4 — Ranking + surfacing
 

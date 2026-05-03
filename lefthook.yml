@@ -6,7 +6,10 @@ pre-commit:
       run: pnpm exec oxlint --fix {staged_files}
       stage_fixed: true
     format:
-      glob: "*.{ts,tsx,js,jsx,mjs,cjs,json}"
+      # Matches what `pnpm check` sees in CI. Keep in sync with oxfmt's
+      # supported parsers — drift here is what let an unformatted .md file
+      # slip past pre-commit and fail CI.
+      glob: "*.{ts,tsx,mts,cts,js,jsx,mjs,cjs,json,jsonc,md,mdx,yml,yaml,css,scss,less,html}"
       run: pnpm exec oxfmt --write {staged_files}
       stage_fixed: true
     typecheck:

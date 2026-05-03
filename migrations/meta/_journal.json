@@ -8,6 +8,13 @@
       "when": 1777747583557,
       "tag": "0000_cooing_the_fallen",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1777822489742,
+      "tag": "0001_wandering_beast",
+      "breakpoints": true
     }
   ]
 }
