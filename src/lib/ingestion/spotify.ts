@@ -4,6 +4,15 @@ import type { RawCandidate, SimilarPullParams } from "./types";
 
 const TOKEN_URL = "https://accounts.spotify.com/api/token";
 const API_BASE = "https://api.spotify.com/v1";
+const SPOTIFY_TIMEOUT_MS = 8_000;
+const DEFAULT_LIMIT = 25;
+const MAX_LIMIT = 100;
+
+/** Coerce caller-supplied limit to a positive integer in [1, MAX_LIMIT]. */
+function clampLimit(raw: number | undefined): number {
+  if (raw === undefined || !Number.isFinite(raw)) return DEFAULT_LIMIT;
+  return Math.max(1, Math.min(Math.floor(raw), MAX_LIMIT));
+}
 
 type SpotifyArtist = { id: string; name: string };
 type SpotifyAlbum = {
@@ -31,6 +40,8 @@ export function _resetSpotifyTokenCache(): void {
 
 async function fetchAccessToken(env: Env): Promise<string | null> {
   const creds = `${env.SPOTIFY_CLIENT_ID}:${env.SPOTIFY_CLIENT_SECRET}`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), SPOTIFY_TIMEOUT_MS);
   try {
     const res = await fetch(TOKEN_URL, {
       method: "POST",
@@ -39,6 +50,7 @@ async function fetchAccessToken(env: Env): Promise<string | null> {
         authorization: `Basic ${Buffer.from(creds).toString("base64")}`,
       },
       body: "grant_type=client_credentials",
+      signal: controller.signal,
     });
     if (!res.ok) {
       console.error(`[spotify] token request failed: ${res.status}`);
@@ -53,6 +65,8 @@ async function fetchAccessToken(env: Env): Promise<string | null> {
   } catch (err) {
     console.error("[spotify] token request threw", err);
     return null;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -83,8 +97,13 @@ export async function spotifyGet<T>(
   if (!token) return null;
   const url = new URL(`${API_BASE}${path}`);
   for (const [k, v] of Object.entries(query)) url.searchParams.set(k, String(v));
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), SPOTIFY_TIMEOUT_MS);
   try {
-    const res = await fetch(url, { headers: { authorization: `Bearer ${token}` } });
+    const res = await fetch(url, {
+      headers: { authorization: `Bearer ${token}` },
+      signal: controller.signal,
+    });
     if (!res.ok) {
       console.error(`[spotify] ${path} ${res.status}`);
       return null;
@@ -93,6 +112,8 @@ export async function spotifyGet<T>(
   } catch (err) {
     console.error(`[spotify] ${path} threw`, err);
     return null;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -165,7 +186,7 @@ export const spotifyAdapter: SourceAdapter = {
   },
   async pullCandidates(params, env) {
     if (!this.isAvailable(env)) return [];
-    const limit = params.limit ?? 25;
+    const limit = clampLimit(params.limit);
     try {
       switch (params.mode) {
         case "search":
