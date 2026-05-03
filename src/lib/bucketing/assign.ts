@@ -36,6 +36,8 @@ export type AssignOptions = {
 };
 
 const FALLBACK_SPAWN_THRESHOLD = 0.7;
+/** Postgres SQLSTATE for unique_violation. */
+const PG_UNIQUE_VIOLATION = "23505";
 
 async function loadSpawnThreshold(db: Database): Promise<number> {
   const [row] = await db
@@ -50,6 +52,12 @@ function defaultBucketName(primaryGenre: string | null): string {
   return primaryGenre ? `${primaryGenre} (auto)` : "Unnamed (auto)";
 }
 
+function isUniqueViolation(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const code = (err as { code?: unknown }).code;
+  return code === PG_UNIQUE_VIOLATION;
+}
+
 /**
  * Hybrid spawn-or-join assignment. The contract pinned by tests:
  *
@@ -62,6 +70,15 @@ function defaultBucketName(primaryGenre: string | null): string {
  *      (Welford), and member_count in a single transaction with the
  *      bucket_member insert. Re-running on the same track is a no-op.
  *
+ * Concurrency: the entire decision (membership probe → candidate fetch →
+ * spawn-or-join → centroid math → writes) runs in a single transaction.
+ * On join we `SELECT … FOR UPDATE` the chosen bucket so two concurrent
+ * joins to the same bucket serialize and Welford sees the latest counts;
+ * on either branch the `bucket_member` insert relies on the unique
+ * `track_id` index — a racing caller's tx rolls back, including any
+ * speculative `bucket` row, and we retry once to find the winner's
+ * membership.
+ *
  * Soft-fail: tracks with neither audio features nor genres still get
  * embedded (audio dims default to 0.5, genre dims to zero) and assigned —
  * they end up in an "Unnamed" bucket together until enrichment fills in.
@@ -71,109 +88,161 @@ export async function assignTrack(
   trackId: number,
   options: AssignOptions = {},
 ): Promise<AssignResult> {
-  const [t] = await db.select().from(track).where(eq(track.id, trackId)).limit(1);
-  if (!t) throw new Error(`assignTrack: track id=${trackId} not found`);
-
-  // Idempotency: if this track is already a member of any bucket, return that.
-  const [existing] = await db
-    .select({ bucketId: bucketMember.bucketId, similarity: bucketMember.similarityAtJoin })
-    .from(bucketMember)
-    .where(eq(bucketMember.trackId, trackId))
-    .limit(1);
-  if (existing) {
-    return {
-      trackId,
-      bucketId: existing.bucketId,
-      similarity: existing.similarity ?? 0,
-      spawned: false,
-      alreadyAssigned: true,
-      primaryGenre: t.primaryGenre,
-      hadAudioFeatures: t.audioFeatures !== null,
-    };
-  }
-
-  // Ensure embedding + primary genre are persisted on the track row. Other
-  // phases (ranking, surfacing) read these directly from `track`.
-  const primaryGenre = t.primaryGenre ?? derivePrimaryGenre(t.genres);
-  const embedding =
-    t.embedding ?? buildEmbedding({ audioFeatures: t.audioFeatures, genres: t.genres });
-  if (!t.embedding || t.primaryGenre !== primaryGenre) {
-    await db
-      .update(track)
-      .set({ embedding, primaryGenre, updatedAt: sql`NOW()` })
-      .where(eq(track.id, trackId));
-  }
-
-  const candidates = await db
-    .select()
-    .from(bucket)
-    .where(primaryGenre ? eq(bucket.primaryGenre, primaryGenre) : isNull(bucket.primaryGenre));
-
-  let best: { bucket: (typeof candidates)[number]; sim: number } | null = null;
-  for (const b of candidates) {
-    const sim = cosine(embedding, b.centroid);
-    if (!best || sim > best.sim) best = { bucket: b, sim };
-  }
-
   const threshold = options.spawnThreshold ?? (await loadSpawnThreshold(db));
-  const hadAudioFeatures = t.audioFeatures !== null;
+  const coldStartSeed = options.coldStartSeed ?? false;
 
-  if (best && best.sim >= threshold) {
-    return joinBucket(db, t.id, t.audioFeatures, embedding, best.bucket, best.sim, {
-      primaryGenre,
+  // One retry covers the only race left: the loser of a unique-on-track_id
+  // collision rolls back, retries, and finds the winner's membership row.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return await runAssignTransaction(db, trackId, threshold, coldStartSeed);
+    } catch (err) {
+      if (attempt === 0 && isUniqueViolation(err)) continue;
+      throw err;
+    }
+  }
+  throw new Error(`assignTrack: exhausted retries for track id=${trackId}`);
+}
+
+type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
+
+async function runAssignTransaction(
+  db: Database,
+  trackId: number,
+  threshold: number,
+  coldStartSeed: boolean,
+): Promise<AssignResult> {
+  return db.transaction(async (tx) => {
+    // 1. Probe membership first. Cheap; if the track is already in a bucket,
+    //    we're done before touching anything else.
+    const [existing] = await tx
+      .select({ bucketId: bucketMember.bucketId, similarity: bucketMember.similarityAtJoin })
+      .from(bucketMember)
+      .where(eq(bucketMember.trackId, trackId))
+      .limit(1);
+
+    const [t] = await tx.select().from(track).where(eq(track.id, trackId)).limit(1);
+    if (!t) throw new Error(`assignTrack: track id=${trackId} not found`);
+
+    if (existing) {
+      return {
+        trackId,
+        bucketId: existing.bucketId,
+        similarity: existing.similarity ?? 0,
+        spawned: false,
+        alreadyAssigned: true,
+        primaryGenre: t.primaryGenre,
+        hadAudioFeatures: t.audioFeatures !== null,
+      };
+    }
+
+    // 2. Ensure embedding + primary_genre are persisted on the track row.
+    //    Other phases read these directly from `track`.
+    const primaryGenre = t.primaryGenre ?? derivePrimaryGenre(t.genres);
+    const embedding =
+      t.embedding ?? buildEmbedding({ audioFeatures: t.audioFeatures, genres: t.genres });
+    if (!t.embedding || t.primaryGenre !== primaryGenre) {
+      await tx
+        .update(track)
+        .set({ embedding, primaryGenre, updatedAt: sql`NOW()` })
+        .where(eq(track.id, trackId));
+    }
+
+    // 3. Find candidate buckets sharing the track's primary genre.
+    const candidates = await tx
+      .select()
+      .from(bucket)
+      .where(primaryGenre ? eq(bucket.primaryGenre, primaryGenre) : isNull(bucket.primaryGenre));
+
+    let best: { id: number; sim: number } | null = null;
+    for (const b of candidates) {
+      const sim = cosine(embedding, b.centroid);
+      if (!best || sim > best.sim) best = { id: b.id, sim };
+    }
+
+    const hadAudioFeatures = t.audioFeatures !== null;
+
+    if (best && best.sim >= threshold) {
+      const joined = await joinBucketLocked(
+        tx,
+        trackId,
+        t.audioFeatures,
+        embedding,
+        best.id,
+        best.sim,
+        { primaryGenre, hadAudioFeatures },
+      );
+      if (joined) return joined;
+      // The bucket vanished between candidate read and lock (deleted by an
+      // admin merge/split, say). Fall through and spawn instead.
+    }
+
+    return spawnBucketInTx(tx, trackId, t.audioFeatures, embedding, primaryGenre, {
+      coldStartSeed,
       hadAudioFeatures,
     });
-  }
-  return spawnBucket(db, t.id, t.audioFeatures, embedding, primaryGenre, {
-    coldStartSeed: options.coldStartSeed ?? false,
-    hadAudioFeatures,
   });
 }
 
-async function joinBucket(
-  db: Database,
+async function joinBucketLocked(
+  tx: Tx,
   trackId: number,
   audio: AudioFeatures | null,
   embedding: number[],
-  target: { id: number; centroid: number[]; memberCount: number; featureStats: FeatureStats },
+  bucketId: number,
   similarity: number,
   ctx: { primaryGenre: string | null; hadAudioFeatures: boolean },
-): Promise<AssignResult> {
-  const newCentroid = updateCentroid(target.centroid, target.memberCount, embedding);
-  const newFeatureStats = audio
-    ? addFeatureSample(target.featureStats, audio)
-    : target.featureStats;
+): Promise<AssignResult | null> {
+  // Row-level lock serializes concurrent joins to the same bucket. Without
+  // this, two callers race: both read memberCount=N, both write N+1, the
+  // last writer wins, and the centroid silently reflects only one sample.
+  const [locked] = await tx
+    .select({
+      id: bucket.id,
+      centroid: bucket.centroid,
+      memberCount: bucket.memberCount,
+      featureStats: bucket.featureStats,
+    })
+    .from(bucket)
+    .where(eq(bucket.id, bucketId))
+    .for("update")
+    .limit(1);
+  if (!locked) return null;
 
-  return db.transaction(async (tx) => {
-    await tx
-      .update(bucket)
-      .set({
-        centroid: newCentroid,
-        featureStats: newFeatureStats,
-        memberCount: target.memberCount + 1,
-        updatedAt: sql`NOW()`,
-      })
-      .where(eq(bucket.id, target.id));
+  const newCentroid = updateCentroid(locked.centroid, locked.memberCount, embedding);
+  const newFeatureStats: FeatureStats = audio
+    ? addFeatureSample(locked.featureStats, audio)
+    : locked.featureStats;
 
-    await tx
-      .insert(bucketMember)
-      .values({ bucketId: target.id, trackId, similarityAtJoin: similarity })
-      .onConflictDoNothing({ target: [bucketMember.bucketId, bucketMember.trackId] });
+  await tx
+    .update(bucket)
+    .set({
+      centroid: newCentroid,
+      featureStats: newFeatureStats,
+      memberCount: locked.memberCount + 1,
+      updatedAt: sql`NOW()`,
+    })
+    .where(eq(bucket.id, locked.id));
 
-    return {
-      trackId,
-      bucketId: target.id,
-      similarity,
-      spawned: false,
-      alreadyAssigned: false,
-      primaryGenre: ctx.primaryGenre,
-      hadAudioFeatures: ctx.hadAudioFeatures,
-    };
-  });
+  // No onConflict here: a unique-violation on track_id means we lost a race
+  // and need to retry the outer probe (handled by assignTrack's retry loop).
+  await tx
+    .insert(bucketMember)
+    .values({ bucketId: locked.id, trackId, similarityAtJoin: similarity });
+
+  return {
+    trackId,
+    bucketId: locked.id,
+    similarity,
+    spawned: false,
+    alreadyAssigned: false,
+    primaryGenre: ctx.primaryGenre,
+    hadAudioFeatures: ctx.hadAudioFeatures,
+  };
 }
 
-async function spawnBucket(
-  db: Database,
+async function spawnBucketInTx(
+  tx: Tx,
   trackId: number,
   audio: AudioFeatures | null,
   embedding: number[],
@@ -181,33 +250,33 @@ async function spawnBucket(
   ctx: { coldStartSeed: boolean; hadAudioFeatures: boolean },
 ): Promise<AssignResult> {
   const seedStats = audio ? addFeatureSample(emptyFeatureStats(), audio) : emptyFeatureStats();
-  return db.transaction(async (tx) => {
-    const [row] = await tx
-      .insert(bucket)
-      .values({
-        name: defaultBucketName(primaryGenre),
-        centroid: embedding,
-        featureStats: seedStats,
-        memberCount: 1,
-        primaryGenre,
-        isColdStartSeed: ctx.coldStartSeed,
-      })
-      .returning({ id: bucket.id });
-    if (!row) throw new Error("bucket insert returned no rows");
 
-    await tx
-      .insert(bucketMember)
-      .values({ bucketId: row.id, trackId, similarityAtJoin: 1.0 })
-      .onConflictDoNothing({ target: [bucketMember.bucketId, bucketMember.trackId] });
-
-    return {
-      trackId,
-      bucketId: row.id,
-      similarity: 1.0,
-      spawned: true,
-      alreadyAssigned: false,
+  const [row] = await tx
+    .insert(bucket)
+    .values({
+      name: defaultBucketName(primaryGenre),
+      centroid: embedding,
+      featureStats: seedStats,
+      memberCount: 1,
       primaryGenre,
-      hadAudioFeatures: ctx.hadAudioFeatures,
-    };
-  });
+      isColdStartSeed: ctx.coldStartSeed,
+    })
+    .returning({ id: bucket.id });
+  if (!row) throw new Error("bucket insert returned no rows");
+
+  // Unique on bucket_member.track_id is the race-loser detector. If a
+  // concurrent caller already inserted membership for this track, this
+  // insert raises 23505 and the entire transaction (including the bucket
+  // row above) rolls back — no orphan bucket left behind.
+  await tx.insert(bucketMember).values({ bucketId: row.id, trackId, similarityAtJoin: 1.0 });
+
+  return {
+    trackId,
+    bucketId: row.id,
+    similarity: 1.0,
+    spawned: true,
+    alreadyAssigned: false,
+    primaryGenre,
+    hadAudioFeatures: ctx.hadAudioFeatures,
+  };
 }

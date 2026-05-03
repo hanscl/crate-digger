@@ -242,3 +242,85 @@ describe("assignTrack — spawn-or-join contract", () => {
     expect(members).toHaveLength(1);
   });
 });
+
+describe("assignTrack — concurrency", () => {
+  it("two concurrent calls for the same trackId leave exactly one membership row", async () => {
+    // Without the unique index on bucket_member.track_id and an in-tx
+    // probe, both callers would observe "no membership" and create two
+    // separate buckets containing the same track. The unique constraint
+    // makes the loser's tx roll back; the retry loop finds the winner's
+    // membership and returns alreadyAssigned.
+    const id = await insertTrack({
+      title: "Concurrent same-track",
+      audioFeatures: audio(),
+      genres: ["rock"],
+    });
+
+    const [a, b] = await Promise.all([
+      assignTrack(db, id, { spawnThreshold: SPAWN_THRESHOLD }),
+      assignTrack(db, id, { spawnThreshold: SPAWN_THRESHOLD }),
+    ]);
+
+    expect(a.bucketId).toBe(b.bucketId);
+    const winners = [a, b].filter((r) => !r.alreadyAssigned);
+    const losers = [a, b].filter((r) => r.alreadyAssigned);
+    expect(winners).toHaveLength(1);
+    expect(losers).toHaveLength(1);
+
+    const buckets = await db.select().from(schema.bucket);
+    expect(buckets).toHaveLength(1);
+    expect(buckets[0]?.memberCount).toBe(1);
+    const members = await db.select().from(schema.bucketMember);
+    expect(members).toHaveLength(1);
+  });
+
+  it("two concurrent joins to the same bucket increment memberCount and centroid correctly", async () => {
+    // Without the SELECT … FOR UPDATE on the chosen bucket, both txs read
+    // memberCount=1, both compute the new centroid against count=1, both
+    // commit memberCount=2 — one sample is silently lost. The lock makes
+    // them serialize so the second tx Welford-updates against count=2 and
+    // ends at 3. Asserts both counts and that the centroid matches the
+    // batch mean of all three embeddings.
+    const seedAudio = audio({ tempo: 120, energy: 0.5 });
+    const seedId = await insertTrack({
+      title: "Seed",
+      audioFeatures: seedAudio,
+      genres: ["rock"],
+    });
+    await assignTrack(db, seedId, { spawnThreshold: SPAWN_THRESHOLD });
+
+    const audioA = audio({ tempo: 122, energy: 0.55 });
+    const audioB = audio({ tempo: 124, energy: 0.5, valence: 0.55 });
+    const idA = await insertTrack({ title: "A", audioFeatures: audioA, genres: ["rock"] });
+    const idB = await insertTrack({ title: "B", audioFeatures: audioB, genres: ["rock"] });
+
+    const [resA, resB] = await Promise.all([
+      assignTrack(db, idA, { spawnThreshold: SPAWN_THRESHOLD }),
+      assignTrack(db, idB, { spawnThreshold: SPAWN_THRESHOLD }),
+    ]);
+    expect(resA.bucketId).toBe(resB.bucketId);
+    expect(resA.alreadyAssigned).toBe(false);
+    expect(resB.alreadyAssigned).toBe(false);
+
+    const [theBucket] = await db.select().from(schema.bucket);
+    expect(theBucket?.memberCount).toBe(3);
+    expect(theBucket?.featureStats.count).toBe(3);
+
+    const expectedTempo = (seedAudio.tempo + audioA.tempo + audioB.tempo) / 3;
+    expect(theBucket?.featureStats.mean.tempo).toBeCloseTo(expectedTempo, 6);
+
+    const embeddings = [seedAudio, audioA, audioB].map((af) =>
+      buildEmbedding({ audioFeatures: af, genres: ["rock"] }),
+    );
+    const dim = embeddings[0]!.length;
+    const expectedCentroid: number[] = Array.from({ length: dim }, (_v, i) => {
+      let s = 0;
+      for (const e of embeddings) s += e[i] ?? 0;
+      return s / embeddings.length;
+    });
+    const persisted = theBucket!.centroid;
+    for (let i = 0; i < dim; i++) {
+      expect(persisted[i]).toBeCloseTo(expectedCentroid[i] ?? 0, 6);
+    }
+  });
+});
