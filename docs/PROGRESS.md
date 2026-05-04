@@ -73,7 +73,44 @@ Phase tracker. Update at the end of every phase. Newest at the top.
 
 ## Phase 4 — Ranking + surfacing
 
-- **Status:** pending
+- **Status:** review
+- **Branch:** `phase-4-ranking`
+- **PR:** https://github.com/hanscl/crate-digger/pull/5
+- **Scope landed:** pure refill ranker (`src/lib/ranking/refill.ts`) — `score
+= mean cosine(c, keep_i) − λ · mean cosine(c, dislike_i)`; broad classifier
+  (`src/lib/ranking/broad.ts`) — hand-rolled batch logistic regression on the
+  64-dim embedding with L2 reg, untrained-fallback to a class prior so
+  surfacing works on day 0; model versioning (`src/lib/ranking/version.ts`)
+  with `bumpModelVersion`, `ensureActiveModelVersion`,
+  `getActiveModelVersion`, `getActiveConfig`, lineage walker — independent
+  refill/broad version chains, `parent_id` lineage, `app_config.active_*`
+  pointers swung in a single transaction; surfacing pipeline
+  (`src/lib/surfacing/pipeline.ts`) — novelty knob mixes refill/broad quotas,
+  daily cap + queue ceiling enforced HERE (Constraint #5), source-mix
+  bookkeeping as soft preference (never a hard filter), refill phase
+  round-robins across refillable buckets and surfaces top-1 per slot;
+  surface_event writer (`src/lib/surfacing/log.ts`) — every surface_event
+  records the FULL candidate pool with sub-scores (Constraint #2 — the eval
+  substrate). 25 new tests across `tests/ranking/{refill,broad}.test.ts`,
+  `tests/surfacing/{pipeline,log}.test.ts`: refill/broad math (pure), Welford
+  log of constraints (eval substrate, soft penalty, daily cap at surfacing,
+  counterfactual replay determinism within float32 tolerance, model_version
+  attribution). 80 tests total, all green.
+- **Notes for future phases:**
+  - Refill keeps = bucket members (cold-start seeds count as anchors). When
+    Phase 5 lands explicit keep ratings, narrow `loadKeepEmbeddingsForBucket`
+    to "members with explicit keep ratings"; the function shape stays.
+  - Broad classifier serializes weights into `model_version.config` as
+    `{weights, bias, trainedSampleCount, prior}`. Phase 5's retrain workflow
+    calls `trainBroadClassifier` then `bumpModelVersion(db, "broad", config)`.
+  - Counterfactual replay reproduces persisted scores within ~1e-5 due to
+    pgvector's float32 storage; all replay tests use `toBeCloseTo(_, 5)`.
+  - `runSurfacingBatch` accepts a candidate pool from the caller — Phase 6's
+    `dailyPipeline` workflow chains ingestion → surfacing without surfacing
+    reaching back into ingestion.
+  - `ensureActiveModelVersion` is the single bootstrap seam — it
+    idempotently mints initial `model_version` rows on first surfacing run
+    and updates `app_config.active_*_version_id` pointers.
 
 ## Phase 5 — Feedback + evals
 
