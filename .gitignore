@@ -20,4 +20,4 @@ coverage
 *.tsbuildinfo
 
 # Claude
-.claude/worktrees
+.claude/
