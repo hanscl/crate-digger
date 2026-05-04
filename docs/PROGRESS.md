@@ -114,7 +114,64 @@ Phase tracker. Update at the end of every phase. Newest at the top.
 
 ## Phase 5 — Feedback + evals
 
-- **Status:** pending
+- **Status:** review
+- **Branch:** `phase-5-feedback`
+- **Scope landed:** rating ingestion (`src/lib/feedback/ingest-rating.ts`)
+  — Constraint #3 attribution by reading `surface_event.model_version_id`
+  pinned at surface time, falls back to active broad version for
+  cold-start / import paths, increments `bucket.dislikeCount` only on
+  dislike of a bucket member; broad retrain entrypoint
+  (`src/lib/feedback/retrain.ts`) — pulls keep/dislike samples in a window,
+  short-circuits `no_samples` and `single_class` cases without polluting
+  the version chain, otherwise calls `trainBroadClassifier` +
+  `bumpModelVersion("broad", ...)` with training-window stamps; merge/split
+  recommendation heuristics (`src/lib/bucketing/recommendations.ts`) — same-
+  primary-genre cosine ≥ `mergeThreshold` for merges, dislike rate ≥
+  `splitDislikeRate` AND member count ≥ 4 for splits, idempotent dedupe by
+  (kind, sorted bucketIds), never auto-applies (Constraint #7); eval
+  metrics (`src/lib/evals/metrics.ts`) — `keepRate` (overall + by ranker /
+  version / source with two-query design avoiding cross-source double
+  counting), `precisionAtN` over N most recent surfaced events,
+  `bucketPurity` = 1 − dislikeRate, `genreEntropy` (Shannon, raw + ln(k)
+  normalized), `loadKpis` aggregate; counterfactual replay
+  (`src/lib/evals/counterfactual.ts`) — re-scores historical
+  `surface_event.candidate_pool` rows under a target version's config,
+  reports per-event agreement vs original winner + agreement-rate +
+  agreed-and-kept / disagreed-and-disliked counters, hard cap on event
+  scan size (default 500). Schema additions: `RatingDecision`,
+  `RecommendationKind`, `RecommendationStatus`, `BucketRecommendation`
+  type exports.
+  Tests (32 new, 112 total green): `tests/feedback/ingest-rating.test.ts`
+  (5 cases — Constraint #3 attribution across a mid-flight retrain,
+  active-version fallback, missing-event guard, dislike counter on
+  member, no-op on keep / non-member); `tests/feedback/retrain.test.ts`
+  (3 cases — no-samples + single-class skip, balanced retrain bumps
+  version with weights set); `tests/bucketing/recommendations.test.ts`
+  (6 cases — merge same-genre, no merge across genre, merge idempotency,
+  split high dislike rate, no split for tiny buckets, split idempotency);
+  `tests/evals/metrics.test.ts` (5 cases — keep-rate by ranker/source/
+  version, P@N kept count, P@N empty, bucket purity math, genre entropy
+  zero/uniform); `tests/evals/counterfactual.test.ts` (3 cases — same-
+  version full agreement at cap=1, weight-shift produces different
+  winner with agreementRate < 1, kind mismatch yields zero replayed).
+- **Notes for future phases:**
+  - `retrainBroad` reads ratings unconditionally from the global pool
+    (it learns the user's CURRENT taste) — Constraint #3 only governs
+    eval attribution, not training-set selection. Phase 6's daily cron
+    calls `retrainBroad(db)` directly; the Console "Retrain now" button
+    in Phase 7 wraps the same entrypoint.
+  - `counterfactualReplay` re-runs the ranker top-1-per-event; the
+    surfacing pipeline is top-K. The same-version sanity test pins
+    `dailyCap=1` on purpose — at higher caps, replay-vs-pipeline rank-
+    vs-pick gap is inherent (the Analyzer screen will model both views).
+  - Refill replay rebuilds the keep set from the bucket's CURRENT members
+    (we don't snapshot membership at surface time). That drift is
+    accepted — the question replay answers is "what would the new
+    ranker do TODAY against this pool", not "what would it have done at
+    the original surface moment."
+  - `evaluateBucketRecommendations` is currently called manually
+    (admin trigger). Phase 6 will likely fan it out from the daily
+    cron alongside retrain.
 
 ## Phase 6 — Mastra
 

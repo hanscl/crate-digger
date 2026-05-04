@@ -277,6 +277,10 @@ export type CandidatePoolEntry = {
   surfaced: boolean;
 };
 
+export type RatingDecision = (typeof ratingDecisionEnum.enumValues)[number];
+export type RecommendationKind = (typeof recommendationKindEnum.enumValues)[number];
+export type RecommendationStatus = (typeof recommendationStatusEnum.enumValues)[number];
+
 export type Track = typeof track.$inferSelect;
 export type NewTrack = typeof track.$inferInsert;
 export type Bucket = typeof bucket.$inferSelect;
@@ -288,3 +292,5 @@ export type NewSurfaceEvent = typeof surfaceEvent.$inferInsert;
 export type ModelVersion = typeof modelVersion.$inferSelect;
 export type NewModelVersion = typeof modelVersion.$inferInsert;
 export type AppConfig = typeof appConfig.$inferSelect;
+export type BucketRecommendation = typeof bucketRecommendation.$inferSelect;
+export type NewBucketRecommendation = typeof bucketRecommendation.$inferInsert;
