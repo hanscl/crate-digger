@@ -1,3 +1,4 @@
+import { createAnthropic } from "@ai-sdk/anthropic";
 import { Agent } from "@mastra/core/agent";
 import { z } from "zod";
 import type { Env } from "@/server/env";
@@ -51,7 +52,8 @@ export const playlistParserAgent = new Agent({
   model: "anthropic/claude-haiku-4-5",
 });
 
-const SEPARATOR_RE = /\s*[-–—:]\s*|\s+by\s+/i;
+const DASH_COLON_RE = /\s*[-–—:]\s*/;
+const BY_RE = /\s+by\s+/i;
 const LEADING_RE = /^\s*(?:\d+[.)]\s*|[-*•]\s+)/;
 
 function deterministicParse(raw: string): ParsedPlaylist {
@@ -59,11 +61,31 @@ function deterministicParse(raw: string): ParsedPlaylist {
   for (const line of raw.split(/\r?\n/)) {
     const cleaned = line.replace(LEADING_RE, "").trim();
     if (!cleaned) continue;
-    const split = cleaned.split(SEPARATOR_RE);
-    if (split.length < 2) continue;
-    const artist = split[0]?.trim();
-    const title = split.slice(1).join(" - ").trim();
-    if (!artist || !title) continue;
+    // Dash/colon separators take precedence: "Artist - Title" is the dominant
+    // convention. The "by" form ("Title by Artist") inverts the sides, so
+    // detect which separator matched and assign accordingly.
+    let left: string | undefined;
+    let right: string | undefined;
+    let separator: "dash" | "by" | null = null;
+    const dashSplit = cleaned.split(DASH_COLON_RE);
+    if (dashSplit.length >= 2) {
+      left = dashSplit[0];
+      right = dashSplit.slice(1).join(" - ");
+      separator = "dash";
+    } else {
+      const bySplit = cleaned.split(BY_RE);
+      if (bySplit.length >= 2) {
+        left = bySplit[0];
+        right = bySplit.slice(1).join(" by ");
+        separator = "by";
+      }
+    }
+    if (!separator) continue;
+    const leftTrimmed = left?.trim();
+    const rightTrimmed = right?.trim();
+    if (!leftTrimmed || !rightTrimmed) continue;
+    const [artist, title] =
+      separator === "by" ? [rightTrimmed, leftTrimmed] : [leftTrimmed, rightTrimmed];
     tracks.push({ artist, title });
     if (tracks.length >= 200) break;
   }
@@ -74,7 +96,14 @@ export async function parsePlaylistText(raw: string, env: Env): Promise<ParsedPl
   if (!raw.trim()) return { tracks: [] };
   if (!env.ANTHROPIC_API_KEY) return deterministicParse(raw);
   try {
-    const result = await playlistParserAgent.generate(raw, {
+    const model = createAnthropic({ apiKey: env.ANTHROPIC_API_KEY })("claude-haiku-4-5");
+    const agent = new Agent({
+      id: "playlist-parser",
+      name: "Playlist Parser",
+      instructions: INSTRUCTIONS,
+      model,
+    });
+    const result = await agent.generate(raw, {
       structuredOutput: { schema: PARSE_SCHEMA },
     });
     return PARSE_SCHEMA.parse(result.object);

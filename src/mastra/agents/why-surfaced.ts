@@ -1,3 +1,4 @@
+import { createAnthropic } from "@ai-sdk/anthropic";
 import { Agent } from "@mastra/core/agent";
 import { z } from "zod";
 import type { CandidatePoolEntry } from "@/db/schema";
@@ -91,7 +92,14 @@ ${subLines || "  (none)"}`;
 export async function explainWhySurfaced(input: WhySurfacedInput, env: Env): Promise<Explanation> {
   if (!env.ANTHROPIC_API_KEY) return fallbackExplanation(input);
   try {
-    const result = await whySurfacedAgent.generate(buildPrompt(input), {
+    const model = createAnthropic({ apiKey: env.ANTHROPIC_API_KEY })("claude-haiku-4-5");
+    const agent = new Agent({
+      id: "why-surfaced",
+      name: "Why Surfaced",
+      instructions: INSTRUCTIONS,
+      model,
+    });
+    const result = await agent.generate(buildPrompt(input), {
       structuredOutput: { schema: EXPLANATION_SCHEMA },
     });
     return EXPLANATION_SCHEMA.parse(result.object);

@@ -45,6 +45,13 @@ describe("bucket-namer fallback", () => {
     const result = await nameBucket({ primaryGenre: null, sampleTracks: [] }, noKeyEnv);
     expect(result.name).toBe("Unnamed (auto)");
   });
+
+  it("truncates long primary genres so the fallback name fits the schema", async () => {
+    const longGenre = "very-long-genre-name-that-exceeds-the-schema-limit";
+    const result = await nameBucket({ primaryGenre: longGenre, sampleTracks: [] }, noKeyEnv);
+    expect(result.name.length).toBeLessThanOrEqual(40);
+    expect(result.name.endsWith(" (auto)")).toBe(true);
+  });
 });
 
 describe("why-surfaced fallback", () => {
@@ -97,9 +104,9 @@ describe("playlist-parser fallback", () => {
     expect(result.tracks[2]).toEqual({ artist: "My Bloody Valentine", title: "Only Shallow" });
   });
 
-  it("parses a 'by' separator", async () => {
+  it("parses a 'by' separator with title-first / artist-second convention", async () => {
     const result = await parsePlaylistText("Wonderwall by Oasis", noKeyEnv);
-    expect(result.tracks).toEqual([{ artist: "Wonderwall", title: "Oasis" }]);
+    expect(result.tracks).toEqual([{ artist: "Oasis", title: "Wonderwall" }]);
   });
 
   it("ignores blank and unparseable lines", async () => {

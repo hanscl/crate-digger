@@ -40,23 +40,29 @@ export function startCron(deps: { db: Database; env: Env }): CronHandle {
   const disabled =
     process.env.CRON_DISABLED === "1" || process.env.CRON_DISABLED?.toLowerCase() === "true";
 
+  // Manual triggers (Console "Run now") need to observe failures, so the
+  // core path lets errors propagate. The cron entry below wraps it in a
+  // catch so a single bad run doesn't kill the schedule.
   const runDailyPipelineNow = async () => {
+    const requestContext = buildRequestContext(deps);
+    const workflow = mastra.getWorkflow("dailyPipeline");
+    const run = await workflow.createRun();
+    // Mastra's per-run RequestContext type is unknown-keyed; we narrow to
+    // our typed shape inside step handlers via the `getDb` / `getEnv`
+    // helpers in `src/mastra/runtime.ts`.
+    const result = await run.start({
+      inputData: {},
+      requestContext: requestContext as unknown as Parameters<
+        typeof run.start
+      >[0]["requestContext"],
+    });
+    console.log("[cron] daily-pipeline finished", { status: result.status });
+  };
+
+  const runDailyPipelineScheduled = async () => {
     try {
-      const requestContext = buildRequestContext(deps);
-      const workflow = mastra.getWorkflow("dailyPipeline");
-      const run = await workflow.createRun();
-      // Mastra's per-run RequestContext type is unknown-keyed; we narrow to
-      // our typed shape inside step handlers via the `getDb` / `getEnv`
-      // helpers in `src/mastra/runtime.ts`.
-      const result = await run.start({
-        inputData: {},
-        requestContext: requestContext as unknown as Parameters<
-          typeof run.start
-        >[0]["requestContext"],
-      });
-      console.log("[cron] daily-pipeline finished", { status: result.status });
+      await runDailyPipelineNow();
     } catch (err) {
-      // Swallowing here keeps the cron schedule alive across one bad run.
       // Stack trace lands in the logger; observability lives outside the loop.
       console.error("[cron] daily-pipeline failed", err);
     }
@@ -64,7 +70,7 @@ export function startCron(deps: { db: Database; env: Env }): CronHandle {
 
   if (!disabled) {
     const daily = nodeCron.schedule(DAILY_CRON, () => {
-      void runDailyPipelineNow();
+      void runDailyPipelineScheduled();
     });
     tasks.push({ stop: () => daily.stop() });
 

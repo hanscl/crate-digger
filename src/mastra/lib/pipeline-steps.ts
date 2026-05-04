@@ -46,11 +46,7 @@ export async function pullAndEnrichTrending(
   options: { limitPerSource?: number; adapters?: readonly SourceAdapter[] } = {},
 ): Promise<PullEnrichSummary> {
   const limit = options.limitPerSource ?? DEFAULT_PER_SOURCE_LIMIT;
-  const adapters =
-    options.adapters ??
-    createDefaultRegistry()
-      .available(env)
-      .map((a) => a);
+  const adapters = options.adapters ?? createDefaultRegistry().available(env);
 
   const perSource: { source: SourceId; pulled: number }[] = [];
   const resolvedIds = new Set<number>();

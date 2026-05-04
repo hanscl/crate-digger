@@ -1,3 +1,4 @@
+import { createAnthropic } from "@ai-sdk/anthropic";
 import { Agent } from "@mastra/core/agent";
 import { z } from "zod";
 import type { Env } from "@/server/env";
@@ -57,12 +58,15 @@ export const bucketNamerAgent = new Agent({
 });
 
 const FALLBACK_COLOR = "#22d3ee"; // matches `tokens.css` accent
+const FALLBACK_SUFFIX = " (auto)";
+const NAME_MAX = 40;
 
 function fallbackName(input: BucketNamerInput): BucketName {
   const base = input.primaryGenre
     ? input.primaryGenre.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
     : "Unnamed";
-  return { name: `${base} (auto)`, color: FALLBACK_COLOR };
+  const truncated = base.slice(0, NAME_MAX - FALLBACK_SUFFIX.length).trimEnd();
+  return NAME_SCHEMA.parse({ name: `${truncated}${FALLBACK_SUFFIX}`, color: FALLBACK_COLOR });
 }
 
 function buildPrompt(input: BucketNamerInput): string {
@@ -83,7 +87,17 @@ function buildPrompt(input: BucketNamerInput): string {
 export async function nameBucket(input: BucketNamerInput, env: Env): Promise<BucketName> {
   if (!env.ANTHROPIC_API_KEY) return fallbackName(input);
   try {
-    const result = await bucketNamerAgent.generate(buildPrompt(input), {
+    // Bind the apiKey from `env` to the SDK so the gate above and the actual
+    // call agree on a single source of truth (the module-scope agent above
+    // is registered for Mastra Studio and reads `process.env`).
+    const model = createAnthropic({ apiKey: env.ANTHROPIC_API_KEY })("claude-haiku-4-5");
+    const agent = new Agent({
+      id: "bucket-namer",
+      name: "Bucket Namer",
+      instructions: INSTRUCTIONS,
+      model,
+    });
+    const result = await agent.generate(buildPrompt(input), {
       structuredOutput: { schema: NAME_SCHEMA },
     });
     return NAME_SCHEMA.parse(result.object);
