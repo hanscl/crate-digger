@@ -226,7 +226,14 @@ export const bucketRecommendation = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
   },
-  (t) => [index("bucket_recommendation_status_idx").on(t.status)],
+  (t) => [
+    index("bucket_recommendation_status_idx").on(t.status),
+    // Race-safe dedupe: the heuristic stores `bucketIds` already sorted
+    // ascending, so two concurrent runs both attempting to insert the same
+    // (kind, bucketIds) tuple collide on this index. The insert path uses
+    // ON CONFLICT DO NOTHING to swallow the collision atomically.
+    uniqueIndex("bucket_recommendation_kind_bucket_ids_unique_idx").on(t.kind, t.bucketIds),
+  ],
 );
 
 export const appConfig = pgTable(

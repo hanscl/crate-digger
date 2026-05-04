@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import type { Database } from "@/db/client";
 import {
   bucket,
@@ -9,7 +9,7 @@ import {
   type RatingDecision,
   surfaceEvent,
 } from "@/db/schema";
-import { ensureActiveModelVersion } from "@/lib/ranking/version";
+import { ensureActiveModelVersionInTx } from "@/lib/ranking/version";
 
 /**
  * Constraint #3 (ratings tag the surface-time model_version): the version
@@ -71,8 +71,10 @@ export async function ingestRating(
     } else {
       // Cold-start path: no surface event yet (e.g., the very first rating in
       // a fresh install), and the caller didn't pin a version. Bootstrap the
-      // active broad version — it's the chain that retrain consumes.
-      const v = await ensureActiveModelVersion(db, "broad");
+      // active broad version — it's the chain that retrain consumes. Reuse
+      // the ambient tx so the bootstrap rolls back with the rating insert if
+      // anything below fails.
+      const v = await ensureActiveModelVersionInTx(tx, "broad");
       resolvedVersionId = v.id;
     }
 
@@ -93,11 +95,29 @@ export async function ingestRating(
         .where(eq(bucketMember.trackId, input.trackId))
         .limit(1);
       if (member) {
-        await tx
-          .update(bucket)
-          .set({ dislikeCount: sql`${bucket.dislikeCount} + 1`, updatedAt: sql`NOW()` })
-          .where(eq(bucket.id, member.bucketId));
-        bucketDislikeIncremented = true;
+        // Only count the FIRST dislike per track. dislikeCount feeds the split
+        // heuristic as `dislikeCount / memberCount` — counting repeat dislikes
+        // (same track surfaced + disliked across multiple events) would inflate
+        // the rate above 1.0 and corrupt bucket purity. We check for a prior
+        // dislike on this track other than the row we just inserted.
+        const [prior] = await tx
+          .select({ id: rating.id })
+          .from(rating)
+          .where(
+            and(
+              eq(rating.trackId, input.trackId),
+              eq(rating.decision, "dislike"),
+              ne(rating.id, row.id),
+            ),
+          )
+          .limit(1);
+        if (!prior) {
+          await tx
+            .update(bucket)
+            .set({ dislikeCount: sql`${bucket.dislikeCount} + 1`, updatedAt: sql`NOW()` })
+            .where(eq(bucket.id, member.bucketId));
+          bucketDislikeIncremented = true;
+        }
       }
     }
 

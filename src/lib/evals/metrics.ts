@@ -1,4 +1,4 @@
-import { and, eq, gte, isNotNull, lte } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, lte } from "drizzle-orm";
 import type { Database } from "@/db/client";
 import { bucket, rating, surfaceEvent, track, trackSource } from "@/db/schema";
 import type { RankerKind } from "@/lib/ranking/types";
@@ -49,7 +49,10 @@ export type KeepRateBreakdown = {
 };
 
 export async function keepRate(db: Database, window: Window = {}): Promise<KeepRateBreakdown> {
-  const conditions = buildRatingWindowConditions(window);
+  // KPIs measure surfacing performance — exclude imported / manually-rated
+  // tracks (surfaceEventId IS NULL) so the dashboard only credits ratings
+  // that came from a surface event the ranker chose.
+  const conditions = [...buildRatingWindowConditions(window), isNotNull(rating.surfaceEventId)];
 
   // Two queries on purpose: joining rating ↔ track_source expands a rating
   // row once per source the track was sighted in. The overall / ranker /
@@ -64,8 +67,8 @@ export async function keepRate(db: Database, window: Window = {}): Promise<KeepR
       surfaceRanker: surfaceEvent.rankerKind,
     })
     .from(rating)
-    .leftJoin(surfaceEvent, eq(surfaceEvent.id, rating.surfaceEventId))
-    .where(conditions ? and(...conditions) : undefined);
+    .innerJoin(surfaceEvent, eq(surfaceEvent.id, rating.surfaceEventId))
+    .where(and(...conditions));
 
   const sourceRows = await db
     .select({
@@ -75,7 +78,7 @@ export async function keepRate(db: Database, window: Window = {}): Promise<KeepR
     })
     .from(rating)
     .innerJoin(trackSource, eq(trackSource.trackId, rating.trackId))
-    .where(conditions ? and(...conditions) : undefined);
+    .where(and(...conditions));
 
   const overall = emptyDim();
   const byRanker: Record<RankerKind, KeepRateByDimension> = {
@@ -149,18 +152,25 @@ export async function precisionAtN(
   if (top.length === 0) return { n, surfacedCount: 0, keptCount: 0, precision: 0 };
 
   const eventIds = top.map((e) => e.id);
+  // Newest-first per (surfaceEventId, ratedAt) so that for events the user
+  // re-rated (defer → keep, dislike → keep, etc.) the most recent decision
+  // wins. inArray filters to just the top-N events instead of full-table.
   const ratedRows = await db
     .select({
       surfaceEventId: rating.surfaceEventId,
       decision: rating.decision,
+      ratedAt: rating.ratedAt,
     })
-    .from(rating);
-  const keepBySurfaceId = new Set<number>();
+    .from(rating)
+    .where(inArray(rating.surfaceEventId, eventIds))
+    .orderBy(desc(rating.ratedAt), desc(rating.id));
+  const latestDecisionBySurfaceId = new Map<number, "keep" | "dislike" | "defer" | "neutral">();
   for (const r of ratedRows) {
     if (r.surfaceEventId === null) continue;
-    if (r.decision === "keep") keepBySurfaceId.add(r.surfaceEventId);
+    if (latestDecisionBySurfaceId.has(r.surfaceEventId)) continue;
+    latestDecisionBySurfaceId.set(r.surfaceEventId, r.decision);
   }
-  const kept = eventIds.filter((id) => keepBySurfaceId.has(id)).length;
+  const kept = eventIds.filter((id) => latestDecisionBySurfaceId.get(id) === "keep").length;
   return { n, surfacedCount: top.length, keptCount: kept, precision: kept / top.length };
 }
 
@@ -289,7 +299,7 @@ function buildRatingWindowConditions(window: Window) {
   const conds = [];
   if (window.start) conds.push(gte(rating.ratedAt, window.start));
   if (window.end) conds.push(lte(rating.ratedAt, window.end));
-  return conds.length > 0 ? conds : null;
+  return conds;
 }
 
 function buildSurfaceWindowConditions(window: Window) {

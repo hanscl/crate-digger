@@ -150,4 +150,31 @@ describe("retrainBroad", () => {
     expect(active?.id).toBe(result.modelVersion!.id);
     expect(active?.parentId).toBe(bootstrap.id);
   });
+
+  it("dedupes by trackId — the latest rating wins on re-rated tracks", async () => {
+    // A track rated 'keep' then 'dislike' must contribute exactly one
+    // sample with the latest decision. Without dedup the trainer sees two
+    // contradictory rows with identical embeddings and convergence suffers.
+    const flipper = await seedTrack({
+      title: "Flipper",
+      audioFeatures: mkAudio({ energy: 0.85, valence: 0.8 }),
+      genres: ["rock"],
+    });
+    await ingestRating(db, { trackId: flipper, decision: "keep" });
+    // Force a strictly later ratedAt so the dedupe order is unambiguous.
+    await new Promise((r) => setTimeout(r, 10));
+    await ingestRating(db, { trackId: flipper, decision: "dislike" });
+
+    // Add an unambiguous keep so the classifier has both classes and can train.
+    const stableKeep = await seedTrack({
+      title: "Stable-keep",
+      audioFeatures: mkAudio({ energy: 0.9, valence: 0.85 }),
+      genres: ["rock"],
+    });
+    await ingestRating(db, { trackId: stableKeep, decision: "keep" });
+
+    const result = await retrainBroad(db, { iterations: 50 });
+    // 2 unique tracks → 2 samples (not 3, despite 3 rating rows).
+    expect(result.sampleCount).toBe(2);
+  });
 });

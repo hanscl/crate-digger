@@ -133,6 +133,8 @@ async function loadTrainingSamples(
 
   const rows = await db
     .select({
+      trackId: rating.trackId,
+      ratedAt: rating.ratedAt,
       decision: rating.decision,
       embedding: track.embedding,
     })
@@ -141,14 +143,28 @@ async function loadTrainingSamples(
     .where(and(...conditions));
 
   // A track can be rated more than once (user changes mind). We use the
-  // freshest per-track signal: drizzle returns rows ordered by table scan;
-  // dedupe manually on track_id, last-write-wins, by sorting on rated_at
-  // before mapping. Cheap at our scale (rating count is bounded by what one
-  // user can label).
-  return rows
-    .filter(
-      (r): r is { decision: "keep" | "dislike"; embedding: number[] } =>
-        r.embedding !== null && (r.decision === "keep" || r.decision === "dislike"),
-    )
-    .map((r) => ({ embedding: r.embedding, label: r.decision === "keep" ? 1 : 0 }));
+  // freshest per-track signal: dedupe by trackId, last-write-wins by
+  // ratedAt. Without this a "keep then dislike" track would contribute two
+  // contradictory samples with identical embeddings — bad for convergence.
+  // Cheap at our scale (rating count is bounded by what one user can label).
+  const latestByTrack = new Map<
+    number,
+    { decision: "keep" | "dislike"; embedding: number[]; ratedAt: Date }
+  >();
+  for (const r of rows) {
+    if (r.embedding === null) continue;
+    if (r.decision !== "keep" && r.decision !== "dislike") continue;
+    const prior = latestByTrack.get(r.trackId);
+    if (!prior || r.ratedAt.getTime() > prior.ratedAt.getTime()) {
+      latestByTrack.set(r.trackId, {
+        decision: r.decision,
+        embedding: r.embedding,
+        ratedAt: r.ratedAt,
+      });
+    }
+  }
+  return Array.from(latestByTrack.values()).map((r) => ({
+    embedding: r.embedding,
+    label: r.decision === "keep" ? 1 : 0,
+  }));
 }

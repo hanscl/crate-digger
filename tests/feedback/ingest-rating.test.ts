@@ -179,6 +179,31 @@ describe("ingestRating — bucket dislike counter side effect", () => {
     expect(bucketRow?.dislikeCount).toBe(1);
   });
 
+  it("does not double-increment bucket.dislikeCount when the same track is disliked twice", async () => {
+    // dislikeCount feeds the split heuristic as `dislikeCount / memberCount`.
+    // A track surfaced twice and disliked both times must only count once —
+    // otherwise rate can exceed 1.0 and bucket purity goes negative.
+    const t = await insertTrack({
+      title: "Repeat-dislike",
+      audioFeatures: audio({ tempo: 130 }),
+      genres: ["rock"],
+    });
+    const assignment = await assignTrack(db, t.id, { spawnThreshold: 0.7 });
+
+    const first = await ingestRating(db, { trackId: t.id, decision: "dislike" });
+    expect(first.bucketDislikeIncremented).toBe(true);
+    const second = await ingestRating(db, { trackId: t.id, decision: "dislike" });
+    expect(second.bucketDislikeIncremented).toBe(false);
+
+    const [bucketRow] = await db
+      .select({ dislikeCount: schema.bucket.dislikeCount, memberCount: schema.bucket.memberCount })
+      .from(schema.bucket)
+      .where(sql`${schema.bucket.id} = ${assignment.bucketId}`);
+    expect(bucketRow?.dislikeCount).toBe(1);
+    // Sanity: the rate stays in [0, 1].
+    expect(bucketRow!.dislikeCount).toBeLessThanOrEqual(bucketRow!.memberCount);
+  });
+
   it("does not touch bucket.dislikeCount on 'keep' or for non-member tracks", async () => {
     const member = await insertTrack({
       title: "Member",

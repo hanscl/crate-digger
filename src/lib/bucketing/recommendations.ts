@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import type { Database } from "@/db/client";
 import {
   appConfig,
@@ -51,7 +51,8 @@ export type RecommendationOptions = {
 export type EvaluateRecommendationsResult = {
   merges: BucketRecommendation[];
   splits: BucketRecommendation[];
-  /** Both new and pre-existing pending rows that match the heuristic. */
+  /** All pending recommendations after this run — includes pre-existing rows
+   *  the heuristic re-encountered, not just newly emitted ones. */
   totalPending: number;
 };
 
@@ -73,7 +74,11 @@ export async function evaluateBucketRecommendations(
   const buckets = await db.select().from(bucket);
   const merges = await emitMergeRecommendations(db, buckets, mergeThreshold);
   const splits = await emitSplitRecommendations(db, buckets, splitRate);
-  return { merges, splits, totalPending: merges.length + splits.length };
+  const [pendingCount] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(bucketRecommendation)
+    .where(eq(bucketRecommendation.status, "pending"));
+  return { merges, splits, totalPending: pendingCount?.n ?? 0 };
 }
 
 async function emitMergeRecommendations(
@@ -143,22 +148,19 @@ type UpsertInput = {
  * same (kind, bucketIds) key — pending or resolved. Returns the inserted row,
  * or null when an existing row already covers this case (so the caller can
  * distinguish "newly recommended" from "already known").
+ *
+ * Race-safe: dedupe is enforced by the
+ * `bucket_recommendation_kind_bucket_ids_unique_idx` unique index plus
+ * ON CONFLICT DO NOTHING, so two concurrent evaluator runs cannot both
+ * insert the same recommendation. RESOLVED rows (accepted/dismissed) are
+ * also blocked by the same index — we don't keep re-suggesting once the
+ * user has decided.
  */
 async function upsertRecommendation(
   db: Database,
   input: UpsertInput,
 ): Promise<BucketRecommendation | null> {
-  // Dedupe by (kind, sorted bucket_ids). At scale this would warrant a
-  // unique index; at our scale (tens of buckets, dozens of recommendations
-  // ever) the same-kind row scan is cheaper than index maintenance.
-  const sameKind = await db
-    .select()
-    .from(bucketRecommendation)
-    .where(eq(bucketRecommendation.kind, input.kind));
-  const collision = sameKind.find((r) => arraysEqual(r.bucketIds, input.bucketIds));
-  if (collision) return null;
-
-  const [row] = await db
+  const inserted = await db
     .insert(bucketRecommendation)
     .values({
       kind: input.kind,
@@ -166,16 +168,11 @@ async function upsertRecommendation(
       reason: input.reason,
       status: "pending" satisfies RecommendationStatus,
     })
+    .onConflictDoNothing({
+      target: [bucketRecommendation.kind, bucketRecommendation.bucketIds],
+    })
     .returning();
-  return row ?? null;
-}
-
-function arraysEqual(a: readonly number[], b: readonly number[]): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
+  return inserted[0] ?? null;
 }
 
 export async function listPendingRecommendations(db: Database): Promise<BucketRecommendation[]> {

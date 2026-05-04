@@ -229,7 +229,11 @@ describe("counterfactualReplay — broad", () => {
     if (!broadActive) throw new Error("expected broad active");
     const replay = await counterfactualReplay(db, broadActive.id);
     expect(replay.targetKind).toBe("broad");
-    expect(replay.scannedEventCount).toBe(0);
+    // The refill event is scanned but classified as kind-mismatched (not
+    // SQL-prefiltered) so callers can see how much of the window was outside
+    // the target's kind.
+    expect(replay.scannedEventCount).toBe(1);
     expect(replay.replayedEventCount).toBe(0);
+    expect(replay.kindMismatchedEventIds).toHaveLength(1);
   });
 });

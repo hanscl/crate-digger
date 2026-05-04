@@ -131,8 +131,11 @@ describe("evaluateBucketRecommendations — merge heuristic", () => {
     const first = await evaluateBucketRecommendations(db, { mergeThreshold: 0.99 });
     const second = await evaluateBucketRecommendations(db, { mergeThreshold: 0.99 });
     expect(first.merges).toHaveLength(1);
-    // Second call sees the existing pending row and returns nothing new.
+    expect(first.totalPending).toBe(1);
+    // Second call sees the existing pending row and returns nothing new, but
+    // totalPending still reflects the pre-existing row.
     expect(second.merges).toHaveLength(0);
+    expect(second.totalPending).toBe(1);
     const all = await db.select().from(schema.bucketRecommendation);
     expect(all).toHaveLength(1);
   });

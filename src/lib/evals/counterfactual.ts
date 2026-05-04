@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, lte } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte } from "drizzle-orm";
 import type { Database } from "@/db/client";
 import {
   bucketMember,
@@ -44,9 +44,12 @@ import { configFromVersion, getModelVersion } from "@/lib/ranking/version";
 export type CounterfactualWindow = {
   start?: Date | null;
   end?: Date;
-  /** Hard cap on events scanned. Default 500 — keeps replay snappy. */
+  /** Hard cap on events scanned. Default 500 — keeps replay snappy. Clamped to [1, 500]. */
   limit?: number;
 };
+
+const DEFAULT_REPLAY_LIMIT = 500;
+const MAX_REPLAY_LIMIT = 500;
 
 export type CounterfactualEventResult = {
   surfaceEventId: number;
@@ -102,15 +105,26 @@ export async function counterfactualReplay(
       ? configFromVersion(versionRow, "refill")
       : configFromVersion(versionRow, "broad");
 
-  const conds = [eq(surfaceEvent.rankerKind, targetKind)];
+  // We deliberately do NOT prefilter by ranker_kind in SQL. The in-loop
+  // mismatch path classifies events into `kindMismatchedEventIds` so the
+  // caller can see how much of the scan was outside the target's kind. A
+  // SQL prefilter would render that field permanently empty.
+  const conds = [];
   if (window.start) conds.push(gte(surfaceEvent.surfacedAt, window.start));
   if (window.end) conds.push(lte(surfaceEvent.surfacedAt, window.end));
-  const limit = window.limit ?? 500;
+  const requestedLimit =
+    typeof window.limit === "number" && Number.isFinite(window.limit)
+      ? Math.floor(window.limit)
+      : DEFAULT_REPLAY_LIMIT;
+  const limit = Math.max(1, Math.min(MAX_REPLAY_LIMIT, requestedLimit));
 
+  // Stable order: newest-first by surfacedAt, then id, so the LIMIT yields a
+  // deterministic subset across replays.
   const events = await db
     .select()
     .from(surfaceEvent)
-    .where(and(...conds))
+    .where(conds.length > 0 ? and(...conds) : undefined)
+    .orderBy(desc(surfaceEvent.surfacedAt), desc(surfaceEvent.id))
     .limit(limit);
 
   // Collect every track id referenced by any event's pool. One bulk fetch
@@ -307,16 +321,21 @@ async function loadEventRatings(
   eventIds: readonly number[],
 ): Promise<Map<number, "keep" | "dislike" | "defer" | "neutral">> {
   if (eventIds.length === 0) return new Map();
+  // Newest-first so that re-rated events (defer → keep, etc.) deterministically
+  // pick the latest decision. The first row written wins; subsequent rows for
+  // the same surfaceEventId are ignored.
   const rows = await db
     .select({
       surfaceEventId: rating.surfaceEventId,
       decision: rating.decision,
     })
     .from(rating)
-    .where(inArray(rating.surfaceEventId, [...eventIds]));
+    .where(inArray(rating.surfaceEventId, [...eventIds]))
+    .orderBy(desc(rating.ratedAt), desc(rating.id));
   const out = new Map<number, "keep" | "dislike" | "defer" | "neutral">();
   for (const r of rows) {
     if (r.surfaceEventId === null) continue;
+    if (out.has(r.surfaceEventId)) continue;
     out.set(r.surfaceEventId, r.decision);
   }
   return out;
