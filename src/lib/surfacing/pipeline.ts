@@ -167,7 +167,10 @@ export async function runSurfacingBatch(
     appliedNovelty: novelty,
     effectiveCap,
     refillQuota,
-    broadQuota,
+    // Post-shortfall: matches what broad actually had to fill. The
+    // pre-shortfall planned split is internal — observability + replay
+    // tests want the effective value.
+    broadQuota: effectiveBroadQuota,
     refilledBucketIds: refillResults.refilledBucketIds,
   };
 }

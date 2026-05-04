@@ -1,4 +1,4 @@
-import type { AudioFeatures } from "@/db/schema";
+import { EMBEDDING_DIM, type AudioFeatures } from "@/db/schema";
 
 /**
  * Shared types for the Phase 4 ranking + surfacing layer. The ranking layer
@@ -77,6 +77,10 @@ export function isBroadConfig(x: unknown): x is BroadConfig {
   if (!Number.isFinite(c.bias) || !Number.isFinite(c.trainedSampleCount)) return false;
   if (c.weights !== null) {
     if (!Array.isArray(c.weights)) return false;
+    // Length must match the embedding dim — a model trained at a different
+    // dim (e.g., from a pre-refactor 128-dim embedding) would only blow up
+    // at scoring time. Fail at the trust boundary instead.
+    if (c.weights.length !== EMBEDDING_DIM) return false;
     for (const w of c.weights) {
       if (typeof w !== "number" || !Number.isFinite(w)) return false;
     }

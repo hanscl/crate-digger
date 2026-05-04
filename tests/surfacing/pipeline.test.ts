@@ -11,13 +11,13 @@ import { assignTrack } from "@/lib/bucketing/assign";
 import { buildEmbedding } from "@/lib/embedding";
 import { scoreBroad } from "@/lib/ranking/broad";
 import { scoreRefill } from "@/lib/ranking/refill";
-import type { BroadConfig, Candidate } from "@/lib/ranking/types";
+import type { Candidate } from "@/lib/ranking/types";
 import {
   bumpModelVersion,
   configFromVersion,
   ensureActiveModelVersion,
-  getActiveConfig,
   getActiveModelVersion,
+  getModelVersion,
 } from "@/lib/ranking/version";
 import { runSurfacingBatch } from "@/lib/surfacing/pipeline";
 
@@ -185,7 +185,12 @@ describe("runSurfacingBatch — Constraint #2 (full candidate pool persistence)"
     const event = events[0];
     if (!event) throw new Error("expected at least one event");
 
-    const broadConfig = (await getActiveConfig(db, "broad")) as BroadConfig;
+    // Resolve config from THIS event's pinned model_version_id, not the
+    // active pointer — replay must reproduce against the version the event
+    // was logged under, even if a later bump moves the active pointer.
+    const versionRow = await getModelVersion(db, event.modelVersionId);
+    if (!versionRow) throw new Error("expected model_version row for event");
+    const broadConfig = configFromVersion(versionRow, "broad");
 
     // Rebuild candidate inputs from the in-test sources, then rescore.
     const candidateById = new Map(candidates.map((c) => [c.trackId, c]));
@@ -406,6 +411,40 @@ describe("runSurfacingBatch — caps live in surfacing, not ingestion (Constrain
     expect(second.effectiveCap).toBe(0);
     expect(second.events).toHaveLength(0);
   });
+
+  it("broadQuota in the result reflects the post-shortfall effective quota, not the pre-shortfall plan", async () => {
+    // Pure-refill (novelty=0) with effectiveCap=3 but only one unique
+    // candidate against one bucket: refill exhausts after 1 surfaced and
+    // reclaims the remaining 2 slots into broad. The returned `broadQuota`
+    // must be the effective post-shortfall value (2), not the pre-shortfall
+    // plan (0). Observability + replay tooling reads this field.
+    const seed = await insertTrack({
+      title: "Anchor",
+      audioFeatures: audio({ tempo: 125, energy: 0.6 }),
+      genres: ["rock"],
+    });
+    await assignTrack(db, seed.id, { spawnThreshold: 0.7 });
+
+    const c = await insertTrack({
+      title: "Solo-cand",
+      audioFeatures: audio({ tempo: 124, energy: 0.59 }),
+      genres: ["rock"],
+    });
+    const candidates = await Promise.all([c].map(asCandidate));
+
+    const result = await runSurfacingBatch(db, {
+      candidates,
+      noveltyOverride: 0,
+      dailyCapOverride: 3,
+      queueCeilingOverride: 50,
+    });
+    expect(result.refillQuota).toBe(3);
+    // Refill could only fill 1; the remaining 2 slots roll into broad.
+    expect(result.broadQuota).toBe(2);
+    // No more candidates remain for broad, so total surfaced stays at 1 —
+    // but the quota field still reports the rolled-forward capacity.
+    expect(result.surfaced).toHaveLength(1);
+  });
 });
 
 describe("runSurfacingBatch — soft penalties only (Constraint #4)", () => {
@@ -496,7 +535,7 @@ describe("ensureActiveModelVersion + bumpModelVersion", () => {
     const r1 = await ensureActiveModelVersion(db, "refill");
     const b1 = await ensureActiveModelVersion(db, "broad");
     const b2 = await bumpModelVersion(db, "broad", {
-      weights: [0.1, 0.2],
+      weights: Array.from({ length: 64 }, (_, i) => i * 0.01),
       bias: 0,
       trainedSampleCount: 10,
     });
@@ -594,7 +633,9 @@ describe("counterfactual replay determinism", () => {
     });
 
     const event = (await db.select().from(schema.surfaceEvent))[0]!;
-    const refillConfig = await getActiveConfig(db, "refill");
+    const versionRow = await getModelVersion(db, event.modelVersionId);
+    if (!versionRow) throw new Error("expected model_version row for event");
+    const refillConfig = configFromVersion(versionRow, "refill");
 
     // Replay against the bucket members only — same shape the original run used.
     const seedRow = await db.select().from(schema.track).where(eq(schema.track.id, seed.id));

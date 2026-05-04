@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { EMBEDDING_DIM } from "@/db/schema";
 import { scoreBroad, trainBroadClassifier } from "@/lib/ranking/broad";
+import { isBroadConfig } from "@/lib/ranking/types";
 import type { Candidate } from "@/lib/ranking/types";
 
 function candidate(trackId: number, embedding: number[]): Candidate {
@@ -100,6 +102,29 @@ describe("trainBroadClassifier — logistic regression on embeddings", () => {
     const trained = trainBroadClassifier(samples, { iterations: 50 });
     expect(trained.config.weights).toHaveLength(3);
     expect(() => scoreBroad(candidate(1, [1, 0]), trained.config)).toThrow(/dim mismatch/);
+  });
+});
+
+describe("isBroadConfig — trust-boundary guard", () => {
+  it("rejects weights whose length doesn't match EMBEDDING_DIM", () => {
+    // A model trained at a pre-refactor dim (or otherwise mis-shaped) that
+    // slips through the guard would only fail at inference time, crashing
+    // surfacing. Catch it here.
+    const wrongDim = Array.from({ length: EMBEDDING_DIM - 1 }, () => 0);
+    const cfg = { weights: wrongDim, bias: 0, trainedSampleCount: 1 };
+    expect(isBroadConfig(cfg)).toBe(false);
+  });
+
+  it("accepts weights of length EMBEDDING_DIM and a null (untrained) weights field", () => {
+    const trained = {
+      weights: Array.from({ length: EMBEDDING_DIM }, () => 0),
+      bias: 0,
+      trainedSampleCount: 1,
+    };
+    expect(isBroadConfig(trained)).toBe(true);
+
+    const untrained = { weights: null, bias: 0, trainedSampleCount: 0, prior: 0.5 };
+    expect(isBroadConfig(untrained)).toBe(true);
   });
 });
 
