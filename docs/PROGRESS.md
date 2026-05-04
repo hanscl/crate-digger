@@ -116,6 +116,7 @@ Phase tracker. Update at the end of every phase. Newest at the top.
 
 - **Status:** review
 - **Branch:** `phase-5-feedback`
+- **PR:** https://github.com/hanscl/crate-digger/pull/7
 - **Scope landed:** rating ingestion (`src/lib/feedback/ingest-rating.ts`)
   — Constraint #3 attribution by reading `surface_event.model_version_id`
   pinned at surface time, falls back to active broad version for
