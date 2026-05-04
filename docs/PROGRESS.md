@@ -178,6 +178,7 @@ Phase tracker. Update at the end of every phase. Newest at the top.
 
 - **Status:** review
 - **Branch:** `phase-6-mastra`
+- **PR:** https://github.com/hanscl/crate-digger/pull/8
 - **Scope landed:** Mastra wiring on top of the deterministic core.
   `@mastra/core` 1.31 + `mastra` 1.7 CLI + `@ai-sdk/anthropic` 3 +
   `node-cron` 4. Three agents (`src/mastra/agents/{bucket-namer,
