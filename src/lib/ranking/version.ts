@@ -152,40 +152,52 @@ export async function ensureActiveModelVersion(
   db: Database,
   kind: RankerKind,
 ): Promise<ModelVersion> {
-  return db.transaction(async (tx) => {
-    await lockAppConfig(tx);
+  return db.transaction((tx) => ensureActiveModelVersionInTx(tx, kind));
+}
 
-    const [cfg] = await tx
-      .select({
-        activeRefill: appConfig.activeRefillVersionId,
-        activeBroad: appConfig.activeBroadVersionId,
-        refillLambda: appConfig.refillLambda,
-      })
-      .from(appConfig)
-      .where(eq(appConfig.id, 1))
+/**
+ * Same as `ensureActiveModelVersion`, but reuses an existing transaction.
+ * Use this when bootstrapping a version is part of a larger atomic operation
+ * (e.g., the cold-start branch of `ingestRating`) — opening a fresh
+ * `db.transaction(...)` from within a tx commits independently and would
+ * leave the bootstrap row behind even if the outer tx rolls back.
+ */
+export async function ensureActiveModelVersionInTx(
+  tx: Tx,
+  kind: RankerKind,
+): Promise<ModelVersion> {
+  await lockAppConfig(tx);
+
+  const [cfg] = await tx
+    .select({
+      activeRefill: appConfig.activeRefillVersionId,
+      activeBroad: appConfig.activeBroadVersionId,
+      refillLambda: appConfig.refillLambda,
+    })
+    .from(appConfig)
+    .where(eq(appConfig.id, 1))
+    .limit(1);
+
+  const activeId = kind === "refill" ? cfg?.activeRefill : cfg?.activeBroad;
+  if (activeId) {
+    const [existing] = await tx
+      .select()
+      .from(modelVersion)
+      .where(eq(modelVersion.id, activeId))
       .limit(1);
+    if (existing) return existing;
+  }
 
-    const activeId = kind === "refill" ? cfg?.activeRefill : cfg?.activeBroad;
-    if (activeId) {
-      const [existing] = await tx
-        .select()
-        .from(modelVersion)
-        .where(eq(modelVersion.id, activeId))
-        .limit(1);
-      if (existing) return existing;
-    }
-
-    const lambda = cfg?.refillLambda ?? DEFAULT_REFILL_LAMBDA;
-    if (kind === "refill") {
-      return bumpInTx(tx, "refill", { lambda }, { note: "initial bootstrap" });
-    }
-    return bumpInTx(
-      tx,
-      "broad",
-      { weights: null, bias: 0, trainedSampleCount: 0, prior: DEFAULT_BROAD_PRIOR },
-      { note: "initial bootstrap (untrained)" },
-    );
-  });
+  const lambda = cfg?.refillLambda ?? DEFAULT_REFILL_LAMBDA;
+  if (kind === "refill") {
+    return bumpInTx(tx, "refill", { lambda }, { note: "initial bootstrap" });
+  }
+  return bumpInTx(
+    tx,
+    "broad",
+    { weights: null, bias: 0, trainedSampleCount: 0, prior: DEFAULT_BROAD_PRIOR },
+    { note: "initial bootstrap (untrained)" },
+  );
 }
 
 /**

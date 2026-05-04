@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "bucket_recommendation_kind_bucket_ids_unique_idx" ON "bucket_recommendation" USING btree ("kind","bucket_ids");
