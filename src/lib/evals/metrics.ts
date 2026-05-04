@@ -137,18 +137,14 @@ export async function precisionAtN(
 ): Promise<PrecisionAtN> {
   if (n <= 0) return { n, surfacedCount: 0, keptCount: 0, precision: 0 };
   const surfaceConditions = buildSurfaceWindowConditions(window);
-  const events = await db
-    .select({
-      id: surfaceEvent.id,
-      trackId: surfaceEvent.trackId,
-      surfacedAt: surfaceEvent.surfacedAt,
-    })
+  // Push ORDER BY + LIMIT into SQL — surface_event grows monotonically, so a
+  // full-table fetch + JS sort would scale linearly with history.
+  const top = await db
+    .select({ id: surfaceEvent.id })
     .from(surfaceEvent)
-    .where(surfaceConditions ? and(...surfaceConditions) : undefined);
-
-  // Surfacing yields one event per surfaced winner; sort newest-first, take N.
-  events.sort((a, b) => b.surfacedAt.getTime() - a.surfacedAt.getTime());
-  const top = events.slice(0, n);
+    .where(surfaceConditions.length ? and(...surfaceConditions) : undefined)
+    .orderBy(desc(surfaceEvent.surfacedAt), desc(surfaceEvent.id))
+    .limit(n);
   if (top.length === 0) return { n, surfacedCount: 0, keptCount: 0, precision: 0 };
 
   const eventIds = top.map((e) => e.id);

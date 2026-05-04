@@ -120,7 +120,7 @@ async function emitSplitRecommendations(
   const out: BucketRecommendation[] = [];
   for (const b of buckets) {
     if (b.memberCount < MIN_MEMBERS_FOR_SPLIT) continue;
-    const rate = b.memberCount === 0 ? 0 : b.dislikeCount / b.memberCount;
+    const rate = b.dislikeCount / b.memberCount;
     if (rate < splitRate) continue;
     const created = await upsertRecommendation(db, {
       kind: "split",
