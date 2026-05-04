@@ -226,7 +226,14 @@ export const bucketRecommendation = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
   },
-  (t) => [index("bucket_recommendation_status_idx").on(t.status)],
+  (t) => [
+    index("bucket_recommendation_status_idx").on(t.status),
+    // Race-safe dedupe: the heuristic stores `bucketIds` already sorted
+    // ascending, so two concurrent runs both attempting to insert the same
+    // (kind, bucketIds) tuple collide on this index. The insert path uses
+    // ON CONFLICT DO NOTHING to swallow the collision atomically.
+    uniqueIndex("bucket_recommendation_kind_bucket_ids_unique_idx").on(t.kind, t.bucketIds),
+  ],
 );
 
 export const appConfig = pgTable(
@@ -277,6 +284,10 @@ export type CandidatePoolEntry = {
   surfaced: boolean;
 };
 
+export type RatingDecision = (typeof ratingDecisionEnum.enumValues)[number];
+export type RecommendationKind = (typeof recommendationKindEnum.enumValues)[number];
+export type RecommendationStatus = (typeof recommendationStatusEnum.enumValues)[number];
+
 export type Track = typeof track.$inferSelect;
 export type NewTrack = typeof track.$inferInsert;
 export type Bucket = typeof bucket.$inferSelect;
@@ -288,3 +299,5 @@ export type NewSurfaceEvent = typeof surfaceEvent.$inferInsert;
 export type ModelVersion = typeof modelVersion.$inferSelect;
 export type NewModelVersion = typeof modelVersion.$inferInsert;
 export type AppConfig = typeof appConfig.$inferSelect;
+export type BucketRecommendation = typeof bucketRecommendation.$inferSelect;
+export type NewBucketRecommendation = typeof bucketRecommendation.$inferInsert;

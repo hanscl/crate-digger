@@ -15,6 +15,13 @@
       "when": 1777822489742,
       "tag": "0001_wandering_beast",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1777896020230,
+      "tag": "0002_tense_blue_shield",
+      "breakpoints": true
     }
   ]
 }
