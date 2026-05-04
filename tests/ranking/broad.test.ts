@@ -126,6 +126,27 @@ describe("isBroadConfig — trust-boundary guard", () => {
     const untrained = { weights: null, bias: 0, trainedSampleCount: 0, prior: 0.5 };
     expect(isBroadConfig(untrained)).toBe(true);
   });
+
+  it("rejects non-integer or negative trainedSampleCount — it's a count, not a float", () => {
+    const fractional = { weights: null, bias: 0, trainedSampleCount: 3.5 };
+    expect(isBroadConfig(fractional)).toBe(false);
+
+    const negative = { weights: null, bias: 0, trainedSampleCount: -1 };
+    expect(isBroadConfig(negative)).toBe(false);
+  });
+
+  it("rejects prior outside [0, 1] — it's a probability, not an arbitrary scalar", () => {
+    const tooLow = { weights: null, bias: 0, trainedSampleCount: 0, prior: -0.1 };
+    expect(isBroadConfig(tooLow)).toBe(false);
+
+    const tooHigh = { weights: null, bias: 0, trainedSampleCount: 0, prior: 1.1 };
+    expect(isBroadConfig(tooHigh)).toBe(false);
+
+    const boundary0 = { weights: null, bias: 0, trainedSampleCount: 0, prior: 0 };
+    const boundary1 = { weights: null, bias: 0, trainedSampleCount: 0, prior: 1 };
+    expect(isBroadConfig(boundary0)).toBe(true);
+    expect(isBroadConfig(boundary1)).toBe(true);
+  });
 });
 
 /** Tiny deterministic noise — enough variance to keep the optimizer honest. */

@@ -74,7 +74,10 @@ export function isRefillConfig(x: unknown): x is RefillConfig {
 export function isBroadConfig(x: unknown): x is BroadConfig {
   if (typeof x !== "object" || x === null) return false;
   const c = x as BroadConfig;
-  if (!Number.isFinite(c.bias) || !Number.isFinite(c.trainedSampleCount)) return false;
+  if (!Number.isFinite(c.bias)) return false;
+  // trainedSampleCount is a count: non-negative integer. Floats or negatives
+  // would silently miscalibrate cold-start logic and persist into evals.
+  if (!Number.isInteger(c.trainedSampleCount) || c.trainedSampleCount < 0) return false;
   if (c.weights !== null) {
     if (!Array.isArray(c.weights)) return false;
     // Length must match the embedding dim — a model trained at a different
@@ -85,6 +88,10 @@ export function isBroadConfig(x: unknown): x is BroadConfig {
       if (typeof w !== "number" || !Number.isFinite(w)) return false;
     }
   }
-  if (c.prior !== undefined && !Number.isFinite(c.prior)) return false;
+  // prior is a probability: must lie in [0, 1]. An out-of-range value would
+  // produce nonsense untrained scores and skew the surfacing pipeline.
+  if (c.prior !== undefined) {
+    if (!Number.isFinite(c.prior) || c.prior < 0 || c.prior > 1) return false;
+  }
   return true;
 }
