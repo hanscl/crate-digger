@@ -37,8 +37,8 @@ const KEEPALIVE_CRON = "0 */6 * * *"; // every 6 hours
 export function startCron(deps: { db: Database; env: Env }): CronHandle {
   const tasks: { stop: () => void }[] = [];
 
-  const disabled =
-    process.env.CRON_DISABLED === "1" || process.env.CRON_DISABLED?.toLowerCase() === "true";
+  const cronDisabled = deps.env.CRON_DISABLED;
+  const disabled = cronDisabled === "1" || cronDisabled.toLowerCase() === "true";
 
   // Manual triggers (Console "Run now") need to observe failures, so the
   // core path lets errors propagate. The cron entry below wraps it in a
@@ -57,6 +57,11 @@ export function startCron(deps: { db: Database; env: Env }): CronHandle {
       >[0]["requestContext"],
     });
     console.log("[cron] daily-pipeline finished", { status: result.status });
+    // Mastra's `run.start()` resolves with `{status: "failed"}` rather than
+    // rejecting, so manual callers must surface non-success themselves.
+    if (result.status !== "success") {
+      throw new Error(`daily-pipeline ended with status "${result.status}"`);
+    }
   };
 
   const runDailyPipelineScheduled = async () => {

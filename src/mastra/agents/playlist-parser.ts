@@ -52,7 +52,10 @@ export const playlistParserAgent = new Agent({
   model: "anthropic/claude-haiku-4-5",
 });
 
-const DASH_COLON_RE = /\s*[-–—:]\s*/;
+// Dashes must be surrounded by whitespace so hyphenated names ("Jay-Z",
+// "Mø-Ka") aren't accidentally split. Colons match with optional whitespace
+// because "Artist:Title" is unambiguous.
+const DASH_COLON_RE = /\s+[-–—]\s+|\s*:\s*/;
 const BY_RE = /\s+by\s+/i;
 const LEADING_RE = /^\s*(?:\d+[.)]\s*|[-*•]\s+)/;
 
@@ -86,7 +89,7 @@ function deterministicParse(raw: string): ParsedPlaylist {
     if (!leftTrimmed || !rightTrimmed) continue;
     const [artist, title] =
       separator === "by" ? [rightTrimmed, leftTrimmed] : [leftTrimmed, rightTrimmed];
-    tracks.push({ artist, title });
+    tracks.push({ artist: artist.slice(0, 120), title: title.slice(0, 120) });
     if (tracks.length >= 200) break;
   }
   return { tracks };

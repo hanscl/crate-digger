@@ -139,6 +139,7 @@ async function nameNewBucket(
     .from(bucketMember)
     .innerJoin(track, eq(track.id, bucketMember.trackId))
     .where(eq(bucketMember.bucketId, bucketId))
+    .orderBy(track.id)
     .limit(10);
 
   const naming = await nameBucket(

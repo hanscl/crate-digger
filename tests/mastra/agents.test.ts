@@ -23,6 +23,7 @@ const noKeyEnv: Env = {
   VIBERATE_API_KEY: "",
   PORT: 3000,
   NODE_ENV: "test",
+  CRON_DISABLED: "",
 };
 
 describe("bucket-namer fallback", () => {
@@ -107,6 +108,11 @@ describe("playlist-parser fallback", () => {
   it("parses a 'by' separator with title-first / artist-second convention", async () => {
     const result = await parsePlaylistText("Wonderwall by Oasis", noKeyEnv);
     expect(result.tracks).toEqual([{ artist: "Oasis", title: "Wonderwall" }]);
+  });
+
+  it("does not split hyphenated artist names", async () => {
+    const result = await parsePlaylistText("Jay-Z - 99 Problems", noKeyEnv);
+    expect(result.tracks).toEqual([{ artist: "Jay-Z", title: "99 Problems" }]);
   });
 
   it("ignores blank and unparseable lines", async () => {

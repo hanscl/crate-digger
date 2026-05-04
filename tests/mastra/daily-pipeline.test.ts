@@ -93,6 +93,7 @@ const fixtureEnv: Env = {
   VIBERATE_API_KEY: "",
   PORT: 3000,
   NODE_ENV: "test",
+  CRON_DISABLED: "",
 };
 
 function fixtureCandidates(): RawCandidate[] {
