@@ -1,11 +1,297 @@
-import { ScreenShell } from "./_placeholder";
+import { useEffect } from "react";
+import { clsx } from "clsx";
+import { trpc } from "../trpc";
+import type { RouterOutputs } from "../types";
+import { AlbumArt } from "../components/primitives/album-art";
+import { FeatureBar } from "../components/primitives/feature-bar";
+import { Radar } from "../components/primitives/radar";
+import { Scope } from "../components/primitives/scope";
 
+type QueueNext = NonNullable<RouterOutputs["queue"]["next"]>;
+type QueueRecent = RouterOutputs["queue"]["recent"];
+
+/**
+ * Rating Queue — one track at a time. Keep / dislike / defer keyboard
+ * shortcuts (J/K/L). Why-surfaced explanation pulled lazily on demand. The
+ * server's `queue.next` returns the OLDEST unrated surface event, so the
+ * user works through the queue FIFO.
+ */
 export function QueueScreen() {
+  const utils = trpc.useUtils();
+  const next = trpc.queue.next.useQuery();
+  const depth = trpc.queue.depth.useQuery();
+  const recent = trpc.queue.recent.useQuery({ limit: 8 });
+  const why = trpc.queue.why.useQuery(next.data ? { eventId: next.data.eventId } : { eventId: 0 }, {
+    enabled: !!next.data,
+    staleTime: 60_000,
+  });
+
+  const rate = trpc.queue.rate.useMutation({
+    onSuccess: () => {
+      void utils.queue.next.invalidate();
+      void utils.queue.depth.invalidate();
+      void utils.queue.recent.invalidate();
+    },
+  });
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (!next.data || rate.isPending) return;
+      // Don't hijack J/K/L while the user is typing in an input or
+      // contenteditable region (e.g. a future search box on this screen).
+      const target = (e.target as Element | null) ?? document.activeElement;
+      if (target instanceof HTMLElement) {
+        if (
+          target instanceof HTMLInputElement ||
+          target instanceof HTMLTextAreaElement ||
+          target instanceof HTMLSelectElement ||
+          target.isContentEditable
+        ) {
+          return;
+        }
+      }
+      if (e.key === "j" || e.key === "J") {
+        rate.mutate({ eventId: next.data.eventId, decision: "keep" });
+      } else if (e.key === "k" || e.key === "K") {
+        rate.mutate({ eventId: next.data.eventId, decision: "defer" });
+      } else if (e.key === "l" || e.key === "L") {
+        rate.mutate({ eventId: next.data.eventId, decision: "dislike" });
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [next.data, rate]);
+
   return (
-    <ScreenShell
-      num="01"
-      title="Rating Queue"
-      subtitle="One track at a time. Keep / dislike / defer."
-    />
+    <div className="p-8 max-w-7xl">
+      <div className="flex items-baseline gap-4 mb-2">
+        <span className="font-mono text-ink-3 text-sm tabular-nums">01</span>
+        <h1 className="text-ink-1">Rating Queue</h1>
+        <span className="ml-auto chip">
+          <span className="cap text-ink-3">unrated</span>
+          <span className="mono tnum text-ink-1">{depth.data?.unrated ?? "—"}</span>
+        </span>
+      </div>
+      <div className="text-ink-3 text-sm mb-6">
+        One track at a time. <kbd className="kbd">J</kbd> keep, <kbd className="kbd">K</kbd> defer,{" "}
+        <kbd className="kbd">L</kbd> dislike.
+      </div>
+
+      {next.isLoading ? (
+        <div className="panel p-6 text-ink-3 text-sm">loading…</div>
+      ) : !next.data ? (
+        <EmptyQueue />
+      ) : (
+        <CurrentTrack
+          data={next.data}
+          why={why.data?.reason ?? null}
+          submitting={rate.isPending}
+          onRate={(decision) => rate.mutate({ eventId: next.data!.eventId, decision })}
+        />
+      )}
+
+      <RecentRow recent={recent.data ?? []} />
+    </div>
   );
+}
+
+function EmptyQueue() {
+  return (
+    <div className="panel p-12 text-center">
+      <div className="cap text-ink-3 mb-2">queue empty</div>
+      <div className="text-ink-1 mb-6">All caught up.</div>
+      <div className="text-ink-3 text-sm">
+        Run the daily pipeline from the Console to surface fresh candidates.
+      </div>
+    </div>
+  );
+}
+
+function CurrentTrack({
+  data,
+  why,
+  submitting,
+  onRate,
+}: {
+  data: QueueNext;
+  why: string | null;
+  submitting: boolean;
+  onRate: (decision: "keep" | "dislike" | "defer") => void;
+}) {
+  const { track, ranker } = data;
+  const af = track.audioFeatures;
+  const subScores = ranker.subScores ?? {};
+  const subEntries = Object.entries(subScores);
+
+  return (
+    <div className="panel p-6">
+      <div className="flex gap-6">
+        <AlbumArt seed={`${track.title}::${track.artist}`} size={132} />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-2">
+            <span className={clsx("chip", ranker.kind === "refill" ? "accent" : "warn")}>
+              {ranker.kind === "refill" ? "refill" : "broad"}
+            </span>
+            {ranker.bucketName ? (
+              <span
+                className="chip mono"
+                style={{
+                  borderColor: ranker.bucketColor ?? undefined,
+                  color: ranker.bucketColor ?? undefined,
+                }}
+              >
+                {ranker.bucketName}
+              </span>
+            ) : null}
+            {track.primaryGenre ? <span className="chip">{track.primaryGenre}</span> : null}
+            <span className="ml-auto cap text-ink-3 mono tnum">v{ranker.modelVersionId}</span>
+          </div>
+          <h2 className="text-ink-1 truncate">{track.title}</h2>
+          <div className="text-ink-2 text-sm mb-1">{track.artist}</div>
+          <div className="text-ink-3 text-xs mb-4">{track.album ?? ""}</div>
+
+          <div className="flex items-baseline gap-4 mb-4">
+            <div>
+              <div className="cap text-ink-3">winner score</div>
+              <div className="mono tnum text-accent text-2xl">{ranker.score.toFixed(3)}</div>
+            </div>
+            <div>
+              <div className="cap text-ink-3">pool</div>
+              <div className="mono tnum text-ink-2">{ranker.poolSize}</div>
+            </div>
+          </div>
+
+          {subEntries.length > 0 ? (
+            <div className="grid grid-cols-2 gap-x-6 gap-y-1 mb-4">
+              {subEntries.map(([k, v]) => (
+                <div key={k} className="flex justify-between text-xs mono">
+                  <span className="text-ink-3">{k}</span>
+                  <span className="text-ink-2 tnum">
+                    {typeof v === "number" ? v.toFixed(3) : String(v)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          <div className="text-ink-2 text-sm italic mb-6">
+            {why ?? ranker.surfacedReason ?? "explaining…"}
+          </div>
+
+          <div className="flex gap-3">
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={() => onRate("keep")}
+              className="btn primary"
+              style={{ background: "var(--keep)", borderColor: "var(--keep)" }}
+            >
+              <kbd className="kbd">J</kbd> keep
+            </button>
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={() => onRate("defer")}
+              className="btn"
+            >
+              <kbd className="kbd">K</kbd> defer
+            </button>
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={() => onRate("dislike")}
+              className="btn"
+              style={{ borderColor: "var(--pass)", color: "var(--pass)" }}
+            >
+              <kbd className="kbd">L</kbd> dislike
+            </button>
+          </div>
+        </div>
+
+        <div className="w-48 flex flex-col gap-3">
+          <Radar
+            values={
+              af
+                ? {
+                    tempo: clamp01(af.tempo / 200),
+                    energy: af.energy,
+                    valence: af.valence,
+                    danceability: af.danceability,
+                    acousticness: af.acousticness,
+                    instrumentalness: af.instrumentalness,
+                  }
+                : {}
+            }
+          />
+          {af ? (
+            <div className="space-y-1">
+              <FeatureBar label="energy" value={af.energy} width={140} />
+              <FeatureBar label="valence" value={af.valence} width={140} />
+              <FeatureBar label="dance" value={af.danceability} width={140} />
+              <FeatureBar label="acoustic" value={af.acousticness} width={140} />
+            </div>
+          ) : (
+            <div className="text-ink-3 text-xs italic">
+              no audio features (Spotify retired /audio-features for new apps; genre dims still
+              anchor placement)
+            </div>
+          )}
+        </div>
+      </div>
+
+      <ScoreRow data={data} />
+    </div>
+  );
+}
+
+function ScoreRow({ data }: { data: QueueNext }) {
+  // The candidate pool's full score distribution, sorted high-to-low. The
+  // surfacing pipeline writes this into surface_event.candidate_pool
+  // (Constraint #2). Visualizing it here demystifies WHY this track won.
+  // Cap at 50 visible to keep the scope readable.
+  const scores: number[] = [];
+  // Reconstruct pool from depth's data — actually we have the winner score
+  // already; we need the full pool for a real distribution. For now show a
+  // synthetic 1-point series (the winner). A future iteration could add
+  // pool details to queue.next.
+  scores.push(data.ranker.score);
+  return (
+    <div className="mt-6 flex items-center gap-6 text-xs">
+      <div>
+        <div className="cap text-ink-3 mb-1">winner</div>
+        <Scope values={scores} width={100} height={36} />
+      </div>
+    </div>
+  );
+}
+
+function RecentRow({ recent }: { recent: QueueRecent }) {
+  if (recent.length === 0) return null;
+  return (
+    <div className="mt-8">
+      <div className="cap text-ink-3 mb-2">recent decisions</div>
+      <div className="flex gap-2 flex-wrap">
+        {recent.map((r) => (
+          <div key={r.ratingId} className="chip">
+            <span
+              className={clsx(
+                "led",
+                r.decision === "keep" && "green",
+                r.decision === "dislike" && "red",
+                r.decision === "defer" && "amber",
+              )}
+            />
+            <span className="text-ink-2 truncate max-w-[12rem]">
+              {r.title} — {r.artist}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function clamp01(x: number): number {
+  if (!Number.isFinite(x)) return 0;
+  return Math.max(0, Math.min(1, x));
 }
