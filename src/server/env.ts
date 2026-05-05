@@ -15,6 +15,7 @@ const schema = z.object({
   VIBERATE_API_KEY: z.string().optional().default(""),
   PORT: z.coerce.number().int().positive().default(3000),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+  CRON_DISABLED: z.string().optional().default(""),
 });
 
 export type Env = z.infer<typeof schema>;

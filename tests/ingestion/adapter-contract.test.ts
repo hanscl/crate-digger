@@ -15,6 +15,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     VIBERATE_API_KEY: "",
     PORT: 3000,
     NODE_ENV: "test",
+    CRON_DISABLED: "",
     ...overrides,
   };
 }
