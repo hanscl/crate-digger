@@ -176,7 +176,66 @@ Phase tracker. Update at the end of every phase. Newest at the top.
 
 ## Phase 6 — Mastra
 
-- **Status:** pending
+- **Status:** review
+- **Branch:** `phase-6-mastra`
+- **PR:** https://github.com/hanscl/crate-digger/pull/8
+- **Scope landed:** Mastra wiring on top of the deterministic core.
+  `@mastra/core` 1.31 + `mastra` 1.7 CLI + `@ai-sdk/anthropic` 3 +
+  `node-cron` 4. Three agents (`src/mastra/agents/{bucket-namer,
+why-surfaced, playlist-parser}.ts`) on `anthropic/claude-haiku-4-5`
+  with structured Zod output and a deterministic local fallback for the
+  no-key / network-error case — bucket naming never blocks bucketing,
+  why-surfaced always has copy, playlist parser falls back to a regex
+  extractor. Daily workflow (`src/mastra/workflows/daily-pipeline.ts`)
+  composed of five `createStep` calls (`pull-and-enrich`,
+  `bucket-and-name`, `retrain-broad`, `recommendations`, `surface`),
+  threaded as a Zod accumulator through `.then(...)` so each step both
+  consumes and emits the same shape. Pure step bodies live in
+  `src/mastra/lib/pipeline-steps.ts` (testable without Mastra in the
+  loop). Per-run dependencies (`db`, `env`) flow through Mastra
+  `RequestContext` via `src/mastra/runtime.ts` (no module-state
+  globals). `src/mastra/index.ts` registers all agents + the workflow
+  on a single `Mastra` instance with a `ConsoleLogger`. In-process
+  `node-cron` (`src/server/cron.ts`) schedules `daily-pipeline` at
+  03:00 server-local plus a 6-hour keepalive heartbeat; both can be
+  disabled via `CRON_DISABLED=1` (test + reduced-env path) without
+  losing the manual `runDailyPipelineNow()` entrypoint that Phase 7's
+  Console "Run now" button will call. `src/server/index.ts` boots
+  cron on startup and stops it on SIGTERM/SIGINT. `pnpm dev` now runs
+  three concurrent processes (api, web, mastra) so `mastra dev` Studio
+  is available at `localhost:4111`. `.env.example` documents the new
+  `CRON_DISABLED` toggle.
+  Tests (12 new, 124 total green): `tests/mastra/agents.test.ts`
+  (8 cases — fallback names, null-genre placeholder, refill /
+  broad-explore explanations, hyphen / "by" / blank-line / empty
+  parser inputs); `tests/mastra/daily-pipeline.test.ts` (2 cases — a
+  step-by-step run with a fixture adapter pulling 3 RawCandidates
+  through pull → enrich → bucket → retrain → recommend → surface and
+  asserting every surface_event row carries the FULL candidate pool
+  (Constraint #2), plus a Mastra-orchestration smoke that runs the
+  workflow via `mastra.getWorkflow('dailyPipeline').createRun().start()`
+  and asserts the typed accumulator schema is fully populated even
+  with zero candidates).
+- **Notes for future phases:**
+  - Mastra 1.31 renamed `runtimeContext` → `requestContext`; step
+    `execute` callbacks read deps via `getDb(rc) / getEnv(rc)` from
+    `src/mastra/runtime.ts`. The cast at the cron entry point is the
+    only place we re-cross the typed/opaque boundary.
+  - The orchestration smoke runs the workflow with the production
+    adapter registry (`createDefaultRegistry().available(env)`); with
+    a fixture env that exposes no API keys, no adapters are available
+    and the pull step's `pulledCount` is 0. Phase 7 (or any future
+    test that wants the workflow to pull fixture data) should plumb
+    a fixture-adapter override through `requestContext` rather than
+    monkey-patching the registry.
+  - Agents currently fall back to deterministic placeholders when
+    `ANTHROPIC_API_KEY` is unset. The structured-output schemas
+    (`NAME_SCHEMA`, `EXPLANATION_SCHEMA`, `PARSE_SCHEMA`) are the
+    contracts Phase 7's tRPC routers should validate against when
+    surfacing agent output to the UI.
+  - `node-cron` schedule is per-server-process; horizontal scale (Tier 3
+    Fly multi-instance) would double-fire the daily run. Single-VM
+    deploys are unaffected; the README in Phase 8 should call this out.
 
 ## Phase 7 — Frontend screens
 

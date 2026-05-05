@@ -6,11 +6,13 @@ import { logger } from "hono/logger";
 import { z } from "zod";
 import { getDb } from "@/db/client";
 import { isAuthenticated, login, logout } from "./auth";
+import { startCron } from "./cron";
 import { loadEnv } from "./env";
 import { appRouter } from "./trpc";
 
 const env = loadEnv();
 const db = getDb(env.DATABASE_URL);
+const cron = startCron({ db, env });
 
 const app = new Hono();
 
@@ -48,6 +50,14 @@ app.get("/*", serveStatic({ root: "./dist/web" }));
 app.get("/*", serveStatic({ path: "./dist/web/index.html" }));
 
 const port = env.PORT;
-serve({ fetch: app.fetch, port }, (info) => {
+const server = serve({ fetch: app.fetch, port }, (info) => {
   console.log(`crate-digger api listening on :${info.port}`);
 });
+
+const shutdown = (signal: string) => {
+  console.log(`[server] received ${signal}, shutting down`);
+  cron.stop();
+  server.close(() => process.exit(0));
+};
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
