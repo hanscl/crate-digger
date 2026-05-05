@@ -37,8 +37,10 @@ export const sourcesRouter = router({
       // Read prior sourcesEnabled and upsert in a single transaction with FOR
       // UPDATE on the singleton row, matching params.update. Without this,
       // concurrent toggles can read the same prior map and the second write
-      // clobbers the first toggle's flip.
+      // clobbers the first toggle's flip. Seed the row first so FOR UPDATE
+      // has something to lock when the table is empty (cold install).
       await ctx.db.transaction(async (tx) => {
+        await tx.insert(appConfig).values({ id: 1 }).onConflictDoNothing();
         const [cfg] = await tx
           .select({ sourcesEnabled: appConfig.sourcesEnabled })
           .from(appConfig)
@@ -89,17 +91,24 @@ export const sourcesRouter = router({
           count: 0,
         };
       }
-      const params: PullParams =
-        input.mode === "search"
-          ? { mode: "search", query: trimmedQuery, limit: input.limit }
-          : input.mode === "trending"
-            ? { mode: "trending", limit: input.limit }
-            : {
-                mode: "similar",
-                seedArtist: trimmedQuery.split(" — ")[0] ?? trimmedQuery,
-                seedTrack: trimmedQuery.split(" — ")[1] ?? trimmedQuery,
-                limit: input.limit,
-              };
+      let params: PullParams;
+      if (input.mode === "search") {
+        params = { mode: "search", query: trimmedQuery, limit: input.limit };
+      } else if (input.mode === "trending") {
+        params = { mode: "trending", limit: input.limit };
+      } else {
+        const parts = trimmedQuery.split(" — ");
+        const artist = parts[0]?.trim() ?? "";
+        const track = parts[1]?.trim() ?? "";
+        if (parts.length !== 2 || artist.length === 0 || track.length === 0) {
+          return {
+            ok: false,
+            error: "invalid query for similar mode; expected 'artist — track'",
+            count: 0,
+          };
+        }
+        params = { mode: "similar", seedArtist: artist, seedTrack: track, limit: input.limit };
+      }
       const [run] = await ctx.db
         .insert(searchRun)
         .values({
