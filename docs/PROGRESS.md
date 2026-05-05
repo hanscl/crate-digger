@@ -241,7 +241,7 @@ why-surfaced, playlist-parser}.ts`) on `anthropic/claude-haiku-4-5`
 
 - **Status:** review
 - **Branch:** `phase-7-frontend`
-- **PR:** _to open_
+- **PR:** https://github.com/hanscl/crate-digger/pull/9
 - **Scope landed:** all 6 screens wired against tRPC and the deterministic
   core. tRPC app router gains `queue`, `buckets`, `evals`, `params`,
   `pipeline`, `sources`, `setup`, `taste` routers (plus the existing `me` /
