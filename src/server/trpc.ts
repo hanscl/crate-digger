@@ -3,6 +3,14 @@ import superjson from "superjson";
 import { z } from "zod";
 import type { Database } from "@/db/client";
 import type { Env } from "./env";
+import { bucketsRouter } from "./routers/buckets";
+import { evalsRouter } from "./routers/evals";
+import { paramsRouter } from "./routers/params";
+import { pipelineRouter } from "./routers/pipeline";
+import { queueRouter } from "./routers/queue";
+import { setupRouter } from "./routers/setup";
+import { sourcesRouter } from "./routers/sources";
+import { tasteRouter } from "./routers/taste";
 
 export type Context = {
   db: Database;
@@ -35,7 +43,15 @@ export const protectedProcedure = t.procedure.use(requireAuth);
 
 export const appRouter = router({
   ping: publicProcedure.query(() => ({ ok: true, ts: new Date().toISOString() })),
-  me: protectedProcedure.query(({ ctx }) => ({ authenticated: ctx.isAuthenticated })),
+  me: publicProcedure.query(({ ctx }) => ({ authenticated: ctx.isAuthenticated })),
+  queue: queueRouter,
+  buckets: bucketsRouter,
+  evals: evalsRouter,
+  params: paramsRouter,
+  pipeline: pipelineRouter,
+  sources: sourcesRouter,
+  setup: setupRouter,
+  taste: tasteRouter,
 });
 
 export type AppRouter = typeof appRouter;
