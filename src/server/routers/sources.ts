@@ -34,18 +34,25 @@ export const sourcesRouter = router({
   toggle: protectedProcedure
     .input(z.object({ id: SOURCE_ID, enabled: z.boolean() }))
     .mutation(async ({ ctx, input }) => {
-      const [cfg] = await ctx.db
-        .select({ sourcesEnabled: appConfig.sourcesEnabled })
-        .from(appConfig)
-        .limit(1);
-      const next = { ...cfg?.sourcesEnabled, [input.id]: input.enabled };
-      await ctx.db
-        .insert(appConfig)
-        .values({ id: 1, sourcesEnabled: next })
-        .onConflictDoUpdate({
-          target: appConfig.id,
-          set: { sourcesEnabled: next, updatedAt: sql`NOW()` },
-        });
+      // Read prior sourcesEnabled and upsert in a single transaction with FOR
+      // UPDATE on the singleton row, matching params.update. Without this,
+      // concurrent toggles can read the same prior map and the second write
+      // clobbers the first toggle's flip.
+      await ctx.db.transaction(async (tx) => {
+        const [cfg] = await tx
+          .select({ sourcesEnabled: appConfig.sourcesEnabled })
+          .from(appConfig)
+          .for("update")
+          .limit(1);
+        const next = { ...cfg?.sourcesEnabled, [input.id]: input.enabled };
+        await tx
+          .insert(appConfig)
+          .values({ id: 1, sourcesEnabled: next })
+          .onConflictDoUpdate({
+            target: appConfig.id,
+            set: { sourcesEnabled: next, updatedAt: sql`NOW()` },
+          });
+      });
       return { ok: true };
     }),
 
