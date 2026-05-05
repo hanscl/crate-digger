@@ -239,7 +239,65 @@ why-surfaced, playlist-parser}.ts`) on `anthropic/claude-haiku-4-5`
 
 ## Phase 7 — Frontend screens
 
-- **Status:** pending
+- **Status:** review
+- **Branch:** `phase-7-frontend`
+- **PR:** _to open_
+- **Scope landed:** all 6 screens wired against tRPC and the deterministic
+  core. tRPC app router gains `queue`, `buckets`, `evals`, `params`,
+  `pipeline`, `sources`, `setup`, `taste` routers (plus the existing `me` /
+  `ping`). Shared SVG primitives live in
+  `src/web/components/primitives/{knob,fader,led-meter,radar,scope,
+time-series,album-art,source-pill,feature-bar}.tsx` — pure React, no chart
+  deps. Login screen + auth-aware shell gates every screen behind the
+  cookie-auth `me` check; `LoginScreen` posts to `/api/auth/login` and the
+  rest of the app boots once `me.authenticated` flips. Queue (#01) walks
+  oldest-first unrated `surface_event` rows, exposes J/K/L keyboard rates,
+  pulls why-surfaced text from the agent (deterministic fallback when
+  `ANTHROPIC_API_KEY` is unset). Buckets (#02) renders a list+detail layout
+  with rename, recommendation accept/dismiss, recompute trigger, and a
+  centroid radar. Analyzer (#03) shows keep-rate/P@10/P@25/genre-entropy
+  KPIs, a daily keep-rate spark, bucket purity column, and a
+  counterfactual-replay table that re-ranks historical pools under any
+  selected broad version (Constraint #2 payoff). Console (#04) commits
+  knob+fader changes to `app_config` and bumps the refill `model_version`
+  whenever lambda actually changes (Constraint #3); "Run pipeline now" /
+  "Retrain broad classifier" buttons fan out to `pipeline.runNow`
+  (Mastra `dailyPipeline`) and `pipeline.retrainNow` (`retrainBroad`).
+  Sources (#05) lists every registered adapter with availability + enabled
+  state, lets the user toggle `app_config.sources_enabled` and run a one-off
+  `testFetch` (logged as a `search_run` row). Setup (#06) reports config
+  health + counts, runs the cold-start playlist seeder
+  (`seedBucketsFromSpotifyPlaylist`), and provides taste profile
+  export/import — Constraint #8: `src/lib/taste/{schema,export,import}.ts`
+  serialise buckets + ratings (centroids recomputed on import, ratings
+  attribute to active broad version via the cold-start path), with a
+  testcontainers round-trip test pinning the contract.
+  Tests: 3 new in `tests/taste/round-trip.test.ts` (full round-trip through
+  JSON wipe-and-restore, Zod boundary rejection, ISRC-match-not-duplicate
+  guard); 115 lib/agent tests still green via the non-Docker subset
+  (`embedding`, `centroid`, `schema`, `mastra/agents`, `ranking/refill`,
+  `ranking/broad`, `ingestion/adapter-contract` = 70 tests). The 8
+  Docker-only test files unchanged.
+- **Notes for future phases:**
+  - Mastra Studio sidecar runs as a separate `pnpm dev:mastra` process
+    (`localhost:4111`); the Console screen links there directly. Phase 8
+    needs to decide whether to ship Studio in the production Docker image
+    (recommend off-by-default, behind same auth as the SPA).
+  - The Buckets screen accepts merge recommendations via
+    `buckets.accept` (folds member B into A, rebuilds centroid). Splits are
+    emitted by the heuristic but NOT auto-applied — a richer interactive
+    splitter is left for a follow-up; the MVP surfaces split as an
+    actionable "this bucket is impure" signal only.
+  - `taste.import` blocks duplicate buckets via no schema constraint; if
+    the user re-imports the same export, ratings are duplicated (every
+    rating row is unique by id). Encourage wiping before re-import.
+  - `queue.next` returns winner-only sub-scores, not the full pool — the
+    Queue screen's Scope viz currently shows just the winner. Adding the
+    full pool to that response is a one-liner if the demo wants the
+    distribution visible.
+  - `sources.testFetch` mode inference is naive (splits the search query
+    on " — " when mode=similar). Good enough for a smoke test; the daily
+    pipeline does not use this path.
 
 ## Phase 8 — Deploy
 

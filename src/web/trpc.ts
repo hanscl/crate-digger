@@ -13,3 +13,5 @@ export const trpcClient = trpc.createClient({
     }),
   ],
 });
+
+export type { AppRouter };

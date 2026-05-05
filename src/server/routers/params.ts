@@ -1,0 +1,79 @@
+import { sql } from "drizzle-orm";
+import { z } from "zod";
+import { appConfig } from "@/db/schema";
+import { bumpModelVersion, getActiveConfig } from "@/lib/ranking/version";
+import { protectedProcedure, router } from "../trpc";
+
+/**
+ * Params router — backs the Console screen (#04). The Console is the only
+ * surface that mutates `app_config`; the deterministic core elsewhere reads
+ * it. Any change to `refillLambda` bumps the refill model_version (Constraint
+ * #3) so subsequent ratings tag the new chain — that's how the Analyzer can
+ * later compare "before tightening lambda" vs "after."
+ */
+
+const PARAMS_INPUT = z.object({
+  novelty: z.number().min(0).max(1).optional(),
+  sourceMix: z.number().min(0).max(1).optional(),
+  dailySurfaceCap: z.number().int().min(0).max(500).optional(),
+  queueCeiling: z.number().int().min(0).max(1000).optional(),
+  spawnThreshold: z.number().min(0).max(1).optional(),
+  refillLambda: z.number().min(0).max(5).optional(),
+  mergeThreshold: z.number().min(0).max(1).optional(),
+  splitDislikeRate: z.number().min(0).max(1).optional(),
+});
+
+export const paramsRouter = router({
+  get: protectedProcedure.query(async ({ ctx }) => {
+    const [row] = await ctx.db.select().from(appConfig).limit(1);
+    if (!row) {
+      // Cold install: insert defaults so the UI has something to render.
+      await ctx.db.insert(appConfig).values({ id: 1 }).onConflictDoNothing();
+      const [seeded] = await ctx.db.select().from(appConfig).limit(1);
+      return seeded;
+    }
+    return row;
+  }),
+
+  update: protectedProcedure.input(PARAMS_INPUT).mutation(async ({ ctx, input }) => {
+    // Snapshot the prior lambda so we know whether to bump the refill version.
+    const [prior] = await ctx.db.select().from(appConfig).limit(1);
+    const priorLambda = prior?.refillLambda;
+
+    const update: Record<string, unknown> = {};
+    if (input.novelty !== undefined) update.novelty = input.novelty;
+    if (input.sourceMix !== undefined) update.sourceMix = input.sourceMix;
+    if (input.dailySurfaceCap !== undefined) update.dailySurfaceCap = input.dailySurfaceCap;
+    if (input.queueCeiling !== undefined) update.queueCeiling = input.queueCeiling;
+    if (input.spawnThreshold !== undefined) update.spawnThreshold = input.spawnThreshold;
+    if (input.refillLambda !== undefined) update.refillLambda = input.refillLambda;
+    if (input.mergeThreshold !== undefined) update.mergeThreshold = input.mergeThreshold;
+    if (input.splitDislikeRate !== undefined) update.splitDislikeRate = input.splitDislikeRate;
+    if (Object.keys(update).length === 0) return { ok: true, bumped: false };
+
+    update.updatedAt = sql`NOW()`;
+
+    await ctx.db
+      .insert(appConfig)
+      .values({ id: 1, ...update })
+      .onConflictDoUpdate({ target: appConfig.id, set: update });
+
+    let bumpedVersionId: number | null = null;
+    if (
+      input.refillLambda !== undefined &&
+      priorLambda !== undefined &&
+      input.refillLambda !== priorLambda
+    ) {
+      const config = await getActiveConfig(ctx.db, "refill");
+      const newVersion = await bumpModelVersion(
+        ctx.db,
+        "refill",
+        { ...config, lambda: input.refillLambda },
+        { note: `lambda update: ${priorLambda} → ${input.refillLambda}` },
+      );
+      bumpedVersionId = newVersion.id;
+    }
+
+    return { ok: true, bumped: bumpedVersionId !== null, refillVersionId: bumpedVersionId };
+  }),
+});
