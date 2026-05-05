@@ -110,6 +110,11 @@ function AdapterCard({
             <div className="text-pass mono">{testFetch.data.error}</div>
           )}
         </div>
+      ) : testFetch.error ? (
+        // The router rethrows after finalizing the audit row when the adapter
+        // throws (network timeout, upstream 5xx). Without this branch the card
+        // would just go blank and the operator wouldn't know why.
+        <div className="mt-3 text-xs text-pass mono">{testFetch.error.message}</div>
       ) : null}
     </div>
   );
