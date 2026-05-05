@@ -141,6 +141,9 @@ export const bucketsRouter = router({
     .input(z.object({ recommendationId: z.number().int().positive() }))
     .mutation(async ({ ctx, input }) => {
       return ctx.db.transaction(async (tx) => {
+        // SELECT FOR UPDATE locks the recommendation row so two concurrent
+        // accepts on the same id serialize — without this, READ COMMITTED
+        // lets both pass the pending check before either commits.
         const [rec] = await tx
           .select()
           .from(bucketRecommendation)
@@ -150,11 +153,22 @@ export const bucketsRouter = router({
               eq(bucketRecommendation.status, "pending"),
             ),
           )
+          .for("update")
           .limit(1);
         if (!rec) {
           throw new TRPCError({
             code: "NOT_FOUND",
             message: "recommendation not pending or not found",
+          });
+        }
+
+        // Splits are not auto-applied — they require interactive partitioning.
+        // Reject the accept so the audit trail doesn't show a no-op as
+        // "accepted"; operators should `dismiss` to ignore.
+        if (rec.kind === "split") {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "split recommendations are not auto-applied; dismiss instead",
           });
         }
 
@@ -174,9 +188,6 @@ export const bucketsRouter = router({
           // Recompute the merged bucket's centroid + counts from current members.
           await recomputeBucketStats(tx, keepId);
         }
-        // Splits are not auto-applied — they require interactive partitioning.
-        // Phase 7 surfaces split as "user dismisses or hides bucket members";
-        // a richer Splitter UI is left for a follow-up.
 
         await tx
           .update(bucketRecommendation)
@@ -247,12 +258,24 @@ async function recomputeBucketStats(tx: Tx, bucketId: number): Promise<void> {
     stats = addFeatureSample(stats, m.audioFeatures);
   }
 
+  // dislike_count is the number of distinct tracks currently in this bucket
+  // that have at least one dislike rating. Recompute it from the union of
+  // members so the merged bucket's purity LED reflects inherited dislikes
+  // instead of just the surviving bucket's pre-merge tally.
+  const [dislikeRow] = await tx
+    .select({ dislikes: sql<number>`count(distinct ${rating.trackId})::int` })
+    .from(bucketMember)
+    .innerJoin(rating, eq(rating.trackId, bucketMember.trackId))
+    .where(and(eq(bucketMember.bucketId, bucketId), eq(rating.decision, "dislike")));
+  const dislikeCount = Number(dislikeRow?.dislikes ?? 0);
+
   await tx
     .update(bucket)
     .set({
       centroid,
       featureStats: stats,
       memberCount: members.length,
+      dislikeCount,
       updatedAt: sql`NOW()`,
     })
     .where(eq(bucket.id, bucketId));

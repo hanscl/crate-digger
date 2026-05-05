@@ -166,6 +166,16 @@ export const queueRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      // Mirror `rate`: reject up front instead of letting the FK error from
+      // ingest-rating surface as an opaque 500.
+      const [t] = await ctx.db
+        .select({ id: track.id })
+        .from(track)
+        .where(eq(track.id, input.trackId))
+        .limit(1);
+      if (!t) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "track not found" });
+      }
       const result = await ingestRating(ctx.db, {
         trackId: input.trackId,
         decision: input.decision,

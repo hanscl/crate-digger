@@ -27,13 +27,15 @@ export function LEDMeter({
   const safeMax = Number.isFinite(max) && max > 0 ? max : 1;
   const safeSegments = Number.isFinite(segments) && segments > 0 ? Math.floor(segments) : 14;
   const safeValue = Number.isFinite(value) ? value : 0;
+  const safeWidth = Number.isFinite(width) && width > 0 ? width : 140;
+  const safeHeight = Number.isFinite(height) && height > 0 ? height : 14;
   const ratio = Math.max(0, Math.min(1, safeValue / safeMax));
   const lit = Math.round(safeSegments * ratio);
-  const seg = (width - safeSegments + 1) / safeSegments;
+  const seg = Math.max(1, (safeWidth - safeSegments + 1) / safeSegments);
   return (
     <div className="flex items-center gap-2">
       {label ? <span className="cap text-ink-3 w-20">{label}</span> : null}
-      <svg width={width} height={height} className="select-none">
+      <svg width={safeWidth} height={safeHeight} className="select-none">
         {Array.from({ length: safeSegments }, (_, i) => {
           const isLit = i < lit;
           const isWarn = isLit && i / safeSegments >= warnAt;
@@ -44,7 +46,7 @@ export function LEDMeter({
               x={i * (seg + 1)}
               y={2}
               width={seg}
-              height={height - 4}
+              height={Math.max(1, safeHeight - 4)}
               rx={1}
               fill={color}
               opacity={isLit ? 1 : 0.6}
