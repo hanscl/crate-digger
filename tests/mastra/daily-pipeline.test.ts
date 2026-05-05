@@ -215,14 +215,17 @@ describe("daily-pipeline (Mastra orchestration)", () => {
     // verify the workflow plumbing on a path that doesn't need network IO:
     // start with no candidates pulled (no adapters available) and assert the
     // workflow still completes the full chain with a coherent output shape.
-    const requestContext = buildRequestContext({ db, env: fixtureEnv });
     const workflow = mastra.getWorkflow("dailyPipeline");
     const run = await workflow.createRun();
+    // RequestContext is invariant in T, so the typed instance needs a narrow
+    // cast to Mastra's RequestContext<unknown> parameter shape.
+    const requestContext = buildRequestContext({
+      db,
+      env: fixtureEnv,
+    }) as Parameters<typeof run.start>[0]["requestContext"];
     const result = await run.start({
       inputData: { limitPerSource: 5 },
-      requestContext: requestContext as unknown as Parameters<
-        typeof run.start
-      >[0]["requestContext"],
+      requestContext,
     });
 
     expect(result.status).toBe("success");
