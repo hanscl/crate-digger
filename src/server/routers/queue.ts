@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { asc, desc, eq, isNull } from "drizzle-orm";
+import { asc, count, desc, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { bucket, rating, surfaceEvent, track } from "@/db/schema";
 import { ingestRating } from "@/lib/feedback/ingest-rating";
@@ -90,12 +90,12 @@ export const queueRouter = router({
    * Queue depth — count of unrated surface events. Drives the header counter.
    */
   depth: protectedProcedure.query(async ({ ctx }) => {
-    const rows = await ctx.db
-      .select({ id: surfaceEvent.id })
+    const [row] = await ctx.db
+      .select({ unrated: count() })
       .from(surfaceEvent)
       .leftJoin(rating, eq(rating.surfaceEventId, surfaceEvent.id))
       .where(isNull(rating.id));
-    return { unrated: rows.length };
+    return { unrated: Number(row?.unrated ?? 0) };
   }),
 
   /**

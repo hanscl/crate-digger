@@ -49,7 +49,7 @@ export function Fader({
 }: FaderProps) {
   const id = useId();
   const range = max - min;
-  const ratio = clamp((value - min) / range, 0, 1);
+  const ratio = range === 0 ? 0 : clamp((value - min) / range, 0, 1);
   const trackHeight = height - 16;
   const knobY = 8 + (1 - ratio) * trackHeight;
 
@@ -126,7 +126,8 @@ export function Fader({
     <div className={clsx("flex flex-col items-center gap-2", disabled && "opacity-50")}>
       <svg
         role="slider"
-        aria-labelledby={`${id}-label`}
+        aria-labelledby={label !== undefined ? `${id}-label` : undefined}
+        aria-label={label === undefined ? "fader" : undefined}
         aria-valuemin={min}
         aria-valuemax={max}
         aria-valuenow={value}

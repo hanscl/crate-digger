@@ -143,8 +143,10 @@ export function SetupScreen() {
                 {tasteImport.data.trackInserted} tracks • {tasteImport.data.ratingsInserted} ratings
               </span>
             ) : null}
-            {importError ? (
-              <span className="ml-3 text-xs mono text-pass">{importError}</span>
+            {tasteImport.error || importError ? (
+              <span className="ml-3 text-xs mono text-pass">
+                {tasteImport.error?.message ?? importError}
+              </span>
             ) : null}
           </div>
         </div>

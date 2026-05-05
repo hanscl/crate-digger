@@ -37,6 +37,19 @@ export function QueueScreen() {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (!next.data || rate.isPending) return;
+      // Don't hijack J/K/L while the user is typing in an input or
+      // contenteditable region (e.g. a future search box on this screen).
+      const target = (e.target as Element | null) ?? document.activeElement;
+      if (target instanceof HTMLElement) {
+        if (
+          target instanceof HTMLInputElement ||
+          target instanceof HTMLTextAreaElement ||
+          target instanceof HTMLSelectElement ||
+          target.isContentEditable
+        ) {
+          return;
+        }
+      }
       if (e.key === "j" || e.key === "J") {
         rate.mutate({ eventId: next.data.eventId, decision: "keep" });
       } else if (e.key === "k" || e.key === "K") {

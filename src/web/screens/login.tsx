@@ -42,16 +42,24 @@ export function LoginScreen({ onAuthed }: { onAuthed: () => void }) {
         <div className="text-ink-3 text-sm mb-6">
           Enter the admin passphrase from <code className="mono text-ink-2">.env</code>.
         </div>
-        <label className="cap text-ink-3 block mb-2">Passphrase</label>
+        <label htmlFor="passphrase" className="cap text-ink-3 block mb-2">
+          Passphrase
+        </label>
         <input
+          id="passphrase"
           type="password"
           autoFocus
           value={passphrase}
           onChange={(e) => setPassphrase(e.target.value)}
+          aria-describedby={error ? "passphrase-error" : undefined}
           className="w-full bg-bg-3 border border-line-strong rounded-2 px-3 py-2 mono text-sm focus:outline-none focus:border-accent"
           placeholder="••••••••"
         />
-        {error ? <div className="text-pass text-xs mt-3">{error}</div> : null}
+        {error ? (
+          <div id="passphrase-error" className="text-pass text-xs mt-3">
+            {error}
+          </div>
+        ) : null}
         <button
           type="submit"
           disabled={submitting || passphrase.length === 0}

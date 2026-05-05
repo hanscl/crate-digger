@@ -189,12 +189,24 @@ export const bucketsRouter = router({
   dismiss: protectedProcedure
     .input(z.object({ recommendationId: z.number().int().positive() }))
     .mutation(async ({ ctx, input }) => {
+      // Pending-only guard mirrors `accept`: prevents an operator from
+      // overwriting an already-applied recommendation's audit trail.
       const [rec] = await ctx.db
         .update(bucketRecommendation)
         .set({ status: "dismissed", resolvedAt: sql`NOW()` })
-        .where(eq(bucketRecommendation.id, input.recommendationId))
+        .where(
+          and(
+            eq(bucketRecommendation.id, input.recommendationId),
+            eq(bucketRecommendation.status, "pending"),
+          ),
+        )
         .returning({ id: bucketRecommendation.id });
-      if (!rec) throw new TRPCError({ code: "NOT_FOUND" });
+      if (!rec) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "recommendation not pending or not found",
+        });
+      }
       return { ok: true };
     }),
 });

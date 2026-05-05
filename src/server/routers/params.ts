@@ -36,10 +36,6 @@ export const paramsRouter = router({
   }),
 
   update: protectedProcedure.input(PARAMS_INPUT).mutation(async ({ ctx, input }) => {
-    // Snapshot the prior lambda so we know whether to bump the refill version.
-    const [prior] = await ctx.db.select().from(appConfig).limit(1);
-    const priorLambda = prior?.refillLambda;
-
     const update: Record<string, unknown> = {};
     if (input.novelty !== undefined) update.novelty = input.novelty;
     if (input.sourceMix !== undefined) update.sourceMix = input.sourceMix;
@@ -49,31 +45,43 @@ export const paramsRouter = router({
     if (input.refillLambda !== undefined) update.refillLambda = input.refillLambda;
     if (input.mergeThreshold !== undefined) update.mergeThreshold = input.mergeThreshold;
     if (input.splitDislikeRate !== undefined) update.splitDislikeRate = input.splitDislikeRate;
-    if (Object.keys(update).length === 0) return { ok: true, bumped: false };
+    if (Object.keys(update).length === 0) {
+      return { ok: true, bumped: false, refillVersionId: null };
+    }
 
     update.updatedAt = sql`NOW()`;
 
-    await ctx.db
-      .insert(appConfig)
-      .values({ id: 1, ...update })
-      .onConflictDoUpdate({ target: appConfig.id, set: update });
+    // Read prior lambda, upsert, and conditionally bump the refill version in
+    // a single transaction so concurrent submissions can't race past the
+    // `!== priorLambda` guard and produce a duplicate or missing bump.
+    return ctx.db.transaction(async (tx) => {
+      // FOR UPDATE serializes concurrent submissions on the singleton row so
+      // priorLambda reflects the latest committed state, not a stale snapshot.
+      const [prior] = await tx.select().from(appConfig).for("update").limit(1);
+      const priorLambda = prior?.refillLambda;
 
-    let bumpedVersionId: number | null = null;
-    if (
-      input.refillLambda !== undefined &&
-      priorLambda !== undefined &&
-      input.refillLambda !== priorLambda
-    ) {
-      const config = await getActiveConfig(ctx.db, "refill");
-      const newVersion = await bumpModelVersion(
-        ctx.db,
-        "refill",
-        { ...config, lambda: input.refillLambda },
-        { note: `lambda update: ${priorLambda} → ${input.refillLambda}` },
-      );
-      bumpedVersionId = newVersion.id;
-    }
+      await tx
+        .insert(appConfig)
+        .values({ id: 1, ...update })
+        .onConflictDoUpdate({ target: appConfig.id, set: update });
 
-    return { ok: true, bumped: bumpedVersionId !== null, refillVersionId: bumpedVersionId };
+      let bumpedVersionId: number | null = null;
+      if (
+        input.refillLambda !== undefined &&
+        priorLambda !== undefined &&
+        input.refillLambda !== priorLambda
+      ) {
+        const config = await getActiveConfig(tx, "refill");
+        const newVersion = await bumpModelVersion(
+          tx,
+          "refill",
+          { ...config, lambda: input.refillLambda },
+          { note: `lambda update: ${priorLambda} → ${input.refillLambda}` },
+        );
+        bumpedVersionId = newVersion.id;
+      }
+
+      return { ok: true, bumped: bumpedVersionId !== null, refillVersionId: bumpedVersionId };
+    });
   }),
 });

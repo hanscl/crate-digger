@@ -9,6 +9,11 @@ import { SourcesScreen } from "./screens/sources";
 import { SetupScreen } from "./screens/setup";
 import { trpc } from "./trpc";
 
+function parseRouteId(raw: string): number | undefined {
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
 export function App() {
   const me = trpc.me.useQuery(undefined, { retry: false });
 
@@ -35,7 +40,7 @@ export function App() {
           <Route
             path="/buckets/:id"
             component={(props) => (
-              <BucketsScreen selectedId={Number((props.params as { id: string }).id)} />
+              <BucketsScreen selectedId={parseRouteId((props.params as { id: string }).id)} />
             )}
           />
           <Route path="/analyzer" component={AnalyzerScreen} />

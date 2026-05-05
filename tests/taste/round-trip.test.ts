@@ -5,6 +5,7 @@ import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { ZodError } from "zod";
 import * as schema from "@/db/schema";
 import { assignTrack } from "@/lib/bucketing/assign";
 import { ingestRating } from "@/lib/feedback/ingest-rating";
@@ -121,7 +122,10 @@ describe("taste profile export/import (Constraint #8)", () => {
     // Rename the indie-rock bucket so the export carries non-default name/color.
     const bucketsBefore = await db.select().from(schema.bucket).orderBy(schema.bucket.id);
     expect(bucketsBefore.length).toBeGreaterThanOrEqual(2);
-    const indieBucket = bucketsBefore.find((row) => row.primaryGenre === "rock");
+    // derivePrimaryGenre picks the longest matching keyword. For
+    // ["indie rock"] both "rock" (4 chars) and "indie" (5 chars) match,
+    // so the longer "indie" slot wins.
+    const indieBucket = bucketsBefore.find((row) => row.primaryGenre === "indie");
     expect(indieBucket).toBeDefined();
     await db
       .update(schema.bucket)
@@ -173,8 +177,8 @@ describe("taste profile export/import (Constraint #8)", () => {
   });
 
   it("rejects malformed payloads at the schema boundary", async () => {
-    await expect(importTaste(db, { version: 99, buckets: [] })).rejects.toBeTruthy();
-    await expect(importTaste(db, "not an object")).rejects.toBeTruthy();
+    await expect(importTaste(db, { version: 99, buckets: [] })).rejects.toBeInstanceOf(ZodError);
+    await expect(importTaste(db, "not an object")).rejects.toBeInstanceOf(ZodError);
   });
 
   it("matches existing tracks by ISRC instead of inserting duplicates", async () => {

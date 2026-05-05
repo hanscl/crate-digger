@@ -71,19 +71,28 @@ export const sourcesRouter = router({
       if (!adapter.isAvailable(ctx.env)) {
         return { ok: false, error: "missing credentials", count: 0 };
       }
+      const trimmedQuery = input.query?.trim() ?? "";
+      if (input.mode === "search" && trimmedQuery.length === 0) {
+        return { ok: false, error: "missing query for search mode", count: 0 };
+      }
+      if (input.mode === "similar" && trimmedQuery.length === 0) {
+        return {
+          ok: false,
+          error: "missing query for similar mode (use 'artist — track')",
+          count: 0,
+        };
+      }
       const params: PullParams =
         input.mode === "search"
-          ? { mode: "search", query: input.query ?? "", limit: input.limit }
+          ? { mode: "search", query: trimmedQuery, limit: input.limit }
           : input.mode === "trending"
             ? { mode: "trending", limit: input.limit }
-            : input.query
-              ? {
-                  mode: "similar",
-                  seedArtist: input.query.split(" — ")[0] ?? input.query,
-                  seedTrack: input.query.split(" — ")[1] ?? input.query,
-                  limit: input.limit,
-                }
-              : { mode: "trending", limit: input.limit };
+            : {
+                mode: "similar",
+                seedArtist: trimmedQuery.split(" — ")[0] ?? trimmedQuery,
+                seedTrack: trimmedQuery.split(" — ")[1] ?? trimmedQuery,
+                limit: input.limit,
+              };
       const [run] = await ctx.db
         .insert(searchRun)
         .values({
@@ -92,14 +101,23 @@ export const sourcesRouter = router({
           startedAt: new Date(),
         })
         .returning({ id: searchRun.id });
-      const candidates = await adapter.pullCandidates(params, ctx.env);
-      await ctx.db
-        .update(searchRun)
-        .set({
-          countPulled: candidates.length,
-          finishedAt: new Date(),
-        })
-        .where(sql`${searchRun.id} = ${run!.id}`);
+      if (!run) {
+        return { ok: false, error: "failed to log search_run", count: 0 };
+      }
+      // try/finally so the search_run row always closes out, even when the
+      // adapter throws — keeps the audit trail consistent with the daily pipeline.
+      let candidates: Awaited<ReturnType<typeof adapter.pullCandidates>> = [];
+      try {
+        candidates = await adapter.pullCandidates(params, ctx.env);
+      } finally {
+        await ctx.db
+          .update(searchRun)
+          .set({
+            countPulled: candidates.length,
+            finishedAt: new Date(),
+          })
+          .where(sql`${searchRun.id} = ${run.id}`);
+      }
       return {
         ok: true,
         count: candidates.length,

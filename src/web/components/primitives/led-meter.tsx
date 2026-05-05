@@ -22,16 +22,21 @@ export function LEDMeter({
   warnAt?: number;
   label?: string;
 }) {
-  const ratio = Math.max(0, Math.min(1, value / max));
-  const lit = Math.round(segments * ratio);
-  const seg = (width - segments + 1) / segments;
+  // Sanitize props so non-finite or zero values can't yield NaN labels or
+  // negative segment widths. Defaults match the destructuring above.
+  const safeMax = Number.isFinite(max) && max > 0 ? max : 1;
+  const safeSegments = Number.isFinite(segments) && segments > 0 ? Math.floor(segments) : 14;
+  const safeValue = Number.isFinite(value) ? value : 0;
+  const ratio = Math.max(0, Math.min(1, safeValue / safeMax));
+  const lit = Math.round(safeSegments * ratio);
+  const seg = (width - safeSegments + 1) / safeSegments;
   return (
     <div className="flex items-center gap-2">
       {label ? <span className="cap text-ink-3 w-20">{label}</span> : null}
       <svg width={width} height={height} className="select-none">
-        {Array.from({ length: segments }, (_, i) => {
+        {Array.from({ length: safeSegments }, (_, i) => {
           const isLit = i < lit;
-          const isWarn = isLit && i / segments >= warnAt;
+          const isWarn = isLit && i / safeSegments >= warnAt;
           const color = isLit ? (isWarn ? "var(--warn)" : "var(--accent)") : "var(--ink-5)";
           return (
             <rect

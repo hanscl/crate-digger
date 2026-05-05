@@ -63,10 +63,10 @@ export function TimeSeries({
           />
         ))}
         <polyline points={polyline} fill="none" stroke={color} strokeWidth={1.5} />
-        {points.map((p) => {
+        {points.map((p, i) => {
           const x = padX + ((p.t - tMin) / tRange) * innerW;
           const y = padY + (1 - (p.v - v0) / vRange) * innerH;
-          return <circle key={p.t} cx={x} cy={y} r={1.5} fill={color} />;
+          return <circle key={`${p.t}-${p.v}-${i}`} cx={x} cy={y} r={1.5} fill={color} />;
         })}
       </svg>
     </div>
