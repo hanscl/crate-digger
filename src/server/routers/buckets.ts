@@ -239,7 +239,11 @@ async function recomputeBucketStats(tx: Tx, bucketId: number): Promise<void> {
     return;
   }
 
-  const dim = members[0]!.embedding?.length ?? 64;
+  // Derive the centroid dimension from the first member that actually has an
+  // embedding — `members[0]` may have `embedding = null`, which would force
+  // the fallback dim and silently truncate later real embeddings.
+  const firstEmbedding = members.find((m) => m.embedding && m.embedding.length > 0)?.embedding;
+  const dim = firstEmbedding?.length ?? 64;
   const centroid = Array.from({ length: dim }, () => 0);
   let n = 0;
   for (const m of members) {

@@ -118,20 +118,23 @@ export async function importTaste(db: Database, raw: unknown): Promise<TasteImpo
         if (!t) continue;
         const memberEmbedding =
           t.embedding ?? buildEmbedding({ audioFeatures: t.audioFeatures, genres: t.genres });
-        centroid = updateCentroid(centroid, memberCount, memberEmbedding);
-        if (t.audioFeatures) stats = addFeatureSample(stats, t.audioFeatures);
-        memberCount += 1;
         // The bucket_member.track_id unique index forbids a track from
         // belonging to two buckets. If an export includes the same track in
         // multiple buckets (corrupted file or cross-install merge), we keep
         // the first assignment and skip subsequent ones rather than failing
-        // the whole import.
+        // the whole import. Only fold the track into centroid/stats/memberCount
+        // *after* the insert succeeds, otherwise a skipped row would leave a
+        // phantom member counted in the bucket's stats.
         try {
           await tx.insert(bucketMember).values({ bucketId: row.id, trackId, similarityAtJoin: 1 });
-          counts.membersAdded += 1;
         } catch (err) {
           if (!isUniqueViolation(err)) throw err;
+          continue;
         }
+        centroid = updateCentroid(centroid, memberCount, memberEmbedding);
+        if (t.audioFeatures) stats = addFeatureSample(stats, t.audioFeatures);
+        memberCount += 1;
+        counts.membersAdded += 1;
       }
       await tx
         .update(bucket)

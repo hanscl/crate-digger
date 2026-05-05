@@ -25,7 +25,10 @@ export function LEDMeter({
   // Sanitize props so non-finite or zero values can't yield NaN labels or
   // negative segment widths. Defaults match the destructuring above.
   const safeMax = Number.isFinite(max) && max > 0 ? max : 1;
-  const safeSegments = Number.isFinite(segments) && segments > 0 ? Math.floor(segments) : 14;
+  // Clamp to ≥1 so fractional inputs like 0.5 don't floor to 0 and produce a
+  // divide-by-zero in the segment-width calculation below.
+  const safeSegments =
+    Number.isFinite(segments) && segments > 0 ? Math.max(1, Math.floor(segments)) : 14;
   const safeValue = Number.isFinite(value) ? value : 0;
   const safeWidth = Number.isFinite(width) && width > 0 ? width : 140;
   const safeHeight = Number.isFinite(height) && height > 0 ? height : 14;
