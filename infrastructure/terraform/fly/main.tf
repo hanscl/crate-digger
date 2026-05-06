@@ -56,9 +56,14 @@ resource "fly_ip" "v4_shared" {
 }
 
 resource "fly_app_secret" "secrets" {
-  for_each = local.secrets
+  # Iterate over secret NAMES only — Terraform refuses to use a sensitive
+  # collection as a for_each argument (the values are derived from sensitive
+  # vars, which would propagate to resource instance keys / plan output).
+  # Names are not sensitive, so we wrap them in nonsensitive() and look the
+  # value up by key inside the resource body where it stays sensitive.
+  for_each = nonsensitive(toset(keys(local.secrets)))
 
   app   = fly_app.this.name
-  name  = each.key
-  value = each.value
+  name  = each.value
+  value = local.secrets[each.value]
 }

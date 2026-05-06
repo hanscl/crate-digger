@@ -8,8 +8,17 @@ name: Deploy
 #                            approval gate)
 #
 # Both jobs run only after the CI workflow on the same SHA succeeds.
-# Set FLY_API_TOKEN as a repository secret (Settings → Secrets and variables
-# → Actions). Generate with `flyctl auth token`.
+#
+# Configure two repository secrets (Settings → Secrets and variables → Actions):
+#   • FLY_API_TOKEN_STAGING     — app-scoped deploy token for crate-digger-staging
+#   • FLY_API_TOKEN_PRODUCTION  — app-scoped deploy token for crate-digger
+# Generate each with `flyctl tokens create deploy -a <app-name>`. Org-scoped
+# tokens (`flyctl auth token`) are deliberately avoided so a leak in one
+# environment cannot reach the other.
+#
+# Third-party actions are pinned to commit SHAs rather than tags/branches
+# so a force-pushed tag or compromised upstream cannot swap the binary that
+# runs alongside the deploy token.
 
 on:
   push:
@@ -29,7 +38,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Wait for CI workflow on this SHA
-        uses: lewagon/wait-on-check-action@v1.3.4
+        uses: lewagon/wait-on-check-action@ccfb013c15c8afb7bf2b7c028fb74dc5a068cccc # v1.3.4
         with:
           ref: ${{ github.sha }}
           check-name: check
@@ -47,10 +56,10 @@ jobs:
       url: https://crate-digger-staging.fly.dev
     steps:
       - uses: actions/checkout@v4
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1
       - run: flyctl deploy --remote-only --app crate-digger-staging --config fly.toml
         env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_STAGING }}
 
   deploy-production:
     name: Deploy production
@@ -62,7 +71,7 @@ jobs:
       url: https://crate-digger.fly.dev
     steps:
       - uses: actions/checkout@v4
-      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # v1
       - run: flyctl deploy --remote-only --app crate-digger --config fly.toml
         env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_PRODUCTION }}

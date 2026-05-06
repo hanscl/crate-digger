@@ -15,20 +15,23 @@ single env-var swap point. See "Database options" below.
 
 - Terraform >= 1.7
 - A Fly.io account + `flyctl auth login`
-- `FLY_API_TOKEN` exported (`flyctl auth token`)
+- `FLY_API_TOKEN` exported. Prefer an app-scoped deploy token
+  (`flyctl tokens create deploy -a <app-name>`) so a leak only affects one
+  app; `flyctl auth token` works too but is org-scoped.
 
 ## Usage
 
 ```sh
 cd infrastructure/terraform/fly
 cp terraform.tfvars.example terraform.tfvars   # fill in non-sensitive values
-export FLY_API_TOKEN=$(flyctl auth token)
+export FLY_API_TOKEN=$(flyctl tokens create deploy -a crate-digger)
 export TF_VAR_database_url='postgres://...?sslmode=require'
 export TF_VAR_admin_passphrase=$(openssl rand -hex 32)
 export TF_VAR_anthropic_api_key=...   # optional
 terraform init
 terraform plan
 terraform apply
+git add .terraform.lock.hcl && git commit -m "terraform: pin fly provider"
 ```
 
 Apply creates the Fly app, allocates IPv6 + shared IPv4, and pushes secrets.

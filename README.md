@@ -108,7 +108,12 @@ two-environment (staging + production) layout.
   in repo Settings → Environments to add a manual approval gate)
 
 Both jobs wait for the CI `check` job to pass on the same SHA before
-running. Set `FLY_API_TOKEN` as a repository secret.
+running. Configure two repository secrets, generated with
+`flyctl tokens create deploy -a <app-name>` so each is scoped to a single
+app and a leak in one environment cannot reach the other:
+
+- `FLY_API_TOKEN_STAGING` — for `crate-digger-staging`
+- `FLY_API_TOKEN_PRODUCTION` — for `crate-digger`
 
 ## Database — connection-string swap
 

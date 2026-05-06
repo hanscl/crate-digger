@@ -35,7 +35,18 @@ variable "database_url" {
 variable "admin_passphrase" {
   type        = string
   sensitive   = true
-  description = "Single-user dashboard passphrase. Generate with `openssl rand -hex 32`."
+  description = "Single-user dashboard passphrase. Generate with `openssl rand -hex 32` (yields 64 hex chars)."
+
+  validation {
+    # `openssl rand -hex 32` produces 64 hex characters (32 bytes × 2). Reject
+    # anything shorter, and reject the example placeholder shipped in
+    # terraform.tfvars.example so a forgotten copy-paste fails at plan time.
+    condition = (
+      length(var.admin_passphrase) >= 64 &&
+      var.admin_passphrase != "change-me-with-openssl-rand-hex-32"
+    )
+    error_message = "admin_passphrase must be at least 64 characters and must not be the tfvars.example placeholder. Generate with `openssl rand -hex 32`."
+  }
 }
 
 variable "anthropic_api_key" {
