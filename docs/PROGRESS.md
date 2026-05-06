@@ -303,7 +303,7 @@ time-series,album-art,source-pill,feature-bar}.tsx` — pure React, no chart
 
 - **Status:** review
 - **Branch:** `phase-8-deploy`
-- **PR:** _pending_
+- **PR:** https://github.com/hanscl/crate-digger/pull/10
 - **Scope landed:** Tier 3 cloud deploy. `fly.toml` at repo root — 512 MB
   shared-cpu-1x machine, `release_command = "pnpm db:migrate"` so migrations
   gate every rollout, `/api/health` http check, force_https, rolling strategy.
