@@ -301,4 +301,45 @@ time-series,album-art,source-pill,feature-bar}.tsx` — pure React, no chart
 
 ## Phase 8 — Deploy
 
-- **Status:** pending
+- **Status:** review
+- **Branch:** `phase-8-deploy`
+- **PR:** _pending_
+- **Scope landed:** Tier 3 cloud deploy. `fly.toml` at repo root — 512 MB
+  shared-cpu-1x machine, `release_command = "pnpm db:migrate"` so migrations
+  gate every rollout, `/api/health` http check, force_https, rolling strategy.
+  Terraform module at `infrastructure/terraform/fly/` (versions, variables,
+  main, outputs, tfvars example, module README, .gitignore for state) using
+  the `fly-apps/fly` provider; provisions `fly_app` + IPv6 + shared IPv4 +
+  `fly_app_secret` for every secret, with empty-value filtering so unset
+  optional API keys don't shadow `optional().default("")` in
+  `src/server/env.ts`. Module deliberately leaves machines to `flyctl deploy`
+  and Postgres to the user (Constraint #10) — README documents the four
+  supported paths (Fly Postgres, Neon, Supabase, RDS) with connection-string
+  formats and SSL notes. GitHub Actions deploy workflow
+  (`.github/workflows/deploy.yml`): `wait-for-ci` job blocks on the existing
+  `check` job, then staging deploys on push to `main` and production deploys
+  on `v*` tags, each gated by a GitHub Environment (`staging` /
+  `production`) so reviewers can be required in repo settings without code
+  changes. CI workflow extended to run on `v*` tags so the deploy gate has
+  something to wait for. Root `README.md` rewritten with three-tier deploy
+  walkthrough, DB swap matrix, and CI/CD section.
+- **Notes for future phases:**
+  - The `fly-apps/fly` Terraform provider is community-maintained; if it
+    drifts, the entire module's responsibility (app + IPs + secrets) maps
+    directly onto a few `flyctl` commands documented in the module README.
+  - `node-cron` runs in-process per-machine. Single-machine deploys (the
+    default in `fly.toml`, `min_machines_running = 1`) are unaffected;
+    horizontal scale would double-fire the daily run — solve by extracting
+    cron to a separate `processes.cron = "..."` machine with
+    `min_machines_running = 1` and the app machines set to 0 cron processes,
+    or by introducing a Postgres advisory-lock guard around
+    `runDailyPipelineNow()`.
+  - Production environment uses `auto_stop_machines = "off"` so the cron
+    keeps firing during quiet periods; `auto_start_machines = true` still
+    handles cold-start traffic. Flip `cron_disabled = true` on staging via
+    the terraform var to keep the staging machine from racing prod against
+    upstream APIs.
+  - Mastra Studio (`pnpm dev:mastra`, port 4111) is a development-only
+    sidecar — it is not part of the production Dockerfile or `fly.toml`.
+    Re-introducing it on Fly would require a second process behind the same
+    cookie auth.
