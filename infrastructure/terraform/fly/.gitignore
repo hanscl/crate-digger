@@ -1,0 +1,17 @@
+# Terraform state and local overrides — never commit these.
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+.terraform/
+# .terraform.lock.hcl is intentionally NOT ignored — it pins exact provider
+# versions and SHA-256 checksums, which is the HashiCorp-recommended way to
+# get reproducible terraform runs across machines and CI. Commit it after
+# `terraform init`.
+crash.log
+crash.*.log
+terraform.tfvars
+*.auto.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json

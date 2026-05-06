@@ -1,0 +1,22 @@
+# Copy to terraform.tfvars (gitignored) and fill in. Sensitive values can also
+# be passed via `TF_VAR_*` environment variables — handy for CI.
+
+app_name       = "crate-digger"
+fly_org        = "personal"
+primary_region = "fra"
+
+# Required secrets. Provide via TF_VAR_database_url / TF_VAR_admin_passphrase
+# in CI rather than checking these into a tfvars file.
+database_url     = "postgres://user:password@host:5432/crate_digger?sslmode=require"
+admin_passphrase = "change-me-with-openssl-rand-hex-32"
+
+# Optional secrets. Leave empty to skip the corresponding feature.
+anthropic_api_key      = ""
+spotify_client_id      = ""
+spotify_client_secret  = ""
+spotify_redirect_uri   = "" # defaults to https://<app_name>.fly.dev/api/auth/spotify/callback
+lastfm_api_key         = ""
+viberate_api_key       = ""
+
+# Set to true on staging to keep the cron quiet.
+cron_disabled = false
