@@ -4,7 +4,7 @@ import { z } from "zod";
 import { bucket, rating, surfaceEvent, track } from "@/db/schema";
 import { ingestRating } from "@/lib/feedback/ingest-rating";
 import { explainWhySurfaced } from "@/mastra/agents/why-surfaced";
-import { protectedProcedure, router } from "../trpc";
+import { protectedProcedure, router } from "../trpc-base";
 
 /**
  * Queue router. Powers the Rating Queue screen (#01).

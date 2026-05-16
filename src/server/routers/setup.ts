@@ -3,7 +3,7 @@ import { z } from "zod";
 import { bucket, rating, track } from "@/db/schema";
 import { seedBucketsFromSpotifyPlaylist } from "@/lib/bucketing/cold-start";
 import { isPaidSourceConfigured } from "@/server/env";
-import { protectedProcedure, router } from "../trpc";
+import { protectedProcedure, router } from "../trpc-base";
 
 /**
  * Setup router — backs the Setup screen (#06). Reports configuration health
