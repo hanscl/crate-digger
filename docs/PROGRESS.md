@@ -2,6 +2,53 @@
 
 Phase tracker. Update at the end of every phase. Newest at the top.
 
+## LAB-4 — ReccoBeats audio-features swap + Feb 2026 Spotify adaptation
+
+- **Status:** review
+- **Branch:** `lab-4-swap-spotify-audio-features-for-reccobeats-adapt-to-feb-2026`
+- **PR:** https://github.com/hanscl/crate-digger/pull/12
+- **Scope landed:** Spotify retired `/audio-features` for apps registered after
+  2024-11-27, so audio features now come from **ReccoBeats**. New
+  `src/lib/enrichment/reccobeats.ts` (`fetchAudioFeatures` + `enrichAudioFeatures*`)
+  — no-auth API keyed by Spotify track id, idempotent via the existing
+  `audio_features IS NULL` cache, opportunistic `isrc` null-backfill;
+  `key`/`mode` deferred (embedding-dim change). New
+  `src/lib/enrichment/rate-limit.ts` — hand-rolled 2 req/s limiter +
+  `fetchWithRetry` honouring `Retry-After` on 429 with exponential backoff.
+  `spotify-features.ts` deleted and replaced by
+  `src/lib/enrichment/spotify-metadata.ts` — genres-via-artist-lookup
+  (individual `GET /artists/{id}`, batch endpoints gone Feb 2026), rebuilds
+  `genres` / `primary_genre` / `embedding`. Spotify adapter
+  (`src/lib/ingestion/spotify.ts`) adapted to Feb 2026 Dev Mode: `/search`
+  offset-paginated at the new `limit=10` cap (≤5 pages), `/recommendations`
+  branch removed. New `audioFeatureCoverage` eval metric (added to
+  `Kpis` / `loadKpis`), surfaced read-only on the Console screen. ReccoBeats
+  toggle: `app_config.sources_enabled` gains a `reccobeats` key (migration
+  `0003_clumsy_eddie_brock.sql`, with a backfill `UPDATE` for the existing
+  singleton row), exposed as an "Enrichment" toggle row on the Sources
+  screen (`sources` router `list` now returns `{ adapters, enrichment }`).
+  Daily pipeline + cold-start rewired: ReccoBeats features → Spotify genres →
+  bucket. New `docs/SOURCES.md` documents the post-2024 / post-Feb-2026
+  Spotify reality.
+  Tests: `tests/enrichment/rate-limit.test.ts` (7, fake-timer 429/spacing),
+  `tests/enrichment/reccobeats.test.ts` (mapping, batching, graceful
+  degradation, toggle gate, idempotency), `tests/enrichment/spotify-metadata.test.ts`
+  (genre union, embedding rebuild, idempotency, artist cache, no-creds);
+  `audioFeatureCoverage` block in `tests/evals/metrics.test.ts`;
+  `tests/mastra/daily-pipeline.test.ts` extended with a ReccoBeats fetch stub
+  and a regression guard that the enrich phase never calls Spotify
+  `/audio-features`.
+- **Notes for future phases:**
+  - Manual prerequisite: register a new Spotify Dev Mode app under a Premium
+    account and put the credentials in `.env` — the audio half stays dark
+    without working Spotify ingest feeding `spotify_id`s to ReccoBeats.
+  - The ReccoBeats response envelope is parsed defensively but unverified
+    against the live API — re-confirm if `audio_feature_coverage` looks wrong.
+  - LAB-5 (related) tracks a manual audio-feature paste fallback for when
+    ReccoBeats is unavailable.
+  - `enrichAllGenresFromArtists` rebuilds embeddings — running it over the
+    existing catalogue should be followed by a bucket centroid recompute.
+
 ## Phase 1 — Skeleton + DB
 
 - **Status:** review

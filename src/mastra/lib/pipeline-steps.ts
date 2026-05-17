@@ -4,7 +4,8 @@ import { type AudioFeatures, bucket, bucketMember, track } from "@/db/schema";
 import { assignTrack } from "@/lib/bucketing/assign";
 import { evaluateBucketRecommendations } from "@/lib/bucketing/recommendations";
 import { resolveCandidate } from "@/lib/enrichment/resolve";
-import { enrichAudioFeaturesForTracks } from "@/lib/enrichment/spotify-features";
+import { enrichAudioFeaturesForTracks } from "@/lib/enrichment/reccobeats";
+import { enrichGenresFromArtists } from "@/lib/enrichment/spotify-metadata";
 import { retrainBroad } from "@/lib/feedback/retrain";
 import { type SourceAdapter, type SourceId, createDefaultRegistry } from "@/lib/ingestion";
 import type { Candidate } from "@/lib/ranking/types";
@@ -27,15 +28,19 @@ export type PullEnrichSummary = {
   resolvedTrackIds: number[];
   newlyCreatedTrackIds: number[];
   audioFeaturesUpdated: number;
+  genresUpdated: number;
 };
 
 const DEFAULT_PER_SOURCE_LIMIT = 25;
 
 /**
  * Step 1: pull `mode: "trending"` from every available adapter, resolve each
- * candidate to a `track` row, and backfill audio features for newly-created
- * IDs that carry a Spotify ID. Returns the union of touched track IDs so
- * downstream steps know what to bucket.
+ * candidate to a `track` row, then enrich. Enrichment runs in order:
+ * ReccoBeats audio features first, then Spotify genres-via-artist-lookup —
+ * the genre step rebuilds `track.embedding`, so it must see the
+ * post-ReccoBeats `audio_features`. Both must finish before bucketing.
+ * Returns the union of touched track IDs so downstream steps know what to
+ * bucket.
  *
  * Adapter failures degrade silently (constraint #1) — `pullCandidates`
  * already returns `[]` rather than throwing.
@@ -64,14 +69,17 @@ export async function pullAndEnrichTrending(
     }
   }
 
-  const enrichResult = await enrichAudioFeaturesForTracks(db, env, [...resolvedIds]);
+  const ids = [...resolvedIds];
+  const enrichResult = await enrichAudioFeaturesForTracks(db, ids);
+  const genreResult = await enrichGenresFromArtists(db, env, ids);
 
   return {
     pulledCount,
     perSource,
-    resolvedTrackIds: [...resolvedIds],
+    resolvedTrackIds: ids,
     newlyCreatedTrackIds: newlyCreatedIds,
     audioFeaturesUpdated: enrichResult.updated,
+    genresUpdated: genreResult.updated,
   };
 }
 

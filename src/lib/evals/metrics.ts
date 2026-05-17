@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNotNull, lte } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, lte, sql } from "drizzle-orm";
 import type { Database } from "@/db/client";
 import { bucket, rating, surfaceEvent, track, trackSource } from "@/db/schema";
 import type { RankerKind } from "@/lib/ranking/types";
@@ -252,6 +252,34 @@ export async function genreEntropy(db: Database, window: Window = {}): Promise<G
   };
 }
 
+export type AudioFeatureCoverage = {
+  /** Total `track` rows. */
+  total: number;
+  /** Tracks with non-null `audio_features`. */
+  withFeatures: number;
+  /** withFeatures / total; 0 when there are no tracks. */
+  coverage: number;
+};
+
+/**
+ * Fraction of ingested tracks carrying audio features. Audio features now
+ * come from ReccoBeats (Spotify retired `/audio-features`); coverage for
+ * long-tail / indie tracks is uncharacterised, so this is the canary for
+ * the audio half of the embedding silently going dark.
+ */
+export async function audioFeatureCoverage(db: Database): Promise<AudioFeatureCoverage> {
+  // count(col) ignores nulls — `withFeatures` is exactly the non-null count.
+  const [row] = await db
+    .select({
+      total: sql<number>`count(*)::int`,
+      withFeatures: sql<number>`count(${track.audioFeatures})::int`,
+    })
+    .from(track);
+  const total = row?.total ?? 0;
+  const withFeatures = row?.withFeatures ?? 0;
+  return { total, withFeatures, coverage: total === 0 ? 0 : withFeatures / total };
+}
+
 /**
  * Convenience aggregate for the Analyzer screen's "KPIs" panel — one round
  * trip pulling the top-line numbers.
@@ -262,15 +290,17 @@ export type Kpis = {
   precisionAt25: PrecisionAtN;
   genreEntropy: GenreEntropy;
   bucketPurity: BucketPurity[];
+  audioFeatureCoverage: AudioFeatureCoverage;
 };
 
 export async function loadKpis(db: Database, window: Window = {}): Promise<Kpis> {
-  const [kr, p10, p25, ge, bp] = await Promise.all([
+  const [kr, p10, p25, ge, bp, afc] = await Promise.all([
     keepRate(db, window),
     precisionAtN(db, 10, window),
     precisionAtN(db, 25, window),
     genreEntropy(db, window),
     bucketPurity(db),
+    audioFeatureCoverage(db),
   ]);
   return {
     keepRate: kr,
@@ -278,6 +308,7 @@ export async function loadKpis(db: Database, window: Window = {}): Promise<Kpis>
     precisionAt25: p25,
     genreEntropy: ge,
     bucketPurity: bp,
+    audioFeatureCoverage: afc,
   };
 }
 

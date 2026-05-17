@@ -1,6 +1,10 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 language: en-US
 reviews:
+  # Manual-only: CodeRabbit does not review PRs automatically. Trigger a
+  # review on demand by commenting `@coderabbitai review` on the PR.
+  auto_review:
+    enabled: false
   tools:
     # Project uses the oxc (voidzero) toolchain — oxlint, not ESLint.
     eslint:

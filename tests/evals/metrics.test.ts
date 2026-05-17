@@ -7,7 +7,13 @@ import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import * as schema from "@/db/schema";
 import { buildEmbedding } from "@/lib/embedding";
-import { bucketPurity, genreEntropy, keepRate, precisionAtN } from "@/lib/evals/metrics";
+import {
+  audioFeatureCoverage,
+  bucketPurity,
+  genreEntropy,
+  keepRate,
+  precisionAtN,
+} from "@/lib/evals/metrics";
 import { ingestRating } from "@/lib/feedback/ingest-rating";
 import { ensureActiveModelVersion } from "@/lib/ranking/version";
 import { runSurfacingBatch } from "@/lib/surfacing/pipeline";
@@ -285,6 +291,22 @@ describe("genreEntropy", () => {
     const expected = -(0.5 * Math.log(0.5) + 0.25 * Math.log(0.25) + 0.25 * Math.log(0.25));
     expect(mixed.entropy).toBeCloseTo(expected, 9);
     expect(mixed.normalized).toBeCloseTo(expected / Math.log(3), 9);
+  });
+});
+
+describe("audioFeatureCoverage", () => {
+  it("reports the fraction of tracks carrying non-null audio_features", async () => {
+    const empty = await audioFeatureCoverage(db);
+    expect(empty).toEqual({ total: 0, withFeatures: 0, coverage: 0 });
+
+    await seed({ title: "a", genres: ["rock"], audio: audio() });
+    await seed({ title: "b", genres: ["rock"], audio: audio() });
+    await seed({ title: "c", genres: ["rock"], audio: null });
+
+    const cov = await audioFeatureCoverage(db);
+    expect(cov.total).toBe(3);
+    expect(cov.withFeatures).toBe(2);
+    expect(cov.coverage).toBeCloseTo(2 / 3, 9);
   });
 });
 

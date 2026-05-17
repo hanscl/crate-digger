@@ -252,7 +252,7 @@ export const appConfig = pgTable(
     sourcesEnabled: jsonb("sources_enabled")
       .$type<Record<string, boolean>>()
       .notNull()
-      .default(sql`'{"spotify":true,"lastfm":true,"viberate":false}'::jsonb`),
+      .default(sql`'{"spotify":true,"lastfm":true,"viberate":false,"reccobeats":true}'::jsonb`),
     activeRefillVersionId: integer("active_refill_version_id").references(() => modelVersion.id),
     activeBroadVersionId: integer("active_broad_version_id").references(() => modelVersion.id),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

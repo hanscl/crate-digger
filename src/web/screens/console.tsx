@@ -23,6 +23,7 @@ export function ConsoleScreen() {
   const retrain = trpc.pipeline.retrainNow.useMutation({
     onSuccess: () => void utils.evals.versions.invalidate(),
   });
+  const kpis = trpc.evals.kpis.useQuery();
 
   const [draft, setDraft] = useState<{
     novelty: number;
@@ -199,6 +200,16 @@ export function ConsoleScreen() {
                   <span className="text-ink-3">broad</span>
                   <span className="text-ink-1 tnum">
                     v{params.data.activeBroadVersionId ?? "—"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-ink-3">audio coverage</span>
+                  <span className="text-ink-1 tnum">
+                    {kpis.data
+                      ? `${Math.round(kpis.data.audioFeatureCoverage.coverage * 100)}% ` +
+                        `(${kpis.data.audioFeatureCoverage.withFeatures}/` +
+                        `${kpis.data.audioFeatureCoverage.total})`
+                      : "—"}
                   </span>
                 </div>
               </div>

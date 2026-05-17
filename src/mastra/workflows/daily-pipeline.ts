@@ -24,6 +24,7 @@ const PullEnrichResult = z.object({
   pulledCount: z.number().int().nonnegative(),
   resolvedTrackIds: z.array(z.number().int()),
   audioFeaturesUpdated: z.number().int().nonnegative(),
+  genresUpdated: z.number().int().nonnegative(),
 });
 
 const BucketResult = z.object({
@@ -89,6 +90,7 @@ const pullStep = createStep({
       pulledCount: result.pulledCount,
       resolvedTrackIds: result.resolvedTrackIds,
       audioFeaturesUpdated: result.audioFeaturesUpdated,
+      genresUpdated: result.genresUpdated,
     };
   },
 });
@@ -158,6 +160,7 @@ const surfaceWorkflowStep = createStep({
       pulledCount: inputData.pulledCount ?? 0,
       resolvedTrackIds: inputData.resolvedTrackIds ?? [],
       audioFeaturesUpdated: inputData.audioFeaturesUpdated ?? 0,
+      genresUpdated: inputData.genresUpdated ?? 0,
       spawnedBucketIds: inputData.spawnedBucketIds ?? [],
       joinedBucketIds: inputData.joinedBucketIds ?? [],
       namedBucketCount: inputData.namedBucketCount ?? 0,

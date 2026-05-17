@@ -15,6 +15,12 @@ import { protectedProcedure, router } from "../trpc-base";
 const SOURCE_ID = z.enum(["spotify", "lastfm", "viberate"]) satisfies z.ZodType<SourceId>;
 const PULL_MODE = z.enum(["trending", "similar", "search"]) satisfies z.ZodType<PullMode>;
 
+// ReccoBeats is an enrichment provider, not a `SourceAdapter` (it does not
+// pull candidates), so it is not a `SourceId`. The toggle still writes the
+// same `sources_enabled` jsonb, so its enum is widened to include it;
+// `testFetch` keeps the narrow `SOURCE_ID` (search_run.source is enum-typed).
+const TOGGLE_ID = z.enum(["spotify", "lastfm", "viberate", "reccobeats"]);
+
 export const sourcesRouter = router({
   list: protectedProcedure.query(async ({ ctx }) => {
     const registry = createDefaultRegistry();
@@ -23,16 +29,28 @@ export const sourcesRouter = router({
       .from(appConfig)
       .limit(1);
     const enabled = cfg?.sourcesEnabled ?? {};
-    return registry.list().map((adapter) => ({
-      id: adapter.id,
-      isPaid: adapter.isPaid,
-      isAvailable: adapter.isAvailable(ctx.env),
-      enabled: enabled[adapter.id] !== false,
-    }));
+    return {
+      adapters: registry.list().map((adapter) => ({
+        id: adapter.id,
+        isPaid: adapter.isPaid,
+        isAvailable: adapter.isAvailable(ctx.env),
+        enabled: enabled[adapter.id] !== false,
+      })),
+      // Enrichment providers — not ingestion adapters. ReccoBeats supplies
+      // audio features (no API key required).
+      enrichment: [
+        {
+          id: "reccobeats" as const,
+          label: "ReccoBeats",
+          description: "Audio-feature enrichment. No API key required.",
+          enabled: enabled.reccobeats !== false,
+        },
+      ],
+    };
   }),
 
   toggle: protectedProcedure
-    .input(z.object({ id: SOURCE_ID, enabled: z.boolean() }))
+    .input(z.object({ id: TOGGLE_ID, enabled: z.boolean() }))
     .mutation(async ({ ctx, input }) => {
       // Read prior sourcesEnabled and upsert in a single transaction with FOR
       // UPDATE on the singleton row, matching params.update. Without this,

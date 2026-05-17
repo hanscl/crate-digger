@@ -4,7 +4,7 @@ import { sql } from "drizzle-orm";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/db/schema";
 import type { SourceAdapter, RawCandidate } from "@/lib/ingestion";
 import {
@@ -67,7 +67,37 @@ afterAll(async () => {
   await container?.stop();
 });
 
+/**
+ * ReccoBeats audio-features stub — the enrich step now calls ReccoBeats. We
+ * return well-formed features for whatever Spotify ids are asked for so the
+ * pipeline never touches the network. Anything else 404s, which keeps the
+ * "no Spotify /audio-features call" regression guard honest.
+ */
+function fetchStub(): ReturnType<typeof vi.fn> {
+  return vi.fn(async (input: string | URL) => {
+    const url = String(input);
+    if (url.includes("api.reccobeats.com")) {
+      const ids = (new URL(url).searchParams.get("ids") ?? "").split(",").filter(Boolean);
+      const content = ids.map((id) => ({
+        id,
+        tempo: 120,
+        energy: 0.6,
+        valence: 0.5,
+        danceability: 0.7,
+        acousticness: 0.2,
+        instrumentalness: 0.1,
+      }));
+      return new Response(JSON.stringify({ content }), { status: 200 });
+    }
+    return new Response("unexpected", { status: 404 });
+  });
+}
+
+let fetchMock: ReturnType<typeof vi.fn>;
+
 beforeEach(async () => {
+  fetchMock = fetchStub();
+  vi.stubGlobal("fetch", fetchMock);
   await db.execute(sql`TRUNCATE TABLE ${schema.bucketRecommendation} RESTART IDENTITY CASCADE`);
   await db.execute(sql`TRUNCATE TABLE ${schema.rating} RESTART IDENTITY CASCADE`);
   await db.execute(sql`TRUNCATE TABLE ${schema.surfaceEvent} RESTART IDENTITY CASCADE`);
@@ -80,6 +110,10 @@ beforeEach(async () => {
   await db.execute(sql`TRUNCATE TABLE ${schema.trackSource} RESTART IDENTITY CASCADE`);
   await db.execute(sql`TRUNCATE TABLE ${schema.track} RESTART IDENTITY CASCADE`);
   await db.execute(sql`DELETE FROM ${schema.appConfig}`);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 const fixtureEnv: Env = {
@@ -159,6 +193,11 @@ describe("daily-pipeline (step-by-step)", () => {
     expect(pull.pulledCount).toBe(3);
     expect(pull.resolvedTrackIds).toHaveLength(3);
     expect(pull.newlyCreatedTrackIds).toHaveLength(3);
+    // fix-1 + fix-2 carry a Spotify id → ReccoBeats enriches both; fix-3 has
+    // none. The fixture candidates already carry genres, so the Spotify
+    // genre enricher has nothing to do (and fixtureEnv has no creds anyway).
+    expect(pull.audioFeaturesUpdated).toBe(2);
+    expect(pull.genresUpdated).toBe(0);
 
     // 2. Bucket — 3 distinct primary genres should each spawn a separate
     //    bucket; with only one track per bucket, every assignment is a spawn.
@@ -204,6 +243,17 @@ describe("daily-pipeline (step-by-step)", () => {
       const winners = ev.candidatePool.filter((e) => e.surfaced);
       expect(winners.length).toBe(1);
     }
+
+    // Regression guard: Spotify retired `/audio-features` for new apps — the
+    // enrich phase must never call Spotify's copy (it would silently 403 in
+    // production). ReccoBeats' own /v1/audio-features endpoint is fine.
+    for (const call of fetchMock.mock.calls) {
+      expect(String(call[0])).not.toContain("api.spotify.com/v1/audio-features");
+    }
+    // ...and audio features now come from ReccoBeats instead.
+    expect(fetchMock.mock.calls.some((c) => String(c[0]).includes("api.reccobeats.com"))).toBe(
+      true,
+    );
   });
 });
 
