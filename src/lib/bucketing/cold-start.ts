@@ -1,5 +1,6 @@
 import { resolveCandidate } from "@/lib/enrichment/resolve";
-import { enrichAudioFeaturesForTracks } from "@/lib/enrichment/spotify-features";
+import { enrichAudioFeaturesForTracks } from "@/lib/enrichment/reccobeats";
+import { enrichGenresFromArtists } from "@/lib/enrichment/spotify-metadata";
 import { type SpotifyTrack, spotifyGet, spotifyTrackToCandidate } from "@/lib/ingestion/spotify";
 import type { Database } from "@/db/client";
 import type { RawCandidate } from "@/lib/ingestion/types";
@@ -114,10 +115,12 @@ export async function seedBucketsFromSpotifyPlaylist(
     trackIds.push(r.trackId);
   }
 
-  // Best-effort audio enrichment. If Spotify retired `/audio-features` for
-  // this app the call returns silently and tracks bucket on genres alone
-  // (audio dims default to 0.5 — see `audioFeaturesToVector`).
-  await enrichAudioFeaturesForTracks(db, env, trackIds);
+  // Best-effort enrichment, same order as the daily pipeline: ReccoBeats
+  // audio features first, then Spotify genres-via-artist-lookup (it rebuilds
+  // the embedding from the post-ReccoBeats features). Both degrade silently
+  // — a track missing either still buckets, just on partial signal.
+  await enrichAudioFeaturesForTracks(db, trackIds);
+  await enrichGenresFromArtists(db, env, trackIds);
 
   return seedBucketsFromTrackIds(db, trackIds);
 }
