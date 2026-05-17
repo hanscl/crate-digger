@@ -3,7 +3,7 @@ import { z } from "zod";
 import { appConfig, searchRun } from "@/db/schema";
 import { createDefaultRegistry } from "@/lib/ingestion";
 import type { PullMode, PullParams, SourceId } from "@/lib/ingestion";
-import { protectedProcedure, router } from "../trpc";
+import { protectedProcedure, router } from "../trpc-base";
 
 /**
  * Sources router — backs the Sources screen (#05). Lists registered adapters

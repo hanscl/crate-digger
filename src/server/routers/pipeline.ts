@@ -3,7 +3,7 @@ import { z } from "zod";
 import { retrainBroad } from "@/lib/feedback/retrain";
 import { mastra } from "@/mastra";
 import { buildRequestContext } from "@/mastra/runtime";
-import { protectedProcedure, router } from "../trpc";
+import { protectedProcedure, router } from "../trpc-base";
 
 /**
  * Pipeline router — Console "Run now" + "Retrain now" buttons.

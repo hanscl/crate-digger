@@ -7,7 +7,7 @@ import {
   evaluateBucketRecommendations,
   listPendingRecommendations,
 } from "@/lib/bucketing/recommendations";
-import { protectedProcedure, router } from "../trpc";
+import { protectedProcedure, router } from "../trpc-base";
 
 /**
  * Buckets router — backs the Buckets screen (#02). Read-mostly per

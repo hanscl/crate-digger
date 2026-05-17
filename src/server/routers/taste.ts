@@ -2,7 +2,7 @@ import { z } from "zod";
 import { exportTaste } from "@/lib/taste/export";
 import { importTaste } from "@/lib/taste/import";
 import { TASTE_EXPORT_SCHEMA } from "@/lib/taste/schema";
-import { protectedProcedure, router } from "../trpc";
+import { protectedProcedure, router } from "../trpc-base";
 
 /**
  * Taste profile export/import — Constraint #8. The deterministic core lives
