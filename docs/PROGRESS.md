@@ -4,9 +4,9 @@ Phase tracker. Update at the end of every phase. Newest at the top.
 
 ## LAB-4 — ReccoBeats audio-features swap + Feb 2026 Spotify adaptation
 
-- **Status:** in progress
+- **Status:** review
 - **Branch:** `lab-4-swap-spotify-audio-features-for-reccobeats-adapt-to-feb-2026`
-- **PR:** pending
+- **PR:** https://github.com/hanscl/crate-digger/pull/12
 - **Scope landed:** Spotify retired `/audio-features` for apps registered after
   2024-11-27, so audio features now come from **ReccoBeats**. New
   `src/lib/enrichment/reccobeats.ts` (`fetchAudioFeatures` + `enrichAudioFeatures*`)
