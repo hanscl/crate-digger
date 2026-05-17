@@ -93,16 +93,38 @@ describe("fetchWithRetry", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("returns null when fetch itself rejects (network error)", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => {
-        throw new TypeError("network down");
-      }),
-    );
+  it("retries network errors with backoff, returning null once exhausted", async () => {
+    const fetchMock = vi.fn(async () => {
+      throw new TypeError("network down");
+    });
+    vi.stubGlobal("fetch", fetchMock);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
 
-    expect(await fetchWithRetry("https://api.reccobeats.com/v1/audio-features?ids=x")).toBeNull();
+    const promise = fetchWithRetry(
+      "https://api.reccobeats.com/v1/audio-features?ids=x",
+      {},
+      { maxRetries: 2, baseBackoffMs: 1000 },
+    );
+    // backoff 1000 (2^0) + 2000 (2^1) = 3000ms across attempts 0 and 1.
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(await promise).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("recovers from a transient network error on a later attempt", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("network down"))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const promise = fetchWithRetry("https://api.reccobeats.com/v1/audio-features?ids=x");
+    // baseBackoff 1000 * 2^0 before the retry.
+    await vi.advanceTimersByTimeAsync(1000);
+    const res = await promise;
+    expect(res?.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("passes a 200 response straight through", async () => {

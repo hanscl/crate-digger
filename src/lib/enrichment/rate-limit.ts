@@ -82,8 +82,18 @@ export async function fetchWithRetry(
     try {
       res = await fetch(url, { ...init, signal: controller.signal });
     } catch (err) {
-      console.error(`[reccobeats] fetch threw for ${url}`, err);
-      return null;
+      // Network throws (including an AbortError from the per-attempt timeout)
+      // are usually transient — retry with backoff, mirroring the 429 path,
+      // rather than abandoning the remaining attempts.
+      const exhausted = attempt >= maxRetries;
+      console.error(
+        `[reccobeats] fetch threw (attempt ${attempt + 1}/${maxRetries + 1}) for ${url}` +
+          (exhausted ? " — retries exhausted" : ""),
+        err,
+      );
+      if (exhausted) return null;
+      await sleep(baseBackoff * 2 ** attempt);
+      continue;
     } finally {
       clearTimeout(timer);
     }

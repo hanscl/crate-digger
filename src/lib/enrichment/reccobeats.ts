@@ -71,7 +71,9 @@ export async function fetchAudioFeatures(
   for (let i = 0; i < unique.length; i += RECCOBEATS_BATCH) {
     const chunk = unique.slice(i, i + RECCOBEATS_BATCH);
     const requested = new Set(chunk);
-    const url = `${RECCOBEATS_BASE}/audio-features?ids=${encodeURIComponent(chunk.join(","))}`;
+    // Spotify ids are Base62 (alphanumeric only), so no percent-encoding is
+    // needed — the comma is the separator and must reach the API literally.
+    const url = `${RECCOBEATS_BASE}/audio-features?ids=${chunk.join(",")}`;
     const res = await rateLimiter.schedule(() => fetchWithRetry(url, { method: "GET" }));
     if (!res) continue; // batch failed after retries — skip, the rest still run
 
