@@ -67,7 +67,9 @@ crate-digger/
 │   │   │   └── viberate.ts         # paid, optional (no-ops if key absent)
 │   │   ├── enrichment/
 │   │   │   ├── resolve.ts          # ISRC-first, fuzzy fallback
-│   │   │   └── spotify-features.ts # audio features + genre tags
+│   │   │   ├── reccobeats.ts       # audio features (Spotify retired /audio-features)
+│   │   │   ├── spotify-metadata.ts # genres via artist lookup
+│   │   │   └── rate-limit.ts       # 2 req/s + Retry-After, for ReccoBeats
 │   │   ├── bucketing/
 │   │   │   ├── assign.ts           # genre-prior + cosine, spawn-or-join
 │   │   │   ├── centroid.ts         # incremental update (Welford-style)
@@ -154,8 +156,19 @@ unset — the system fully runs on Spotify + Last.fm.
 `resolve.ts` keys on ISRC; falls back to normalized `(artist, title)` fuzzy match
 (`fast-fuzzy` library) with a similarity threshold. Idempotent: re-running on the same
 `RawCandidate` produces zero new tracks (upsert by ISRC, deterministic merge of source
-provenance into `track_source`). Spotify audio-features fetch is cached; re-enriching reads from
-DB.
+provenance into `track_source`).
+
+**Audio features** come from **ReccoBeats** (`reccobeats.ts`), not Spotify — Spotify
+retired `/audio-features` for apps registered after 2024-11-27 (see `docs/SOURCES.md`).
+ReccoBeats is a free, no-auth API keyed by Spotify track id; the enricher is rate-limited
+(2 req/s, batches of 5, `Retry-After` honoured — `rate-limit.ts`) and toggleable via
+`app_config.sources_enabled.reccobeats`. **Genres** come from `spotify-metadata.ts`, which
+looks up each track's artists (individual `GET /artists/{id}` — batch lookups were removed
+in Feb 2026) and fills `genres` / `primary_genre`, rebuilding the embedding. Both enrichers
+are idempotent and cached by a null-column check (`audio_features IS NULL` /
+`cardinality(genres) = 0`); a track missing either still ingests and buckets on partial
+signal. The `audio_feature_coverage` eval metric tracks how much of the catalogue has
+audio features so silent coverage loss is visible on the Console screen.
 
 ### 3. Bucketing
 

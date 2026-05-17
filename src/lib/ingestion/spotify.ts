@@ -6,7 +6,19 @@ const TOKEN_URL = "https://accounts.spotify.com/api/token";
 const API_BASE = "https://api.spotify.com/v1";
 const SPOTIFY_TIMEOUT_MS = 8_000;
 const DEFAULT_LIMIT = 25;
-const MAX_LIMIT = 100;
+/**
+ * Feb 2026 Dev Mode caps `/search` `limit` at 10 (was 50). We page with
+ * `offset` to still honour the caller's requested limit; `SEARCH_MAX_PAGES`
+ * bounds the call count (<=50 results, <=5 requests per search).
+ */
+const SEARCH_PAGE_SIZE = 10;
+const SEARCH_MAX_PAGES = 5;
+/**
+ * Every pull mode (search/trending/similar) routes through `pullSearch`, so
+ * the real ceiling on results is one full page sweep. Clamping above it
+ * would just silently truncate.
+ */
+const MAX_LIMIT = SEARCH_PAGE_SIZE * SEARCH_MAX_PAGES;
 
 /** Coerce caller-supplied limit to a positive integer in [1, MAX_LIMIT]. */
 function clampLimit(raw: number | undefined): number {
@@ -139,14 +151,26 @@ export function spotifyTrackToCandidate(t: SpotifyTrack): RawCandidate {
   };
 }
 
+/**
+ * Search, paging with `offset` to assemble up to `limit` results out of
+ * 10-track pages (the Feb 2026 Dev Mode cap). Stops early on an empty/short
+ * page or a missing `next` cursor.
+ */
 async function pullSearch(query: string, limit: number, env: Env): Promise<RawCandidate[]> {
-  const data = await spotifyGet<{ tracks: { items: SpotifyTrack[] } }>(
-    "/search",
-    { q: query, type: "track", limit: Math.min(limit, 50) },
-    env,
-  );
-  if (!data) return [];
-  return data.tracks.items.map(spotifyTrackToCandidate);
+  const out: RawCandidate[] = [];
+  const pages = Math.min(Math.ceil(limit / SEARCH_PAGE_SIZE), SEARCH_MAX_PAGES);
+  for (let page = 0; page < pages && out.length < limit; page++) {
+    const data = await spotifyGet<{ tracks: { items: SpotifyTrack[]; next: string | null } }>(
+      "/search",
+      { q: query, type: "track", limit: SEARCH_PAGE_SIZE, offset: page * SEARCH_PAGE_SIZE },
+      env,
+    );
+    if (!data) break;
+    const items = data.tracks?.items ?? [];
+    out.push(...items.map(spotifyTrackToCandidate));
+    if (items.length < SEARCH_PAGE_SIZE || !data.tracks?.next) break;
+  }
+  return out.slice(0, limit);
 }
 
 async function pullTrending(limit: number, env: Env): Promise<RawCandidate[]> {
@@ -159,23 +183,14 @@ async function pullSimilar(
   limit: number,
   env: Env,
 ): Promise<RawCandidate[]> {
-  const seed = params.seedSourceId;
-  if (!seed) {
-    if (params.seedArtist && params.seedTrack) {
-      return pullSearch(`artist:${params.seedArtist} track:${params.seedTrack}`, limit, env);
-    }
-    return [];
+  // `/v1/recommendations` — the only seed-id-based "similar" endpoint — was
+  // retired for apps created after 2024-11-27 and is gone entirely under
+  // Feb 2026 Dev Mode. The sole surviving path is an artist+title search;
+  // a bare seed id has no replacement and degrades to an empty pool.
+  if (params.seedArtist && params.seedTrack) {
+    return pullSearch(`artist:${params.seedArtist} track:${params.seedTrack}`, limit, env);
   }
-  // /v1/recommendations was retired for apps created after 2024-11-27. We try
-  // it for backward compatibility with existing apps; when unavailable the
-  // call returns null and we degrade to an empty pool.
-  const data = await spotifyGet<{ tracks: SpotifyTrack[] }>(
-    "/recommendations",
-    { seed_tracks: seed, limit: Math.min(limit, 100) },
-    env,
-  );
-  if (!data) return [];
-  return data.tracks.map(spotifyTrackToCandidate);
+  return [];
 }
 
 export const spotifyAdapter: SourceAdapter = {

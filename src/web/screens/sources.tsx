@@ -3,7 +3,9 @@ import { trpc } from "../trpc";
 import type { RouterOutputs } from "../types";
 import { SourcePill } from "../components/primitives/source-pill";
 
-type SourceListItem = RouterOutputs["sources"]["list"][number];
+type SourceListItem = RouterOutputs["sources"]["list"]["adapters"][number];
+type EnrichmentItem = RouterOutputs["sources"]["list"]["enrichment"][number];
+type ToggleMutation = ReturnType<typeof trpc.sources.toggle.useMutation>;
 
 /**
  * Sources screen — list of registered adapters with their availability +
@@ -29,21 +31,50 @@ export function SourcesScreen() {
       </div>
 
       <div className="grid grid-cols-2 gap-4">
-        {(list.data ?? []).map((s) => (
+        {(list.data?.adapters ?? []).map((s) => (
           <AdapterCard key={s.id} adapter={s} toggle={toggle} />
         ))}
       </div>
+
+      {(list.data?.enrichment ?? []).length > 0 ? (
+        <>
+          <div className="cap text-ink-3 mt-8 mb-3">enrichment</div>
+          <div className="text-ink-3 text-sm mb-4">
+            Providers that enrich resolved tracks rather than pull candidates. Toggling here flips{" "}
+            <code className="mono">app_config.sources_enabled</code> too.
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            {(list.data?.enrichment ?? []).map((e) => (
+              <EnrichmentCard key={e.id} item={e} toggle={toggle} />
+            ))}
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }
 
-function AdapterCard({
-  adapter,
-  toggle,
-}: {
-  adapter: SourceListItem;
-  toggle: ReturnType<typeof trpc.sources.toggle.useMutation>;
-}) {
+function EnrichmentCard({ item, toggle }: { item: EnrichmentItem; toggle: ToggleMutation }) {
+  return (
+    <div className="panel p-5">
+      <div className="flex items-center gap-3 mb-3">
+        <span className="text-ink-1">{item.label}</span>
+        <label className="ml-auto text-xs flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={item.enabled}
+            disabled={toggle.isPending}
+            onChange={(e) => toggle.mutate({ id: item.id, enabled: e.target.checked })}
+          />
+          <span className="text-ink-2">enabled</span>
+        </label>
+      </div>
+      <div className="text-ink-3 text-xs">{item.description}</div>
+    </div>
+  );
+}
+
+function AdapterCard({ adapter, toggle }: { adapter: SourceListItem; toggle: ToggleMutation }) {
   // Test-query state is per-card so typing in one adapter doesn't mirror
   // into the others.
   const [testQuery, setTestQuery] = useState("");
