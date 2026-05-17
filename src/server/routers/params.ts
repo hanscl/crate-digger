@@ -2,7 +2,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { appConfig } from "@/db/schema";
 import { bumpModelVersion, getActiveConfig } from "@/lib/ranking/version";
-import { protectedProcedure, router } from "../trpc";
+import { protectedProcedure, router } from "../trpc-base";
 
 /**
  * Params router — backs the Console screen (#04). The Console is the only

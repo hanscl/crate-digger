@@ -5,7 +5,7 @@ import { modelVersion, rating, surfaceEvent, track } from "@/db/schema";
 import { counterfactualReplay } from "@/lib/evals/counterfactual";
 import { loadKpis } from "@/lib/evals/metrics";
 import { listModelVersions } from "@/lib/ranking/version";
-import { protectedProcedure, router } from "../trpc";
+import { protectedProcedure, router } from "../trpc-base";
 
 /**
  * Evals router — backs the Analyzer screen (#03). All read-only — the
