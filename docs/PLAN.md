@@ -40,7 +40,7 @@ crate-digger/
 ├── Dockerfile                      # multi-stage: build web, run server
 ├── .env.example                    # every required + optional key, commented
 ├── lefthook.yml
-├── oxlintrc.json
+├── .oxlintrc.json
 ├── tsconfig.json                   # strict; path alias @/*
 ├── package.json                    # pnpm; "dev" runs server + vite + mastra in parallel
 ├── drizzle.config.ts
