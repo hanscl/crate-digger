@@ -14,7 +14,7 @@ import { protectedProcedure, router } from "../trpc-base";
  */
 export const pipelineRouter = router({
   runNow: protectedProcedure.mutation(async ({ ctx }) => {
-    const requestContext = buildRequestContext({ db: ctx.db, env: ctx.env });
+    const requestContext = buildRequestContext({ db: ctx.db, env: ctx.appEnv });
     const workflow = mastra.getWorkflow("dailyPipeline");
     const run = await workflow.createRun();
     const result = await run.start({

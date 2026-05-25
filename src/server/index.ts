@@ -37,8 +37,11 @@ app.use("/trpc/*", async (c, next) => {
   const authed = isAuthenticated(c, env);
   return trpcServer({
     router: appRouter,
-    createContext: () => ({ db, env, isAuthenticated: authed }),
+    createContext: () => ({ db, appEnv: env, isAuthenticated: authed }),
     endpoint: "/trpc",
+    onError: ({ path, error }) => {
+      console.error(`[trpc] ${path ?? "?"} failed:`, error);
+    },
   })(c, next);
 });
 

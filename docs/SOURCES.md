@@ -32,6 +32,11 @@ genre-only. **ReccoBeats replaces `/audio-features`** (see below).
 
 - Every Dev Mode app now requires the **owner to hold Spotify Premium**.
   No localhost / single-user exemption.
+- **Redirect URIs must use the IPv4 loopback `127.0.0.1`**, not `localhost`.
+  Crate Digger's default `SPOTIFY_REDIRECT_URI` is
+  `http://127.0.0.1:3000/api/auth/spotify/callback`; whatever you put in
+  `.env` must match the URI registered in the Spotify Developer Dashboard
+  exactly.
 - **Batch endpoints removed**: `/tracks?ids=`, `/albums?ids=`,
   `/artists?ids=`. All lookups must be individual `GET /…/{id}`.
 - **`/search` `limit` capped at 10** (was 50).

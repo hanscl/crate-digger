@@ -33,7 +33,7 @@ export const sourcesRouter = router({
       adapters: registry.list().map((adapter) => ({
         id: adapter.id,
         isPaid: adapter.isPaid,
-        isAvailable: adapter.isAvailable(ctx.env),
+        isAvailable: adapter.isAvailable(ctx.appEnv),
         enabled: enabled[adapter.id] !== false,
       })),
       // Enrichment providers — not ingestion adapters. ReccoBeats supplies
@@ -95,7 +95,7 @@ export const sourcesRouter = router({
       if (!adapter) {
         return { ok: false, error: "unknown adapter", count: 0 };
       }
-      if (!adapter.isAvailable(ctx.env)) {
+      if (!adapter.isAvailable(ctx.appEnv)) {
         return { ok: false, error: "missing credentials", count: 0 };
       }
       const trimmedQuery = input.query?.trim() ?? "";
@@ -142,7 +142,7 @@ export const sourcesRouter = router({
       // adapter throws — keeps the audit trail consistent with the daily pipeline.
       let candidates: Awaited<ReturnType<typeof adapter.pullCandidates>> = [];
       try {
-        candidates = await adapter.pullCandidates(params, ctx.env);
+        candidates = await adapter.pullCandidates(params, ctx.appEnv);
       } finally {
         await ctx.db
           .update(searchRun)

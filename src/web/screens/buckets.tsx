@@ -135,11 +135,11 @@ export function BucketsScreen({ selectedId }: { selectedId?: number }) {
 
         <div className="col-span-3 flex flex-col gap-4">
           <div className="panel p-4">
-            <div className="flex items-center justify-between mb-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
               <div className="cap text-ink-3">recommendations</div>
               <button
                 type="button"
-                className="btn ghost sm"
+                className="btn ghost sm shrink-0"
                 onClick={() => recompute.mutate()}
                 disabled={recompute.isPending}
               >

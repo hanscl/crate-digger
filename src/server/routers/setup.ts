@@ -21,10 +21,10 @@ export const setupRouter = router({
     const [ratingCount] = await ctx.db.select({ n: count() }).from(rating);
     return {
       spotifyConfigured:
-        ctx.env.SPOTIFY_CLIENT_ID.length > 0 && ctx.env.SPOTIFY_CLIENT_SECRET.length > 0,
-      lastfmConfigured: ctx.env.LASTFM_API_KEY.length > 0,
-      viberateConfigured: isPaidSourceConfigured(ctx.env, "viberate"),
-      anthropicConfigured: ctx.env.ANTHROPIC_API_KEY.length > 0,
+        ctx.appEnv.SPOTIFY_CLIENT_ID.length > 0 && ctx.appEnv.SPOTIFY_CLIENT_SECRET.length > 0,
+      lastfmConfigured: ctx.appEnv.LASTFM_API_KEY.length > 0,
+      viberateConfigured: isPaidSourceConfigured(ctx.appEnv, "viberate"),
+      anthropicConfigured: ctx.appEnv.ANTHROPIC_API_KEY.length > 0,
       counts: {
         tracks: Number(trackCount?.n ?? 0),
         buckets: Number(bucketCount?.n ?? 0),
@@ -36,7 +36,7 @@ export const setupRouter = router({
   seedFromPlaylist: protectedProcedure
     .input(z.object({ url: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
-      const result = await seedBucketsFromSpotifyPlaylist(ctx.db, ctx.env, input.url);
+      const result = await seedBucketsFromSpotifyPlaylist(ctx.db, ctx.appEnv, input.url);
       if (!result) {
         return {
           ok: false,
