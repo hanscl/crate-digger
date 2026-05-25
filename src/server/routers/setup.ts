@@ -1,7 +1,11 @@
 import { count } from "drizzle-orm";
 import { z } from "zod";
 import { bucket, rating, track } from "@/db/schema";
-import { seedBucketsFromSpotifyPlaylist } from "@/lib/bucketing/cold-start";
+import {
+  seedBucketsFromSpotifyPlaylist,
+  seedBucketsFromSpotifyTrackIds,
+} from "@/lib/bucketing/cold-start";
+import { parseSpotifyTrackRef } from "@/lib/ingestion/spotify";
 import { isPaidSourceConfigured } from "@/server/env";
 import { protectedProcedure, router } from "../trpc-base";
 
@@ -46,6 +50,41 @@ export const setupRouter = router({
       }
       return {
         ok: true,
+        trackCount: result.trackCount,
+        assignedCount: result.assignedCount,
+        alreadyAssignedCount: result.alreadyAssignedCount,
+        spawnedBucketCount: result.spawnedBuckets.length,
+        joinedBucketCount: result.joinedBuckets.length,
+      };
+    }),
+
+  seedFromTrackUrls: protectedProcedure
+    .input(z.object({ urls: z.string().min(1) }))
+    .mutation(async ({ ctx, input }) => {
+      const lines = input.urls.split(/\r?\n/);
+      const parsed: string[] = [];
+      let invalid = 0;
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const id = parseSpotifyTrackRef(trimmed);
+        if (id) parsed.push(id);
+        else invalid++;
+      }
+      if (parsed.length === 0) {
+        return { ok: false, error: "no valid Spotify track URLs / URIs / IDs found" };
+      }
+      const result = await seedBucketsFromSpotifyTrackIds(ctx.db, ctx.appEnv, parsed);
+      if (!result) {
+        return {
+          ok: false,
+          error: "Spotify credentials are missing — check the Sources screen",
+        };
+      }
+      return {
+        ok: true,
+        inputCount: parsed.length,
+        invalidCount: invalid,
         trackCount: result.trackCount,
         assignedCount: result.assignedCount,
         alreadyAssignedCount: result.alreadyAssignedCount,

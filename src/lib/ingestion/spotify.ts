@@ -41,6 +41,20 @@ export type SpotifyTrack = {
   duration_ms?: number;
 };
 
+/** Accepts URL, URI, or bare 22-char Spotify track ID. Returns null if it doesn't parse. */
+export function parseSpotifyTrackRef(ref: string): string | null {
+  const trimmed = ref.trim();
+  if (!trimmed) return null;
+  const urlMatch = /\btrack\/([A-Za-z0-9]+)/.exec(trimmed);
+  if (urlMatch?.[1]) return urlMatch[1];
+  const uriMatch = /^spotify:track:([A-Za-z0-9]+)$/i.exec(trimmed);
+  if (uriMatch?.[1]) return uriMatch[1];
+  if (/^[A-Za-z0-9]+$/.test(trimmed) && trimmed.length >= 16 && trimmed.length <= 32) {
+    return trimmed;
+  }
+  return null;
+}
+
 type TokenCache = { token: string; expiresAt: number };
 let tokenCache: TokenCache | undefined;
 let tokenInFlight: Promise<string | null> | undefined;
