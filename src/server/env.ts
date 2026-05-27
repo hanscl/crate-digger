@@ -10,7 +10,7 @@ const schema = z.object({
     .string()
     .url()
     .optional()
-    .default("http://localhost:3000/api/auth/spotify/callback"),
+    .default("http://127.0.0.1:3000/api/auth/spotify/callback"),
   LASTFM_API_KEY: z.string().optional().default(""),
   VIBERATE_API_KEY: z.string().optional().default(""),
   PORT: z.coerce.number().int().positive().default(3000),

@@ -15,6 +15,12 @@ export function SetupScreen() {
       void utils.buckets.list.invalidate();
     },
   });
+  const seedTracks = trpc.setup.seedFromTrackUrls.useMutation({
+    onSuccess: () => {
+      void utils.setup.status.invalidate();
+      void utils.buckets.list.invalidate();
+    },
+  });
   const tasteImport = trpc.taste.import.useMutation({
     onSuccess: () => {
       void utils.setup.status.invalidate();
@@ -24,6 +30,7 @@ export function SetupScreen() {
   });
 
   const [playlistUrl, setPlaylistUrl] = useState("");
+  const [trackUrls, setTrackUrls] = useState("");
   const [importError, setImportError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -110,6 +117,48 @@ export function SetupScreen() {
               <div className="mt-3 text-xs mono text-pass">{seed.data.error}</div>
             )
           ) : null}
+        </div>
+
+        <div className="col-span-12 panel p-5">
+          <div className="cap text-ink-3 mb-3">cold-start: paste track URLs</div>
+          <div className="text-ink-3 text-xs mb-3">
+            Workaround for the Spotify Dev Mode cliff: <code>/playlists/&#123;id&#125;/tracks</code>{" "}
+            returns 403 for user-generated playlists. Paste one Spotify track URL / URI / ID per
+            line. In Spotify desktop: open a playlist, ⌘A, right-click → Share → Copy Spotify URIs.
+            (Proper fix tracked as LAB-21: user OAuth.)
+          </div>
+          <textarea
+            value={trackUrls}
+            onChange={(e) => setTrackUrls(e.target.value)}
+            placeholder={
+              "https://open.spotify.com/track/…\nspotify:track:…\n4iV5W9uYEdYUVa79Axb7Rh"
+            }
+            rows={6}
+            className="w-full bg-bg-3 border border-line-strong rounded-2 px-2 py-1 text-xs mono text-ink-1"
+          />
+          <div className="mt-2 flex items-center gap-3">
+            <button
+              type="button"
+              className="btn primary sm"
+              disabled={!trackUrls.trim() || seedTracks.isPending}
+              onClick={() => seedTracks.mutate({ urls: trackUrls })}
+            >
+              {seedTracks.isPending ? "seeding…" : "seed buckets"}
+            </button>
+            {seedTracks.data ? (
+              seedTracks.data.ok ? (
+                <span className="text-xs mono text-keep">
+                  {seedTracks.data.assignedCount} assigned • {seedTracks.data.spawnedBucketCount}{" "}
+                  spawned • {seedTracks.data.joinedBucketCount} joined
+                  {(seedTracks.data.invalidCount ?? 0) > 0
+                    ? ` • ${seedTracks.data.invalidCount} unparseable lines skipped`
+                    : ""}
+                </span>
+              ) : (
+                <span className="text-xs mono text-pass">{seedTracks.data.error}</span>
+              )
+            ) : null}
+          </div>
         </div>
 
         <div className="col-span-12 panel p-5">

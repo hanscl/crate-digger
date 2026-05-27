@@ -32,6 +32,11 @@ genre-only. **ReccoBeats replaces `/audio-features`** (see below).
 
 - Every Dev Mode app now requires the **owner to hold Spotify Premium**.
   No localhost / single-user exemption.
+- **Redirect URIs must use the IPv4 loopback `127.0.0.1`**, not `localhost`.
+  Crate Digger's default `SPOTIFY_REDIRECT_URI` is
+  `http://127.0.0.1:3000/api/auth/spotify/callback`; whatever you put in
+  `.env` must match the URI registered in the Spotify Developer Dashboard
+  exactly.
 - **Batch endpoints removed**: `/tracks?ids=`, `/albums?ids=`,
   `/artists?ids=`. All lookups must be individual `GET /…/{id}`.
 - **`/search` `limit` capped at 10** (was 50).
@@ -43,16 +48,33 @@ genre-only. **ReccoBeats replaces `/audio-features`** (see below).
 
 Only endpoints that survive Feb 2026 Dev Mode:
 
-| Endpoint                     | Used by               | Notes                                               |
-| ---------------------------- | --------------------- | --------------------------------------------------- |
-| `POST /api/token`            | all calls             | Client Credentials                                  |
-| `GET /search?type=track`     | `spotify.ts` adapter  | paged at `limit=10`, offset-paginated up to 5 pages |
-| `GET /artists/{id}`          | `spotify-metadata.ts` | individual lookup — batch `?ids=` is gone           |
-| `GET /playlists/{id}/tracks` | `cold-start.ts`       | playlist endpoints unaffected by the cliffs         |
+| Endpoint                     | Used by               | Notes                                                                                                                                  |
+| ---------------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /api/token`            | all calls             | Client Credentials                                                                                                                     |
+| `GET /search?type=track`     | `spotify.ts` adapter  | paged at `limit=10`, offset-paginated up to 5 pages                                                                                    |
+| `GET /tracks/{id}`           | `cold-start.ts`       | individual track lookup — batch `?ids=` is gone                                                                                        |
+| `GET /artists/{id}`          | `spotify-metadata.ts` | individual lookup — batch `?ids=` is gone                                                                                              |
+| `GET /playlists/{id}/tracks` | `cold-start.ts`       | **editorial playlists only** under Client Credentials (see below). User-generated playlists need user OAuth — workaround in LAB-20/21. |
 
 The Spotify adapter does **not** touch any batch `?ids=` endpoint,
 `/recommendations`, `/audio-features`, `/artists/{id}/top-tracks`,
 `/browse/*`, or `/markets`. Keep it that way — they 403 on new apps.
+
+### User-generated playlists return 403
+
+Discovered May 2026 during LAB-1 verification: `GET /playlists/{id}/tracks`
+returns **403** on new Dev Mode apps when the playlist is user-generated, even
+when set to public. Only Spotify-owned editorial playlists (Today's Top Hits,
+RapCaviar, anything in "Made by Spotify") are reachable via Client Credentials.
+
+- **Immediate workaround (LAB-20):** Setup screen has a "paste track URLs"
+  card. Export track URLs from a Spotify playlist via the desktop app
+  (open playlist → ⌘A → right-click → Share → Copy Spotify URIs) and paste
+  them in. Each URL hits `GET /tracks/{id}` (still works) and feeds the same
+  cold-start pipeline.
+- **Proper fix (LAB-21):** Spotify user OAuth (Authorization Code + PKCE).
+  Grants `playlist-read-private` + `user-library-read` so the playlist URL
+  card and a future Liked Songs button work against the user's own library.
 
 ## ReccoBeats — the audio-features replacement
 

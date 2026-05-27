@@ -229,7 +229,7 @@ export const queueRouter = router({
           subScores: winner?.subScores,
           poolSize: row.candidatePool.length,
         },
-        ctx.env,
+        ctx.appEnv,
       );
       return explanation;
     }),

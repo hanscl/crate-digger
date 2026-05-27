@@ -15,9 +15,14 @@ import type { Env } from "./env";
  * primitives here — a module that imports no routers — breaks the cycle.
  */
 
+/**
+ * `appEnv` (not `env`) because `@hono/trpc-server` unconditionally overrides
+ * the `env` key on every tRPC context with Hono's runtime env (which on Node
+ * is `{ incoming, outgoing }`). Naming our app env `appEnv` dodges the clash.
+ */
 export type Context = {
   db: Database;
-  env: Env;
+  appEnv: Env;
   isAuthenticated: boolean;
 };
 

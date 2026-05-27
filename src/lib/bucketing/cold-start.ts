@@ -124,3 +124,47 @@ export async function seedBucketsFromSpotifyPlaylist(
 
   return seedBucketsFromTrackIds(db, trackIds);
 }
+
+/**
+ * Workaround for the Nov 2024 Spotify cliff: `/playlists/{id}/tracks` returns
+ * 403 for new Dev Mode apps when the playlist is user-generated, even when
+ * public. `/tracks/{id}` still works on new apps, so the user can paste a list
+ * of track URLs and we ingest them individually.
+ *
+ * Tracked as LAB-20; the proper fix (Spotify user OAuth) is LAB-21.
+ */
+export async function seedBucketsFromSpotifyTrackIds(
+  db: Database,
+  env: Env,
+  spotifyTrackIds: readonly string[],
+): Promise<ColdStartResult | null> {
+  if (!env.SPOTIFY_CLIENT_ID || !env.SPOTIFY_CLIENT_SECRET) return null;
+  const deduped = [...new Set(spotifyTrackIds.map((s) => s.trim()).filter(Boolean))];
+  if (deduped.length === 0) {
+    return {
+      trackCount: 0,
+      assignedCount: 0,
+      alreadyAssignedCount: 0,
+      spawnedBuckets: [],
+      joinedBuckets: [],
+      assignments: [],
+    };
+  }
+
+  const candidates: RawCandidate[] = [];
+  for (const id of deduped) {
+    const track = await spotifyGet<SpotifyTrack>(`/tracks/${id}`, {}, env);
+    if (track) candidates.push(spotifyTrackToCandidate(track));
+  }
+
+  const trackIds: number[] = [];
+  for (const c of candidates) {
+    const r = await resolveCandidate(db, c);
+    trackIds.push(r.trackId);
+  }
+
+  await enrichAudioFeaturesForTracks(db, trackIds);
+  await enrichGenresFromArtists(db, env, trackIds);
+
+  return seedBucketsFromTrackIds(db, trackIds);
+}
