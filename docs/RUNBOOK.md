@@ -10,6 +10,18 @@ moved past the data-sourcing block the original walk hit. See
 `docs/SOURCES.md` for the underlying Spotify reality this walk works
 around.
 
+> ⏸️ **In flight — LAB-22.** During a live walk in late May 2026,
+> step 3.2 surfaced that Spotify `/v1/artists/{id}` now returns
+> `"genres": null` on new Dev Mode apps. Bucketing collapsed to
+> audio-only clustering (107 varied tracks → only 2 buckets).
+> A new, improved tagging mechanism (Last.fm `artist.getTopTags`,
+> with per-artist caching and a multi-artist-credit split) is in
+> review as PR #15 / branch `lab-22-lastfm-tags-genre`. **Resume
+> this walk from step 3.2 once LAB-22 merges.** Until then, expect
+> `primary_genre` to be null and only 1–2 buckets to emerge from
+> any cold-start seed. The rest of the walk (rating, knob bumps,
+> Analyzer, source failover, taste round-trip) is unaffected.
+
 ## 1. Prereqs
 
 ### Docker
