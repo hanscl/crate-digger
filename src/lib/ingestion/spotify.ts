@@ -49,9 +49,7 @@ export function parseSpotifyTrackRef(ref: string): string | null {
   if (urlMatch?.[1]) return urlMatch[1];
   const uriMatch = /^spotify:track:([A-Za-z0-9]+)$/i.exec(trimmed);
   if (uriMatch?.[1]) return uriMatch[1];
-  if (/^[A-Za-z0-9]+$/.test(trimmed) && trimmed.length >= 16 && trimmed.length <= 32) {
-    return trimmed;
-  }
+  if (/^[A-Za-z0-9]{22}$/.test(trimmed)) return trimmed;
   return null;
 }
 

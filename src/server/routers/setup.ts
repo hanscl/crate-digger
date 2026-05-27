@@ -74,6 +74,13 @@ export const setupRouter = router({
       if (parsed.length === 0) {
         return { ok: false, error: "no valid Spotify track URLs / URIs / IDs found" };
       }
+      // Mirror the playlist path's implicit 2000-track ceiling
+      // (SPOTIFY_PLAYLIST_MAX_PAGES * PAGE_SIZE) — each ID becomes one
+      // sequential /tracks/{id} call, so an unbounded paste would chew
+      // through the rate-limit window.
+      if (parsed.length > 2000) {
+        return { ok: false, error: `too many tracks (${parsed.length}); max 2000 per seed` };
+      }
       const result = await seedBucketsFromSpotifyTrackIds(ctx.db, ctx.appEnv, parsed);
       if (!result) {
         return {
