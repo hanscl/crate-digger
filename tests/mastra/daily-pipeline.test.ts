@@ -194,8 +194,8 @@ describe("daily-pipeline (step-by-step)", () => {
     expect(pull.resolvedTrackIds).toHaveLength(3);
     expect(pull.newlyCreatedTrackIds).toHaveLength(3);
     // fix-1 + fix-2 carry a Spotify id → ReccoBeats enriches both; fix-3 has
-    // none. The fixture candidates already carry genres, so the Spotify
-    // genre enricher has nothing to do (and fixtureEnv has no creds anyway).
+    // none. The fixture candidates already carry genres, so the Last.fm tags
+    // enricher has nothing to do (and fixtureEnv has no creds anyway).
     expect(pull.audioFeaturesUpdated).toBe(2);
     expect(pull.genresUpdated).toBe(0);
 

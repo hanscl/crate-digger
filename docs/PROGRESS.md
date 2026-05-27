@@ -36,6 +36,74 @@ Phase tracker. Update at the end of every phase. Newest at the top.
   - DEPLOY.md is referenced from `README.md` but not yet from `PLAN.md`
     or `CLAUDE.md`. Leave that to the deploy-time follow-up.
 
+## LAB-22 — Genre signal swap to Last.fm tags
+
+- **Status:** review
+- **Branch:** `lab-22-lastfm-tags-genre`
+- **PR:** _pending_
+- **Scope landed:** Found during LAB-1 runbook verification: every
+  `GET /v1/artists/{id}` response on a post-2024-11-27 Spotify Dev Mode
+  app returns `"genres": null`, not a populated array. Confirmed with
+  multiple artists (The Shins, Band of Horses, etc.) under valid Client
+  Credentials. Consequence: the 58-slot genre half of the embedding
+  went dark, `primary_genre` was null on every track, bucketing
+  collapsed to audio-only clustering (a 107-track seed produced only 2
+  buckets).
+  Fix: new `src/lib/enrichment/lastfm-tags.ts` calls Last.fm
+  `artist.getTopTags` with `autocorrect=1`, filters tags by
+  `count >= 10`, caps at top 8, then rebuilds `genres` /
+  `primary_genre` / `embedding`. Raw tag strings flow into the
+  existing keyword-matched 58-slot taxonomy in `embedding.ts` with
+  zero taxonomy rewrite — Last.fm's tag vocabulary happens to map
+  cleanly onto our slot keywords. Within an enrichment run, a
+  per-artist cache collapses N-tracks-by-one-artist to a single
+  Last.fm call. `primaryArtist()` helper splits Spotify's
+  comma-joined multi-artist credits ("The Shins, James Mercer") on
+  the way out so Last.fm autocorrect can resolve. Idempotent via the
+  same `cardinality(genres) = 0` cache the old enricher used.
+  Graceful degradation on the in-body API error envelope (`error: 6
+"artist not found"`), HTTP non-200, and single-tag-as-object
+  responses.
+
+  Track-level vs artist-level: we initially built on
+  `track.getTopTags`, but live-API verification under LAB-1 walk
+  showed track-level returns empty across the board on the live
+  Last.fm API as of mid-2026 (confirmed against multiple popular
+  tracks). Artist-level still serves rich tag clouds, so the
+  enricher uses it. Semantic tradeoff is acceptable: every track by
+  an artist shares a genre vector (matches bucketing intent —
+  same-artist tracks should cluster). One-off cross-genre side
+  projects lose track-specific tagging.
+  Dead Spotify path deleted: `src/lib/enrichment/spotify-metadata.ts`
+  and `tests/enrichment/spotify-metadata.test.ts` removed. Call sites
+  in `src/lib/bucketing/cold-start.ts` (both seed entry points) and
+  `src/mastra/lib/pipeline-steps.ts` (daily pipeline) swapped to the
+  new module.
+  Docs: `docs/SOURCES.md` gains a "Mid 2026 — artist.genres returns
+  null" cliff entry under the Spotify section, a "Genres via Last.fm
+  tags" section documenting the swap, and the depended-on endpoints
+  table drops `GET /artists/{id}`.
+  Tests: new `tests/enrichment/lastfm-tags.test.ts` (4 `primaryArtist`
+  unit cases + 7 enricher cases — count threshold + primary-genre +
+  embedding rebuild, idempotency, per-artist cache, multi-artist
+  split, in-body error envelope, no-creds no-op, single-tag-as-object).
+  Daily pipeline test comment updated to reflect the new enricher.
+
+- **Notes for future phases:**
+  - Coverage caveat: Last.fm's catalogue is biased toward Western
+    indie/rock/electronic. Long-tail / non-Western tracks may return
+    no tags — the system still buckets on audio alone. The
+    `audio_feature_coverage` KPI surfaces ReccoBeats rot but there is
+    no symmetric `genre_coverage` KPI yet; if Last.fm coverage proves
+    spotty in practice, add one.
+  - `mbid` is not persisted on `track` rows; lookups use the
+    `(artist, title)` pair. If match rate ever proves insufficient,
+    plumb `mbid` through the resolver and prefer it over the pair.
+  - If Spotify ever turns `artist.genres` back on, the Last.fm path is
+    fine to keep as the primary — adding Spotify back as a
+    supplementary signal would be the rebuild path, not a wholesale
+    swap.
+
 ## LAB-4 — ReccoBeats audio-features swap + Feb 2026 Spotify adaptation
 
 - **Status:** review
