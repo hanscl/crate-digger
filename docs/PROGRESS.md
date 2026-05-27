@@ -6,7 +6,7 @@ Phase tracker. Update at the end of every phase. Newest at the top.
 
 - **Status:** review
 - **Branch:** `lab-1-runbook-refresh`
-- **PR:** _pending_
+- **PR:** #14
 - **Scope landed:** Refreshed the LAB-1 build & test runbook for the
   post-LAB-4 + LAB-20 reality and lifted it from the Linear issue
   description into a permanent doc — `docs/RUNBOOK.md`. Ten-step

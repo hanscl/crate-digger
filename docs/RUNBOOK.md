@@ -162,10 +162,10 @@ carry the seed badge.
 
 Console → drag novelty knob → release.
 
-**Pass:** the `refill λ` knob commits silently (no version bump for
-sourceMix / dailyCap / queueCeiling / spawn / merge / split tweaks);
-**refill λ** commits and bumps `refill v{N+1}` via the chip below the
-ranking row. Active versions panel reflects the new id.
+**Pass:** the **novelty knob** (a.k.a. `refill λ`) commits and bumps
+`refill v{N+1}` via the chip below the ranking row. Other controls
+(sourceMix / dailyCap / queueCeiling / spawn / merge / split) commit
+silently — no version bump. Active versions panel reflects the new id.
 
 ### 3.7 Analyzer KPIs
 
