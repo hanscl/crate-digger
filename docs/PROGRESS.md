@@ -2,6 +2,40 @@
 
 Phase tracker. Update at the end of every phase. Newest at the top.
 
+## LAB-1 — Build & Test runbook close-out
+
+- **Status:** review
+- **Branch:** `lab-1-runbook-refresh`
+- **PR:** #14
+- **Scope landed:** Refreshed the LAB-1 build & test runbook for the
+  post-LAB-4 + LAB-20 reality and lifted it from the Linear issue
+  description into a permanent doc — `docs/RUNBOOK.md`. Ten-step
+  verification walk: prereqs (Docker, `.env`, `pnpm db:init`,
+  `pnpm check && pnpm typecheck && pnpm test`), boot, login, Setup
+  cold-start (editorial-playlist path OR LAB-20 paste-track-URLs path),
+  Console "Run daily pipeline now", rate ~30 tracks, buckets emerge,
+  novelty/refill-λ knob bumps `model_version` (Constraint #3), Analyzer
+  KPIs + counterfactual replay (Constraint #2), Sources failover with
+  Spotify disabled (Constraint #1), `audio_feature_coverage` KPI sanity
+  check, taste profile JSON round-trip through a wiped DB (Constraint #8).
+  Each step names its pass condition. Gotchas called out at the prereq
+  step rather than mid-walk: Spotify Dev Mode owner must hold Premium,
+  redirect URI must be `127.0.0.1` (not `localhost`), ReccoBeats has no
+  key (toggle on Sources), Anthropic key optional (agents degrade to
+  deterministic placeholders). Phase 8's `docs/DEPLOY.md` carried in
+  alongside — three-tier deploy walkthrough (local / single VM / Fly.io)
+  plus the OSS GitHub Actions security model that pairs with the
+  Terraform module landed in PR #10. No code or test changes.
+- **Notes for future phases:**
+  - LAB-1 itself is now a docs artefact, not an open verification debt.
+    Pivot point: as soon as the data flow surfaces a real bug during
+    the walk, file the fix under a new LAB-N rather than re-opening LAB-1.
+  - The runbook references `docs/SOURCES.md` for Spotify cliffs rather
+    than restating them — keep SOURCES authoritative for any future
+    cliff (LAB-21 user OAuth will land there too).
+  - DEPLOY.md is referenced from `README.md` but not yet from `PLAN.md`
+    or `CLAUDE.md`. Leave that to the deploy-time follow-up.
+
 ## LAB-22 — Genre signal swap to Last.fm tags
 
 - **Status:** review
