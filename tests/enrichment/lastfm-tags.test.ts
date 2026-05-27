@@ -6,14 +6,15 @@ import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/db/schema";
-import { enrichGenresFromLastfm } from "@/lib/enrichment/lastfm-tags";
+import { enrichGenresFromLastfm, primaryArtist } from "@/lib/enrichment/lastfm-tags";
 import type { Env } from "@/server/env";
 
 /**
  * Last.fm tags genre enrichment — fills `genres` / `primary_genre` /
- * `embedding` for tracks via `track.getTopTags`. All Last.fm HTTP is
- * stubbed; behaviour around tag counts, the in-body API error envelope,
- * and idempotency is pinned here.
+ * `embedding` via `artist.getTopTags`. We use artist-level (not
+ * track-level) tags because `track.getTopTags` returns empty across the
+ * board on the live API as of mid-2026; artist-level still serves rich
+ * popularity-weighted clouds. All Last.fm HTTP is stubbed.
  */
 
 let container: StartedPostgreSqlContainer;
@@ -70,16 +71,14 @@ const env: Env = {
 type Tag = { name: string; count: number | string };
 type LastfmEnvelope = { toptags?: { tag?: Tag[] | Tag }; error?: number; message?: string };
 
-function stubLastfm(byTrack: Record<string, LastfmEnvelope>): ReturnType<typeof vi.fn> {
+function stubLastfm(byArtist: Record<string, LastfmEnvelope>): ReturnType<typeof vi.fn> {
   const mock = vi.fn(async (input: string | URL) => {
     const u = new URL(String(input));
     if (!u.toString().includes("ws.audioscrobbler.com")) {
       return new Response("unexpected", { status: 404 });
     }
     const artist = u.searchParams.get("artist") ?? "";
-    const title = u.searchParams.get("track") ?? "";
-    const key = `${artist}::${title}`;
-    const env = byTrack[key] ?? { toptags: { tag: [] } };
+    const env = byArtist[artist] ?? { toptags: { tag: [] } };
     return new Response(JSON.stringify(env), { status: 200 });
   });
   vi.stubGlobal("fetch", mock);
@@ -107,10 +106,26 @@ async function seedTrack(artist: string, title: string): Promise<number> {
   return row.id;
 }
 
+describe("primaryArtist", () => {
+  it("returns the single artist unchanged", () => {
+    expect(primaryArtist("Beach House")).toBe("Beach House");
+  });
+  it("splits Spotify's comma-joined multi-artist string", () => {
+    expect(primaryArtist("The Shins, James Mercer")).toBe("The Shins");
+  });
+  it("returns null on whitespace-only input", () => {
+    expect(primaryArtist("   ")).toBe(null);
+    expect(primaryArtist("")).toBe(null);
+  });
+  it("trims surrounding whitespace", () => {
+    expect(primaryArtist("  Beach House  ")).toBe("Beach House");
+  });
+});
+
 describe("enrichGenresFromLastfm", () => {
   it("filters by tag count, writes genres + primary_genre + embedding", async () => {
     stubLastfm({
-      "Beach House::Levitation": {
+      "Beach House": {
         toptags: {
           tag: [
             { name: "dream pop", count: 100 },
@@ -137,7 +152,7 @@ describe("enrichGenresFromLastfm", () => {
 
   it("is idempotent — a second run skips tracks that already have genres", async () => {
     stubLastfm({
-      "Beach House::Levitation": {
+      "Beach House": {
         toptags: { tag: [{ name: "dream pop", count: 100 }] },
       },
     });
@@ -147,11 +162,55 @@ describe("enrichGenresFromLastfm", () => {
     expect((await enrichGenresFromLastfm(db, env, [id])).updated).toBe(0);
   });
 
+  it("caches per-artist — multiple tracks by one artist = one Last.fm call", async () => {
+    const mock = stubLastfm({
+      "Beach House": {
+        toptags: { tag: [{ name: "dream pop", count: 100 }] },
+      },
+    });
+    const a = await seedTrack("Beach House", "Levitation");
+    const b = await seedTrack("Beach House", "Space Song");
+    const c = await seedTrack("Beach House", "Myth");
+
+    const result = await enrichGenresFromLastfm(db, env, [a, b, c]);
+    expect(result.updated).toBe(3);
+
+    const artistCalls = mock.mock.calls.filter((call) =>
+      String(call[0]).includes("artist=Beach+House"),
+    );
+    expect(artistCalls).toHaveLength(1);
+  });
+
+  it("splits Spotify multi-artist join on the way out to Last.fm", async () => {
+    const mock = stubLastfm({
+      "The Shins": {
+        toptags: {
+          tag: [
+            { name: "indie", count: 100 },
+            { name: "indie rock", count: 83 },
+          ],
+        },
+      },
+    });
+    // Spotify joins multi-artist credits as "Artist A, Artist B".
+    const id = await seedTrack("The Shins, James Mercer", "Simple Song");
+
+    const result = await enrichGenresFromLastfm(db, env, [id]);
+    expect(result.updated).toBe(1);
+
+    // The Last.fm call must use just the primary, not the joined string.
+    const calls = mock.mock.calls.map((c) => String(c[0]));
+    expect(calls.some((u) => u.includes("artist=The+Shins") && !u.includes("Mercer"))).toBe(true);
+
+    const [row] = await db.select().from(schema.track).where(eq(schema.track.id, id));
+    expect(row?.genres).toEqual(["indie", "indie rock"]);
+  });
+
   it("degrades silently when Last.fm returns the in-body error envelope", async () => {
     stubLastfm({
-      "Unknown Artist::Unknown Track": {
+      "Unknown Artist": {
         error: 6,
-        message: "Track not found",
+        message: "Artist not found",
       },
     });
     const id = await seedTrack("Unknown Artist", "Unknown Track");
@@ -167,7 +226,7 @@ describe("enrichGenresFromLastfm", () => {
 
   it("no-ops without a Last.fm API key (and never calls fetch)", async () => {
     const mock = stubLastfm({
-      "Beach House::Levitation": {
+      "Beach House": {
         toptags: { tag: [{ name: "dream pop", count: 100 }] },
       },
     });
@@ -180,9 +239,9 @@ describe("enrichGenresFromLastfm", () => {
 
   it("handles single-tag responses (Last.fm returns object, not array)", async () => {
     stubLastfm({
-      "Solo Artist::Only Tag": {
-        // When a track has exactly one tag, Last.fm returns `tag` as an
-        // object instead of an array. Our parser must accept both.
+      "Solo Artist": {
+        // When an artist has exactly one tag at the top, Last.fm returns
+        // `tag` as an object instead of an array. Our parser must accept both.
         toptags: { tag: { name: "jazz", count: 50 } },
       },
     });

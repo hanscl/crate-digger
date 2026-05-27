@@ -12,7 +12,7 @@ doesn't re-discover it the hard way.
 - **ReccoBeats** = audio features (tempo, energy, valence, danceability,
   acousticness, instrumentalness). Free, no API key.
 - **Last.fm** = ingestion (search / similar / chart) **+ genre signal via
-  `track.getTopTags`** (replaces Spotify artist genres, see below).
+  `artist.getTopTags`** (replaces Spotify artist genres, see below).
 - **Viberate** = optional paid trend source.
 
 ## Spotify Web API cliffs
@@ -40,8 +40,8 @@ data for new app credentials rather than removed the endpoint.
 
 Consequence for Crate Digger: the 58-slot genre half of the embedding
 went dark, `primary_genre` was null on every Spotify-sourced track, and
-bucketing collapsed to audio-only clustering. **Last.fm tags
-(`track.getTopTags`) replace the Spotify path** — see "Genres via
+bucketing collapsed to audio-only clustering. **Last.fm
+`artist.getTopTags` replaces the Spotify path** — see "Genres via
 Last.fm tags" below. Tracked as LAB-22.
 
 ### 2026-02-06 — Dev Mode tightened
@@ -95,34 +95,56 @@ RapCaviar, anything in "Made by Spotify") are reachable via Client Credentials.
 
 ## Genres via Last.fm tags
 
-`GET https://ws.audioscrobbler.com/2.0/?method=track.getTopTags&artist=…&track=…`
-returns a popularity-weighted tag cloud for any track Last.fm has heard of.
-This is Crate Digger's genre signal as of LAB-22 — Spotify
+`GET https://ws.audioscrobbler.com/2.0/?method=artist.getTopTags&artist=…`
+returns a popularity-weighted tag cloud for any artist Last.fm has heard
+of. This is Crate Digger's genre signal as of LAB-22 — Spotify
 `artist.genres` is dead (see above) and Last.fm tags happen to map cleanly
 onto the existing 58-slot genre taxonomy in `src/lib/embedding.ts`
 (no taxonomy rewrite required — raw tag strings flow through unchanged).
 
-Implementation lives in `src/lib/enrichment/lastfm-tags.ts`:
+### Why artist-level, not track-level
 
-- **Per-track lookup** keyed on `(artist, title)`. `autocorrect=1` lets
-  Last.fm fix minor spelling. `mbid` isn't persisted yet — could be added
-  if (artist, title) match rate ever proves insufficient.
+We started on `track.getTopTags` (per-track tag cloud), but as of
+mid-2026 it returns empty across the board — Beach House / Levitation,
+The Shins / Simple Song, all confirmed empty under valid credentials.
+`track.getInfo`'s embedded `toptags` is empty too. Last.fm appears to
+have killed track-level user tags without announcement, while keeping
+artist-level intact.
+
+The semantic tradeoff is acceptable for our case: every track by an
+artist gets the same genre vector, which actually matches the bucketing
+intent (same-artist clustering pulls a discography together). One-off
+cross-genre side projects lose track-specific tagging — accepted.
+
+### Implementation
+
+Lives in `src/lib/enrichment/lastfm-tags.ts`:
+
+- **Per-artist lookup** with `autocorrect=1`. Within an enrichment run
+  the per-artist cache collapses N tracks-by-one-artist to a single
+  Last.fm call.
+- **Primary-artist split**: Spotify joins multi-artist credits as
+  `"Artist A, Artist B"` in `track.artist`. Last.fm autocorrect can't
+  resolve through that, so we split on `", "` and pass only the head.
+  False splits on band names containing commas ("Crosby, Stills & Nash")
+  are rare; autocorrect often still resolves the fragment.
 - **Count threshold**: tags with `count < 10` get dropped. Last.fm tag
   counts saturate at 100 for the top tag; single-user fan tags
   ("favourite", "seen live") usually sit at 1-5.
-- **Top-N cap**: at most 8 tags per track. The keyword matcher in
+- **Top-N cap**: at most 8 tags per artist. The keyword matcher in
   `embedding.ts` saturates well below that — more is noise.
-- **Graceful degradation**: in-body error envelope (`error: 6 "track not
-found"`), HTTP non-200, and empty responses all collapse to "no tags"
-  rather than throw. A track without tags still ingests and buckets on
-  audio alone.
+- **Graceful degradation**: in-body error envelope (`error: 6 "artist
+not found"`), HTTP non-200, and empty responses all collapse to "no
+  tags" rather than throw. A track without tags still ingests and
+  buckets on audio alone.
 - **Idempotency**: only targets tracks with empty `genres` — the
   `cardinality(genres) = 0` filter _is_ the cache.
 
-Coverage caveat: long-tail / non-Western / very-new tracks may return no
-tags. Last.fm's catalogue is biased toward Western indie/rock/electronic
-— if `genre_coverage` looks anaemic for a non-Western corpus, lean on
-the audio half of the embedding (ReccoBeats has broader coverage).
+Coverage caveat: long-tail / non-Western / very-new artists may return
+no tags. Last.fm's catalogue is biased toward Western
+indie/rock/electronic — if `genre_coverage` looks anaemic for a
+non-Western corpus, lean on the audio half of the embedding (ReccoBeats
+has broader coverage).
 
 ## ReccoBeats — the audio-features replacement
 
