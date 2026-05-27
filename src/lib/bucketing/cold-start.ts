@@ -1,6 +1,6 @@
 import { resolveCandidate } from "@/lib/enrichment/resolve";
+import { enrichGenresFromLastfm } from "@/lib/enrichment/lastfm-tags";
 import { enrichAudioFeaturesForTracks } from "@/lib/enrichment/reccobeats";
-import { enrichGenresFromArtists } from "@/lib/enrichment/spotify-metadata";
 import { type SpotifyTrack, spotifyGet, spotifyTrackToCandidate } from "@/lib/ingestion/spotify";
 import type { Database } from "@/db/client";
 import type { RawCandidate } from "@/lib/ingestion/types";
@@ -116,11 +116,11 @@ export async function seedBucketsFromSpotifyPlaylist(
   }
 
   // Best-effort enrichment, same order as the daily pipeline: ReccoBeats
-  // audio features first, then Spotify genres-via-artist-lookup (it rebuilds
-  // the embedding from the post-ReccoBeats features). Both degrade silently
-  // — a track missing either still buckets, just on partial signal.
+  // audio features first, then Last.fm tags (the genre step rebuilds the
+  // embedding from the post-ReccoBeats features). Both degrade silently —
+  // a track missing either still buckets, just on partial signal.
   await enrichAudioFeaturesForTracks(db, trackIds);
-  await enrichGenresFromArtists(db, env, trackIds);
+  await enrichGenresFromLastfm(db, env, trackIds);
 
   return seedBucketsFromTrackIds(db, trackIds);
 }
@@ -164,7 +164,7 @@ export async function seedBucketsFromSpotifyTrackIds(
   }
 
   await enrichAudioFeaturesForTracks(db, trackIds);
-  await enrichGenresFromArtists(db, env, trackIds);
+  await enrichGenresFromLastfm(db, env, trackIds);
 
   return seedBucketsFromTrackIds(db, trackIds);
 }
