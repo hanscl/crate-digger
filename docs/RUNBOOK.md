@@ -182,6 +182,20 @@ and bucketing still works on the Last.fm-only vector. Each layer is
 independent — any subset, or none, is valid. Restore the keys before
 moving on.
 
+> **Genre skews to the artist, not the track — by design.** Two of the
+> three layers are coarse-grained: Last.fm `artist.getTopTags` is
+> _artist_-level (the dominant baseline) and Discogs is _master/release_-
+> level. Only MusicBrainz is _recording_-level (per-track), and it only
+> contributes when the recording MBID resolves **and** carries its own
+> genre tags — often it returns nothing. Net effect: a track inherits its
+> artist's identity. Extreme's "More Than Words" (an acoustic ballad)
+> lands in **metal**; an NDW track by a new-wave-tagged artist lands in
+> **electronic**. The single label is then `derivePrimaryGenre`
+> (`embedding.ts`) mapping the merged tags onto a fixed genre _slot_ via
+> longest-keyword match — so off-table genres (e.g. NDW) collapse into
+> the nearest slot. This is the accuracy ceiling of artist-level tagging,
+> not a bug.
+
 ### 3.5 Rate ~30 tracks
 
 Queue screen. `J` = dislike, `K` = skip, `L` = keep. Mix freely; aim
@@ -194,14 +208,32 @@ for ≥30 ratings with ≥10 keeps to give bucketing something to find.
 
 Buckets screen (sidebar `02`).
 
-**Pass:** ≥1 bucket with an auto-name (not `"<genre> (auto)"` — that's
-the deterministic fallback; the Anthropic agent should overwrite when
-`ANTHROPIC_API_KEY` is set). Centroid radar renders. Cold-start seeds
-carry the seed badge. A varied cold-start seed should yield **several
-genre-differentiated buckets**, not the 1–2-bucket collapse that the
-pre-LAB-22 genre outage produced — if a 100-track varied seed still
-falls into ≤2 buckets, genre enrichment isn't reaching tracks (re-check
-step 3.4).
+**Pass:** centroid radar renders; cold-start seeds carry the seed badge.
+A varied cold-start seed should yield **several genre-differentiated
+buckets**, not the 1–2-bucket collapse that the pre-LAB-22 genre outage
+produced — if a 100-track varied seed still falls into ≤2 buckets, genre
+enrichment isn't reaching tracks (re-check step 3.4).
+
+**On bucket names — read this before flagging `"<genre> (auto)"` as a
+bug.** The `bucket-namer` agent runs **only in the daily pipeline**
+(`pipeline-steps.ts` → `bucketAndName`), never in the cold-start seed
+path (`cold-start.ts` calls `assignTrack` directly). So buckets created
+by the Setup-screen seed show the deterministic placeholder
+`"<genre> (auto)"` **regardless of whether `ANTHROPIC_API_KEY` is set** —
+expected, not a misconfiguration. Agent names appear only for buckets a
+**daily-pipeline run spawns**; a later run does **not** retroactively
+rename existing seed buckets (it names only buckets it spawns itself,
+`pipeline-steps.ts:129-132`). Until a naming backfill exists, the only
+way to name a seed bucket is the manual `rename` on the Buckets screen
+(`buckets.rename`). **Known gap — Hans is resolving it; tracked off
+LAB-1.**
+
+Two buckets sharing a name (e.g. two `"alternative (auto)"`) is also
+expected, not a dedupe failure: clustering keys on the 64-dim
+audio+genre **vector**, not the label. Two same-genre tracks more than
+the spawn threshold apart in cosine each spawn their own bucket and both
+inherit the shared primary-genre name (`assign.ts` spawn-or-join
+contract). Most likely at small N, before any merge pass runs.
 
 ### 3.7 Console — novelty knob bumps `model_version`
 
