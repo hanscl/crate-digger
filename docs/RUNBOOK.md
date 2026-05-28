@@ -5,22 +5,19 @@ checkout to confirm every constraint from `PLAN.md` is wired through —
 prereqs, boot, the full data flow, and the taste-profile round-trip.
 
 Originally lived in LAB-1's Linear description. Refreshed after LAB-4
-(ReccoBeats audio features) and LAB-20 (paste-track-URLs cold-start)
-moved past the data-sourcing block the original walk hit. See
-`docs/SOURCES.md` for the underlying Spotify reality this walk works
-around.
+(ReccoBeats audio features), LAB-20 (paste-track-URLs cold-start), and
+the LAB-22 → LAB-23 genre-sourcing rework. See `docs/SOURCES.md` for the
+underlying Spotify reality this walk works around.
 
-> ⏸️ **In flight — LAB-22.** During a live walk in late May 2026,
-> step 3.2 surfaced that Spotify `/v1/artists/{id}` now returns
-> `"genres": null` on new Dev Mode apps. Bucketing collapsed to
-> audio-only clustering (107 varied tracks → only 2 buckets).
-> A new, improved tagging mechanism (Last.fm `artist.getTopTags`,
-> with per-artist caching and a multi-artist-credit split) is in
-> review as PR #15 / branch `lab-22-lastfm-tags-genre`. **Resume
-> this walk from step 3.2 once LAB-22 merges.** Until then, expect
-> `primary_genre` to be null and only 1–2 buckets to emerge from
-> any cold-start seed. The rest of the walk (rating, knob bumps,
-> Analyzer, source failover, taste round-trip) is unaffected.
+> **Why genres come from where they do.** The original walk hit a wall at
+> step 3.2 when Spotify `/v1/artists/{id}` started returning
+> `"genres": null` on new Dev Mode apps — bucketing collapsed to
+> audio-only clustering (107 varied tracks → only 2 buckets). Resolved in
+> LAB-22 (Last.fm `artist.getTopTags`, with per-artist caching and a
+> multi-artist-credit split) and extended in LAB-23 (MusicBrainz +
+> Discogs layers). Genre tagging now runs on three independent,
+> individually-optional sources — **step 3.4 verifies the layering and
+> its graceful degradation.** See `docs/SOURCES.md`.
 
 ## 1. Prereqs
 
@@ -61,10 +58,21 @@ Optional but needed for a meaningful end-to-end walk:
 - `ANTHROPIC_API_KEY` — bucket auto-naming, why-surfaced copy, playlist
   parser. Without it, agents fall back to deterministic placeholders;
   the app still works.
-- `LASTFM_API_KEY` — Last.fm ingest. Free key at
-  `last.fm/api/account/create`.
+- `LASTFM_API_KEY` — Last.fm ingest **and** the baseline genre signal
+  (`artist.getTopTags`). Free key at `last.fm/api/account/create`. Also
+  used by the MusicBrainz layer to resolve recording MBIDs.
+- `MUSICBRAINZ_CONTACT_EMAIL` — enables the MusicBrainz genre layer
+  (recording-level genres). No API key; the email is the required
+  User-Agent identifier per MB policy. Empty → layer skipped.
+- `DISCOGS_KEY` / `DISCOGS_SECRET` — enable the Discogs genre + style
+  layer. Free credentials at `discogs.com/settings/developers`. Both
+  must be set; either empty → layer skipped.
 - `VIBERATE_API_KEY` — paid trend source. Optional by design
   (Constraint #1).
+
+The three genre layers stack: Last.fm alone gives a working but coarser
+vector; MusicBrainz recovers per-track signal; Discogs adds curated
+sub-genre styles. Any subset (or none) is valid — see step 3.4.
 
 ReccoBeats supplies audio features and needs **no** key — toggle it on
 the Sources screen.
@@ -141,7 +149,40 @@ pull → enrich → bucket → retrain → recommend → surface.
 Each row has why-surfaced copy (agent output or fallback) and a Scope
 viz with the winner sub-scores.
 
-### 3.4 Rate ~30 tracks
+### 3.4 Genre enrichment — multi-source layering (LAB-23)
+
+Enrichment in 3.2/3.3 runs three genre layers in order — Last.fm
+`artist.getTopTags` → MusicBrainz recording → Discogs master/release —
+each gated on its own env credentials (see Prereqs). Tags merge
+additively into `track.genres`; `track.genre_sources_processed` records
+which sources reached each track. Inspect the result against the local
+DB:
+
+```sh
+docker compose exec postgres psql -U cratedigger -d cratedigger -c \
+  "SELECT artist, title, mbid, genre_sources_processed, genres \
+   FROM track WHERE cardinality(genres) > 0 \
+   ORDER BY updated_at DESC LIMIT 10;"
+```
+
+**Pass (all three creds set):** `genre_sources_processed` reads
+`{lastfm,musicbrainz,discogs}` on tracks the pipeline reached, and
+`genres` holds a merged, de-duplicated set — Discogs styles
+(`Indietronica`, `Synth-pop`) sitting alongside Last.fm tags. A track
+that went dark under LAB-22 — e.g. The Shins / "New Slang" — now carries
+a populated genre vector and a resolved `mbid`. (`genre_sources_processed`
+lists a source even when it returned nothing — that's the "tried, no
+data" marker that stops re-fetching, not a failure.)
+
+**Pass (graceful degradation):** stop the app, blank
+`MUSICBRAINZ_CONTACT_EMAIL` + `DISCOGS_KEY`/`DISCOGS_SECRET` in `.env`,
+re-boot, and re-run the daily pipeline. It completes cleanly;
+`genre_sources_processed` on newly-reached tracks reads just `{lastfm}`,
+and bucketing still works on the Last.fm-only vector. Each layer is
+independent — any subset, or none, is valid. Restore the keys before
+moving on.
+
+### 3.5 Rate ~30 tracks
 
 Queue screen. `J` = dislike, `K` = skip, `L` = keep. Mix freely; aim
 for ≥30 ratings with ≥10 keeps to give bucketing something to find.
@@ -149,16 +190,20 @@ for ≥30 ratings with ≥10 keeps to give bucketing something to find.
 **Pass:** queue depth decrements. Each rating tags `model_version`
 (visible in the surface_event row server-side; not surfaced in UI).
 
-### 3.5 Buckets emerge
+### 3.6 Buckets emerge
 
 Buckets screen (sidebar `02`).
 
 **Pass:** ≥1 bucket with an auto-name (not `"<genre> (auto)"` — that's
 the deterministic fallback; the Anthropic agent should overwrite when
 `ANTHROPIC_API_KEY` is set). Centroid radar renders. Cold-start seeds
-carry the seed badge.
+carry the seed badge. A varied cold-start seed should yield **several
+genre-differentiated buckets**, not the 1–2-bucket collapse that the
+pre-LAB-22 genre outage produced — if a 100-track varied seed still
+falls into ≤2 buckets, genre enrichment isn't reaching tracks (re-check
+step 3.4).
 
-### 3.6 Console — novelty knob bumps `model_version`
+### 3.7 Console — novelty knob bumps `model_version`
 
 Console → drag novelty knob → release.
 
@@ -167,7 +212,7 @@ Console → drag novelty knob → release.
 (sourceMix / dailyCap / queueCeiling / spawn / merge / split) commit
 silently — no version bump. Active versions panel reflects the new id.
 
-### 3.7 Analyzer KPIs
+### 3.8 Analyzer KPIs
 
 Analyzer screen (sidebar `03`).
 
@@ -177,7 +222,7 @@ keep-rate spark renders. Bucket purity column lists every bucket with
 under the selected broad version — agreementRate < 1 when comparing
 across versions confirms Constraint #2 + #3 wiring.
 
-### 3.8 Source failover
+### 3.9 Source failover
 
 Sources screen (sidebar `05`) → disable Spotify → Console → "Run daily
 pipeline now".
@@ -186,7 +231,7 @@ pipeline now".
 contribute candidates (visible in the next surfaced events' source
 mix). Re-enable Spotify before moving on.
 
-### 3.9 Audio coverage
+### 3.10 Audio coverage
 
 Console → Active versions panel → `audio coverage`.
 
@@ -195,7 +240,7 @@ features for some long-tail tracks — that's expected. The KPI exists to
 make coverage rot visible if ReccoBeats breaks (`docs/SOURCES.md` →
 "ReccoBeats — bus factor 1").
 
-### 3.10 Taste round-trip (Constraint #8)
+### 3.11 Taste round-trip (Constraint #8)
 
 Setup screen → **"Export taste profile…"** → save the JSON.
 
