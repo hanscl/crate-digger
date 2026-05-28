@@ -12,6 +12,14 @@ const schema = z.object({
     .optional()
     .default("http://127.0.0.1:3000/api/auth/spotify/callback"),
   LASTFM_API_KEY: z.string().optional().default(""),
+  // Contact email folded into the MusicBrainz User-Agent header. Required
+  // by MB's API usage policy; the MusicBrainz enricher is skipped when
+  // empty so the rest of the pipeline degrades to Last.fm-only genres.
+  MUSICBRAINZ_CONTACT_EMAIL: z.string().optional().default(""),
+  // Discogs consumer key/secret pair. Both must be set for the Discogs
+  // enricher to run; degrades gracefully when either is empty.
+  DISCOGS_KEY: z.string().optional().default(""),
+  DISCOGS_SECRET: z.string().optional().default(""),
   VIBERATE_API_KEY: z.string().optional().default(""),
   PORT: z.coerce.number().int().positive().default(3000),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),

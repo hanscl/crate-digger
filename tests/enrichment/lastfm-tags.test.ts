@@ -62,6 +62,9 @@ const env: Env = {
   SPOTIFY_CLIENT_SECRET: "",
   SPOTIFY_REDIRECT_URI: "http://localhost/cb",
   LASTFM_API_KEY: "key",
+  MUSICBRAINZ_CONTACT_EMAIL: "",
+  DISCOGS_KEY: "",
+  DISCOGS_SECRET: "",
   VIBERATE_API_KEY: "",
   PORT: 3000,
   NODE_ENV: "test",
@@ -150,8 +153,8 @@ describe("enrichGenresFromLastfm", () => {
     expect(row?.embedding).toHaveLength(64);
   });
 
-  it("is idempotent — a second run skips tracks that already have genres", async () => {
-    stubLastfm({
+  it("is idempotent — a second run skips tracks Last.fm has already processed", async () => {
+    const mock = stubLastfm({
       "Beach House": {
         toptags: { tag: [{ name: "dream pop", count: 100 }] },
       },
@@ -160,6 +163,83 @@ describe("enrichGenresFromLastfm", () => {
 
     expect((await enrichGenresFromLastfm(db, env, [id])).updated).toBe(1);
     expect((await enrichGenresFromLastfm(db, env, [id])).updated).toBe(0);
+    // Second call must not have re-hit Last.fm — the per-source guard
+    // short-circuits before any fetch.
+    expect(mock).toHaveBeenCalledTimes(1);
+
+    const [row] = await db.select().from(schema.track).where(eq(schema.track.id, id));
+    expect(row?.genreSourcesProcessed).toEqual(["lastfm"]);
+  });
+
+  it("flags processed even when Last.fm returns no tags (so we don't retry)", async () => {
+    stubLastfm({
+      "Empty Artist": { toptags: { tag: [] } },
+    });
+    const id = await seedTrack("Empty Artist", "Some Track");
+
+    const result = await enrichGenresFromLastfm(db, env, [id]);
+    expect(result.updated).toBe(0);
+
+    const [row] = await db.select().from(schema.track).where(eq(schema.track.id, id));
+    expect(row?.genres).toEqual([]);
+    expect(row?.genreSourcesProcessed).toEqual(["lastfm"]);
+  });
+
+  it("does NOT flag processed when the Last.fm request hard-fails (leaves it for retry)", async () => {
+    // Non-OK HTTP is a transient infra failure, not a real "no tags" answer.
+    // fetchWithRetry resolves it to null → the row must stay unprocessed so a
+    // later run retries, rather than silencing the artist permanently.
+    const mock = vi.fn(async () => new Response("upstream error", { status: 503 }));
+    vi.stubGlobal("fetch", mock);
+    const id = await seedTrack("Beach House", "Levitation");
+
+    const result = await enrichGenresFromLastfm(db, env, [id]);
+    expect(result.updated).toBe(0);
+    expect(mock).toHaveBeenCalled();
+
+    const [row] = await db.select().from(schema.track).where(eq(schema.track.id, id));
+    expect(row?.genres).toEqual([]);
+    // The whole point: 'lastfm' is NOT appended, so the track is retried.
+    expect(row?.genreSourcesProcessed).toEqual([]);
+  });
+
+  it("merges additively with pre-existing genres (case-insensitive dedupe)", async () => {
+    stubLastfm({
+      "Beach House": {
+        toptags: {
+          tag: [
+            { name: "Dream Pop", count: 100 },
+            { name: "shoegaze", count: 80 },
+          ],
+        },
+      },
+    });
+    const id = await seedTrack("Beach House", "Levitation");
+    // Pre-seed a genre as if MB or Discogs had run first.
+    await db
+      .update(schema.track)
+      .set({ genres: ["dream pop", "indie"] })
+      .where(eq(schema.track.id, id));
+
+    await enrichGenresFromLastfm(db, env, [id]);
+
+    const [row] = await db.select().from(schema.track).where(eq(schema.track.id, id));
+    // Existing "dream pop" wins on casing over Last.fm's "Dream Pop";
+    // "shoegaze" is new and appended.
+    expect(row?.genres).toEqual(["dream pop", "indie", "shoegaze"]);
+  });
+
+  it("skips Last.fm entirely for Various Artists but flags the row processed", async () => {
+    const mock = stubLastfm({});
+    const id = await seedTrack("Various Artists", "Compilation Track");
+
+    const result = await enrichGenresFromLastfm(db, env, [id]);
+    expect(result.updated).toBe(0);
+    expect(mock).not.toHaveBeenCalled();
+
+    const [row] = await db.select().from(schema.track).where(eq(schema.track.id, id));
+    expect(row?.genres).toEqual([]);
+    expect(row?.genreSourcesProcessed).toEqual(["lastfm"]);
   });
 
   it("caches per-artist — multiple tracks by one artist = one Last.fm call", async () => {
@@ -222,6 +302,8 @@ describe("enrichGenresFromLastfm", () => {
     // Track still bucketable on audio alone — genres unchanged.
     expect(row?.genres).toEqual([]);
     expect(row?.primaryGenre).toBeNull();
+    // Flagged processed so we don't keep hammering Last.fm for an unknown artist.
+    expect(row?.genreSourcesProcessed).toEqual(["lastfm"]);
   });
 
   it("no-ops without a Last.fm API key (and never calls fetch)", async () => {

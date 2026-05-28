@@ -137,14 +137,81 @@ Lives in `src/lib/enrichment/lastfm-tags.ts`:
 not found"`), HTTP non-200, and empty responses all collapse to "no
   tags" rather than throw. A track without tags still ingests and
   buckets on audio alone.
-- **Idempotency**: only targets tracks with empty `genres` — the
-  `cardinality(genres) = 0` filter _is_ the cache.
+- **Idempotency**: skip when `'lastfm' = ANY(track.genre_sources_processed)`.
+  Append `'lastfm'` on every completed pass — success, empty result,
+  "Various Artists" skip, or in-body error — so we never retry. The
+  guard works alongside the MusicBrainz and Discogs layers, each of
+  which tracks its own source id.
+- **Various Artists skip**: artist == "Various Artists" → no API call,
+  still flagged processed (artist axis is degenerate; MB and Discogs
+  carry the signal for compilations).
+- **Additive merge**: tags returned merge into `track.genres` rather
+  than overwrite — preserves contributions from any earlier source. The
+  embedding is rebuilt from the merged array.
 
 Coverage caveat: long-tail / non-Western / very-new artists may return
 no tags. Last.fm's catalogue is biased toward Western
 indie/rock/electronic — if `genre_coverage` looks anaemic for a
 non-Western corpus, lean on the audio half of the embedding (ReccoBeats
-has broader coverage).
+has broader coverage), and on the MusicBrainz + Discogs layers below.
+
+## Supplementary genres via MusicBrainz
+
+`GET https://musicbrainz.org/ws/2/recording/{mbid}?inc=genres+tags&fmt=json`
+returns curated genres + raw folksonomy tags for a recording. MB stores
+recording-level tags for many tracks thanks to the 2021 backfill that
+propagated Last.fm + Discogs + beatunes tags down to recording entities.
+This layer recovers per-track signal that Last.fm artist-only collapses
+(side projects, "Various Artists" compilations).
+
+Lives in `src/lib/enrichment/musicbrainz.ts`:
+
+- **MBID resolution chain** per track:
+  1. `track.mbid` already set → use it.
+  2. Else call Last.fm `track.getInfo` for that (artist, title). If the
+     response carries `track.mbid`, persist it on the row and use it.
+  3. Else mark processed and skip.
+- **Recording lookup** with `inc=genres+tags`. Curated `genres[].name`
+  and raw `tags[].name` both feed `mergeGenres` — the 58-slot keyword
+  matcher in `embedding.ts` filters out non-genre tags harmlessly.
+- **Rate limit**: 1 req/s per MB's API usage policy, enforced by a
+  module-level `createRateLimiter(1000)`. Uses `fetchWithRetry` for
+  Retry-After handling.
+- **User-Agent**: `CrateDigger/0.1 (mailto:<MUSICBRAINZ_CONTACT_EMAIL>)`.
+  MB rejects requests with anonymous User-Agents; the contact email is
+  the required identifier. Set `MUSICBRAINZ_CONTACT_EMAIL` in `.env` —
+  empty → enricher is skipped (graceful degradation to Last.fm only).
+- **Idempotency**: per-source guard via `genre_sources_processed`
+  (same model as Last.fm).
+- **Licensing**: MB tag/genre data is CC BY-NC-SA. Fine for a personal
+  self-hosted Crate Digger; if you ever distribute commercially, get a
+  MetaBrainz commercial licence.
+
+## Supplementary genres + sub-genres via Discogs
+
+`GET https://api.discogs.com/database/search?type=master&...` + a follow-up
+GET on `/masters/{id}` (fallback `/releases/{id}`) returns coarse
+`genres[]` (e.g. "Electronic", "Rock") and the useful `styles[]`
+sub-genre layer (e.g. "Synth-pop", "Indietronica", "Indie Rock").
+Discogs covers indie / electronic / dance catalogues particularly well
+where Last.fm + MB are thin.
+
+Lives in `src/lib/enrichment/discogs.ts`:
+
+- **Master-first lookup**: search `type=master&q=<artist> <title>`,
+  fetch `/masters/{id}` if hit (canonical, edition-independent styles).
+  Falls back to `type=release` + `/releases/{id}` if no master matches.
+  Both miss → mark processed and skip.
+- **Rate limit**: 50 req/min (1200ms interval) — safely below Discogs'
+  60/min authenticated ceiling. Real throughput ≈ 16–25 tracks/min
+  given 2–3 calls per track.
+- **Auth**: consumer key/secret as URL params (Discogs supports both
+  param and header forms; URL param avoids per-request header
+  construction). User-Agent identifies the app.
+- **Optional**: set both `DISCOGS_KEY` and `DISCOGS_SECRET` in `.env`;
+  either empty → enricher is skipped. Free credentials at
+  https://www.discogs.com/settings/developers.
+- **Idempotency**: per-source guard via `genre_sources_processed`.
 
 ## ReccoBeats — the audio-features replacement
 
