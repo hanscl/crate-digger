@@ -37,7 +37,6 @@ const SOURCE_ID = "musicbrainz" as const;
 
 const MB_API_BASE = "https://musicbrainz.org/ws/2";
 const LASTFM_API_BASE = "https://ws.audioscrobbler.com/2.0/";
-const LASTFM_TIMEOUT_MS = 8_000;
 
 // MusicBrainz publishes a 1 req/s per-IP rate limit. Build the limiter
 // once at module scope so all callers within the process share the pacing.
@@ -196,20 +195,19 @@ async function fetchLastfmTrackMbid(
   url.searchParams.set("api_key", env.LASTFM_API_KEY);
   url.searchParams.set("format", "json");
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), LASTFM_TIMEOUT_MS);
+  // Route through fetchWithRetry (like every other external call here) so a
+  // transient network blip doesn't return null → markProcessed → flag the
+  // track musicbrainz-done forever with no MBID and no retry.
+  const res = await fetchWithRetry(url.toString(), { headers: { Accept: "application/json" } });
+  if (!res) return null;
   try {
-    const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) return null;
     const data = (await res.json()) as LastfmTrackInfoResponse;
     if (typeof data?.error === "number") return null;
     const mbid = data?.track?.mbid;
     return typeof mbid === "string" && mbid.length > 0 ? mbid : null;
   } catch (err) {
-    console.error(`[musicbrainz] track.getInfo threw for "${artist}" — "${title}"`, err);
+    console.error(`[musicbrainz] track.getInfo malformed JSON for "${artist}" — "${title}"`, err);
     return null;
-  } finally {
-    clearTimeout(timer);
   }
 }
 

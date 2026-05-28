@@ -2,7 +2,7 @@ import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import type { Database } from "@/db/client";
 import { type AudioFeatures, track } from "@/db/schema";
 import { buildEmbedding, derivePrimaryGenre } from "@/lib/embedding";
-import { mergeGenres } from "@/lib/enrichment/lastfm-tags";
+import { mergeGenres, primaryArtist } from "@/lib/enrichment/lastfm-tags";
 import { createRateLimiter, fetchWithRetry } from "@/lib/enrichment/rate-limit";
 import type { Env } from "@/server/env";
 
@@ -151,7 +151,11 @@ async function applyDiscogsEnrichment(
 
 /** Master-first lookup; falls back to release; returns the merged genre+style list. */
 async function lookupTrack(artist: string, title: string, env: Env): Promise<string[]> {
-  const query = `${artist} ${title}`.trim();
+  // Spotify joins multi-artist credits as "Artist A, Artist B"; the extra
+  // names hurt Discogs search recall, so query on the primary artist only —
+  // matching what the Last.fm and MusicBrainz enrichers do.
+  const primary = primaryArtist(artist) ?? artist;
+  const query = `${primary} ${title}`.trim();
   const masterHit = await searchTopHit(query, "master", env);
   if (masterHit) {
     const tags = await fetchEntityTags(`/masters/${masterHit}`, env);
