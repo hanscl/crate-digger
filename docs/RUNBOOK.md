@@ -48,9 +48,9 @@ Required keys:
 Optional but needed for a meaningful end-to-end walk:
 
 - `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` — Spotify ingest +
-  metadata + genres. **Owner of the Dev Mode app must hold Spotify
-  Premium** as of 2026-02-06 (`docs/SOURCES.md`). No localhost
-  exemption.
+  metadata only (genres come from Last.fm/MusicBrainz/Discogs, not
+  Spotify). **Owner of the Dev Mode app must hold Spotify Premium** as
+  of 2026-02-06 (`docs/SOURCES.md`). No localhost exemption.
 - `SPOTIFY_REDIRECT_URI` — defaults to
   `http://127.0.0.1:3000/api/auth/spotify/callback`. Must match the
   Redirect URI registered in the Spotify Developer Dashboard **exactly**,

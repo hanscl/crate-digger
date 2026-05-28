@@ -6,7 +6,7 @@ Phase tracker. Update at the end of every phase. Newest at the top.
 
 - **Status:** review
 - **Branch:** `lab-23-multi-source-genre-tagging`
-- **PR:** _pending_
+- **PR:** #16
 - **Scope landed:** Layered MusicBrainz recording-level genres and
   Discogs master/release genres + styles on top of the Last.fm artist
   tags introduced in LAB-22. Each source gated on its own env
