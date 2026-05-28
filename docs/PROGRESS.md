@@ -2,6 +2,119 @@
 
 Phase tracker. Update at the end of every phase. Newest at the top.
 
+## LAB-23 — Multi-source genre tagging (Last.fm artist + MusicBrainz + Discogs)
+
+- **Status:** review
+- **Branch:** `lab-23-multi-source-genre-tagging`
+- **PR:** _pending_
+- **Scope landed:** Layered MusicBrainz recording-level genres and
+  Discogs master/release genres + styles on top of the Last.fm artist
+  tags introduced in LAB-22. Each source gated on its own env
+  credentials (`MUSICBRAINZ_CONTACT_EMAIL`, `DISCOGS_KEY` +
+  `DISCOGS_SECRET`); pipeline degrades gracefully to whatever subset is
+  configured. Tags merge additively (case-insensitive dedupe) into the
+  unified `track.genres: text[]`; `embedding` is rebuilt at every
+  source's pass.
+
+  Pipeline order in `pullAndEnrichTrending` (and both `cold-start.ts`
+  seed entry points):
+  `ReccoBeats audio → Last.fm artist tags → MusicBrainz recording → Discogs master/release`.
+  Last.fm runs first (cheap, per-artist cache); MB second (uses cached
+  MBID where Last.fm `track.getInfo` populated it); Discogs last
+  (slowest, 1200ms-paced).
+
+  Schema delta: two new columns on `track` (migration `0004`):
+  - `mbid text` nullable — MusicBrainz recording MBID, resolved lazily
+    by the MB enricher via Last.fm `track.getInfo` and cached on the
+    row. Partial index `WHERE mbid IS NOT NULL`.
+  - `genre_sources_processed text[]` — per-source idempotency: each
+    source ID is appended after a completed pass (success OR empty OR
+    error), so a re-run never re-fetches. Backfilled to `['lastfm']`
+    on existing enriched rows. GIN-indexed.
+
+  Last.fm enricher (`src/lib/enrichment/lastfm-tags.ts`) refactor:
+  - Idempotency guard switched from `cardinality(genres) = 0` to
+    `NOT ('lastfm' = ANY(genre_sources_processed))` — distinguishes
+    "never tried" from "tried, got empty" (Last.fm legitimately
+    returns empty for some artists).
+  - "Various Artists" artists skip the API call but still flag
+    processed — artist axis is degenerate; MB and Discogs carry the
+    signal.
+  - Merge is now additive: read existing `track.genres`, union
+    case-insensitively with returned tags, rebuild embedding.
+
+  New modules:
+  - `src/lib/enrichment/musicbrainz.ts` — MBID resolution chain
+    (`track.mbid` → Last.fm `track.getInfo` → mark+skip), recording
+    `?inc=genres+tags` lookup, 1 req/s limiter, `User-Agent:
+CrateDigger/0.1 (mailto:<email>)`.
+  - `src/lib/enrichment/discogs.ts` — master-first search + detail,
+    falls back to release. Genres + styles merge in. 1200ms limiter
+    (≈50/min) under the 60/min auth ceiling. Consumer key/secret as
+    URL params; User-Agent header.
+
+  Tests:
+  - `tests/enrichment/lastfm-tags.test.ts` updated: new idempotency
+    semantics, additive merge, Various Artists skip, empty-result
+    flagging.
+  - `tests/enrichment/musicbrainz.test.ts` new (7 cases): cached-MBID
+    short-circuit, Last.fm resolution + persistence, no-MBID skip, MB
+    404 skip, additive merge, idempotency, no-creds no-op.
+  - `tests/enrichment/discogs.test.ts` new (7 cases): master-hit,
+    release fallback, both-miss skip, additive merge, auth params /
+    User-Agent header, no-creds no-op, idempotency.
+  - `tests/mastra/daily-pipeline.test.ts` asserts the new
+    `mbGenresUpdated` + `discogsGenresUpdated` summary fields.
+  - 173/173 tests green.
+
+- **Decisions locked:**
+  - **Idempotency model: Option 1 — `genre_sources_processed: text[]`
+    column.** Chose this over per-source timestamp columns (Option 2)
+    and a normalised `track_enrichment` side table (Option 3) because
+    (a) one-and-done enrichment is fine for a single-user OSS app,
+    (b) avoids column proliferation as new sources are added, (c) clean
+    upgrade path to Option 2/3 later via a single `ALTER TABLE`, and
+    (d) distinguishes "never tried" from "tried, got empty" cleanly.
+
+    **Upgrade signals to Option 2 (per-source timestamp columns):**
+    - We want a "refresh tags older than N days" policy.
+    - MB or Discogs catalogues improve over time and we want to
+      backfill stale entries.
+    - We add a 4th/5th source (Bandcamp, Beatport, etc.) — column
+      proliferation only gets ugly past ~5.
+
+    **Upgrade signals to Option 3 (`track_enrichment` side table):**
+    - We care about enrichment audit history (which source returned
+      what, when).
+    - We want per-source error/tag-count metadata for telemetry.
+    - We ever scale beyond 5 sources or run multi-tenant.
+
+  - **Discogs lookup: master-first with fallback to release.** Master
+    gives canonical styles; release fallback covers the long tail.
+    2–3 API calls per track.
+
+  - **MBID persistence: `track.mbid` nullable column.** Resolved
+    lazily via Last.fm `track.getInfo` during MB enrichment, cached
+    on the row. LAB-22 flagged this as future work; LAB-23 ships it.
+
+- **Notes for future phases:**
+  - Recording-level MB coverage on the user's catalogue is the
+    sample-size question to validate empirically: if `<30%` of MBID-
+    resolved tracks return non-empty `genres`/`tags`, Option B-lite
+    (skip Discogs) becomes a defensible simplification. Easy enough
+    to measure once a few hundred tracks have flowed through.
+  - The `genres` array is now potentially noisier: Discogs styles
+    include capitalised forms ("Synth-pop"), MB tags include
+    moods/non-genres. The 58-slot keyword matcher in `embedding.ts`
+    drops anything it doesn't recognise — but the displayed
+    `track.genres` may surface noise in UI. If that becomes a
+    problem, introduce a "display-curated" subset (e.g. only the
+    slots that lit up) at the surfacing layer.
+  - Live-API smoke probe (The Shins — "New Slang") is the
+    deterministic regression check: it failed under LAB-22's
+    track.getTopTags and should now produce Last.fm artist tags +
+    MBID + MB recording genres + Discogs styles end-to-end.
+
 ## LAB-1 — Build & Test runbook close-out
 
 - **Status:** review

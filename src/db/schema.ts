@@ -57,6 +57,18 @@ export const track = pgTable(
       .default(sql`ARRAY[]::text[]`),
     primaryGenre: text("primary_genre"),
     embedding: vector("embedding", { dimensions: EMBEDDING_DIM }),
+    // MusicBrainz recording MBID. Populated lazily by the MusicBrainz
+    // enricher (via Last.fm `track.getInfo` lookup) so subsequent runs can
+    // skip resolution.
+    mbid: text("mbid"),
+    // Per-source enrichment idempotency. Each genre source ("lastfm",
+    // "musicbrainz", "discogs") appends its id after a completed pass —
+    // whether tags were returned or not. An entry means "tried; do not
+    // retry". Empty array = never enriched for genres.
+    genreSourcesProcessed: text("genre_sources_processed")
+      .array()
+      .notNull()
+      .default(sql`ARRAY[]::text[]`),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -67,6 +79,10 @@ export const track = pgTable(
     index("track_embedding_hnsw_idx")
       .using("hnsw", t.embedding.op("vector_cosine_ops"))
       .with({ m: 16, ef_construction: 64 }),
+    index("track_mbid_idx")
+      .on(t.mbid)
+      .where(sql`${t.mbid} IS NOT NULL`),
+    index("track_genre_sources_processed_idx").using("gin", t.genreSourcesProcessed),
   ],
 );
 

@@ -7,46 +7,42 @@ import type { Env } from "@/server/env";
 /**
  * Genre enrichment — Last.fm `artist.getTopTags`.
  *
- * Replaces `spotify-metadata.ts`'s artist-genre lookup, which went dead in
- * mid-2026 when new Dev Mode apps started receiving `"genres": null` on
- * every `/v1/artists/{id}` response (see `docs/SOURCES.md`).
- *
- * We use the artist-level top-tags endpoint, not the track-level one. As of
- * mid-2026 `track.getTopTags` returns empty results across the board
- * (Beach House / Levitation, The Shins / Simple Song — all empty), while
- * `artist.getTopTags` still serves rich, popularity-weighted tag clouds.
- * The semantic tradeoff is acceptable: every track by an artist gets the
- * same genre vector, which actually matches the bucketing intent (same-
- * artist clustering). One-off cross-genre side projects lose track-specific
- * tagging — accepted.
+ * First of three layered genre sources (Last.fm → MusicBrainz → Discogs).
+ * The artist-level top-tags endpoint is the only Last.fm tag path that
+ * still serves rich data as of mid-2026; `track.getTopTags` returns empty
+ * across the board. Same-artist tracks therefore share a genre subvector
+ * — fine for clustering, blind to cross-genre side projects. MusicBrainz
+ * + Discogs layers downstream recover per-track signal where available.
  *
  * Spotify track payloads join multi-artist credits as "Artist A, Artist B"
- * in the `track.artist` column. Last.fm autocorrect can't resolve through
- * that, so we split on `", "` and use only the primary artist. False
- * splits on band names containing commas ("Crosby, Stills & Nash") are
- * rare enough to accept; Last.fm autocorrect often still resolves the
- * fragment.
+ * in `track.artist`. Last.fm autocorrect can't resolve through that, so
+ * we split on `", "` and use the primary artist. Bands with commas in
+ * the name ("Crosby, Stills & Nash") get truncated; Last.fm autocorrect
+ * usually still resolves the fragment.
  *
  * Tags are user-applied; popularity count is the de-noise lever — we keep
- * tags whose count clears `MIN_TAG_COUNT` and cap at `MAX_TAGS_PER_ARTIST`.
- * The raw tag strings flow into the existing 58-slot genre taxonomy in
- * `embedding.ts` unchanged; keyword matching is its job, not ours.
+ * tags with count ≥ `MIN_TAG_COUNT` and cap at `MAX_TAGS_PER_ARTIST`. Raw
+ * strings flow into the 58-slot keyword matcher in `embedding.ts`
+ * unchanged.
  *
- * Idempotency: only targets tracks whose `genres` is still empty. A
- * non-empty `genres` array means "done". Within a single enrichment run,
- * the per-artist cache collapses N tracks-by-one-artist to a single
- * Last.fm call.
+ * Idempotency: skip when `'lastfm' ∈ track.genre_sources_processed`. After
+ * a completed pass — successful tags, empty result, "Various Artists"
+ * skip, or in-body error — `'lastfm'` is appended to the processed list
+ * so we never retry. The merge into `track.genres` is additive: existing
+ * tags from any prior source are preserved, new tags are appended (de-
+ * duplicated case-insensitively). The embedding is rebuilt from the
+ * merged array.
  */
 
 const API_BASE = "https://ws.audioscrobbler.com/2.0/";
 const LASTFM_TIMEOUT_MS = 8_000;
 
-// Last.fm tag counts run 0..100 (top tags saturate at 100, single-user
-// fan tags are usually 1-5). 10 keeps the long-tail noise out while
-// still admitting moderately-popular genre descriptors.
+const SOURCE_ID = "lastfm" as const;
+
+// Last.fm tag counts run 0..100. 10 keeps long-tail noise out while still
+// admitting moderately-popular genre descriptors.
 const MIN_TAG_COUNT = 10;
-// Eight matched slots already saturates the 58-slot keyword matcher in
-// `embedding.ts`; more is taxonomic noise.
+// Eight matched slots saturates the 58-slot keyword matcher; more is taxonomic noise.
 const MAX_TAGS_PER_ARTIST = 8;
 
 type RawLastfmTag = { name?: unknown; count?: unknown };
@@ -60,12 +56,13 @@ type GenreTarget = {
   id: number;
   artist: string;
   audioFeatures: AudioFeatures | null;
+  genres: string[];
 };
 
 /**
  * Enrich genres for a specific set of tracks via Last.fm artist top-tags.
- * Skips tracks that already have genres or lack an artist. No-ops without
- * a Last.fm API key.
+ * Skips tracks where Last.fm has already processed them or lacks an
+ * artist. No-ops without a Last.fm API key.
  */
 export async function enrichGenresFromLastfm(
   db: Database,
@@ -79,12 +76,13 @@ export async function enrichGenresFromLastfm(
       id: track.id,
       artist: track.artist,
       audioFeatures: track.audioFeatures,
+      genres: track.genres,
     })
     .from(track)
     .where(
       and(
         inArray(track.id, [...trackIds]),
-        sql`cardinality(${track.genres}) = 0`,
+        sql`NOT (${SOURCE_ID} = ANY(${track.genreSourcesProcessed}))`,
         isNotNull(track.artist),
       ),
     );
@@ -92,12 +90,12 @@ export async function enrichGenresFromLastfm(
 }
 
 /**
- * Enrich genres for every track that still has none. Manual / one-off
- * entry point.
+ * Enrich genres for every track Last.fm has not processed yet. Manual /
+ * one-off entry point.
  *
  * NOTE: this rebuilds `track.embedding` for tracks that may already be
- * bucketed — running it over the existing catalogue should be followed
- * by a bucket centroid recompute. The daily pipeline uses the per-tracks
+ * bucketed — running it over the existing catalogue should be followed by
+ * a bucket centroid recompute. The daily pipeline uses the per-tracks
  * variant above, before bucketing.
  */
 export async function enrichAllGenresFromLastfm(
@@ -110,9 +108,12 @@ export async function enrichAllGenresFromLastfm(
       id: track.id,
       artist: track.artist,
       audioFeatures: track.audioFeatures,
+      genres: track.genres,
     })
     .from(track)
-    .where(and(sql`cardinality(${track.genres}) = 0`, isNotNull(track.artist)));
+    .where(
+      and(sql`NOT (${SOURCE_ID} = ANY(${track.genreSourcesProcessed}))`, isNotNull(track.artist)),
+    );
   const result = await applyTagEnrichment(db, env, targets);
   return { requested: targets.length, ...result };
 }
@@ -130,23 +131,38 @@ async function applyTagEnrichment(
   for (const t of targets) {
     try {
       const primary = primaryArtist(t.artist);
-      if (!primary) continue;
 
-      let genres = artistTagCache.get(primary);
-      if (genres === undefined) {
-        const raw = await fetchArtistTopTags(primary, env);
-        genres = filterTags(raw);
-        artistTagCache.set(primary, genres);
+      // "Various Artists" compilations: artist axis is degenerate; skip the
+      // API call but still flag the row processed so we never retry. MB and
+      // Discogs (track-level) will carry the genre signal for these.
+      if (!primary || isVariousArtists(primary)) {
+        await markProcessed(db, t.id);
+        continue;
       }
-      if (genres.length === 0) continue;
 
-      const embedding = buildEmbedding({ audioFeatures: t.audioFeatures, genres });
+      let tags = artistTagCache.get(primary);
+      if (tags === undefined) {
+        const raw = await fetchArtistTopTags(primary, env);
+        tags = filterTags(raw);
+        artistTagCache.set(primary, tags);
+      }
+
+      if (tags.length === 0) {
+        // Empty response is a valid terminal state — flag processed so we
+        // don't keep hammering Last.fm for an artist it has no tags on.
+        await markProcessed(db, t.id);
+        continue;
+      }
+
+      const merged = mergeGenres(t.genres, tags);
+      const embedding = buildEmbedding({ audioFeatures: t.audioFeatures, genres: merged });
       await db
         .update(track)
         .set({
-          genres,
-          primaryGenre: derivePrimaryGenre(genres),
+          genres: merged,
+          primaryGenre: derivePrimaryGenre(merged),
           embedding,
+          genreSourcesProcessed: sql`array_append(${track.genreSourcesProcessed}, ${SOURCE_ID})`,
           updatedAt: sql`NOW()`,
         })
         .where(eq(track.id, t.id));
@@ -158,6 +174,34 @@ async function applyTagEnrichment(
   return { updated };
 }
 
+/** Flag the row processed without writing any genre data. */
+async function markProcessed(db: Database, trackId: number): Promise<void> {
+  await db
+    .update(track)
+    .set({
+      genreSourcesProcessed: sql`array_append(${track.genreSourcesProcessed}, ${SOURCE_ID})`,
+      updatedAt: sql`NOW()`,
+    })
+    .where(eq(track.id, trackId));
+}
+
+/**
+ * Merge new tags into the existing genre array, preserving order and
+ * de-duplicating case-insensitively. Existing tags win on casing — the
+ * first time a name (lowercased) appears, that casing is kept.
+ */
+export function mergeGenres(existing: readonly string[], incoming: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const g of [...existing, ...incoming]) {
+    const key = g.trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(g);
+  }
+  return out;
+}
+
 /**
  * Pull the primary artist out of Spotify's comma-joined multi-artist
  * string. "The Shins, James Mercer" → "The Shins". Single-artist strings
@@ -166,6 +210,10 @@ async function applyTagEnrichment(
 export function primaryArtist(joined: string): string | null {
   const head = joined.split(",")[0]?.trim() ?? "";
   return head.length > 0 ? head : null;
+}
+
+function isVariousArtists(artist: string): boolean {
+  return artist.trim().toLowerCase() === "various artists";
 }
 
 function filterTags(raw: RawLastfmTag[]): string[] {

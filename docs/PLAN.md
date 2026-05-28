@@ -68,8 +68,10 @@ crate-digger/
 │   │   ├── enrichment/
 │   │   │   ├── resolve.ts          # ISRC-first, fuzzy fallback
 │   │   │   ├── reccobeats.ts       # audio features (Spotify retired /audio-features)
-│   │   │   ├── spotify-metadata.ts # genres via artist lookup
-│   │   │   └── rate-limit.ts       # 2 req/s + Retry-After, for ReccoBeats
+│   │   │   ├── lastfm-tags.ts      # genres via Last.fm artist.getTopTags
+│   │   │   ├── musicbrainz.ts      # supplementary genres via MB recording lookup
+│   │   │   ├── discogs.ts          # supplementary genres + styles via Discogs
+│   │   │   └── rate-limit.ts       # 2 req/s + Retry-After (ReccoBeats); also feeds MB + Discogs limiters
 │   │   ├── bucketing/
 │   │   │   ├── assign.ts           # genre-prior + cosine, spawn-or-join
 │   │   │   ├── centroid.ts         # incremental update (Welford-style)
@@ -120,7 +122,7 @@ buckets, fixed taxonomy in `src/lib/embedding.ts`). Revisit dim only if eval bre
 
 | Table                   | Notes                                                                                                                                                                                                                                                                 |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `track`                 | PK `id`, unique `isrc`, `spotify_id`, `title`, `artist`, `album`, `release_year`, `duration_ms`, `audio_features jsonb`, `genres text[]`, `embedding vector(64)`, HNSW index                                                                                          |
+| `track`                 | PK `id`, unique `isrc`, `spotify_id`, `mbid` (partial idx), `title`, `artist`, `album`, `release_year`, `duration_ms`, `audio_features jsonb`, `genres text[]`, `genre_sources_processed text[]` (GIN), `embedding vector(64)`, HNSW index                            |
 | `track_source`          | Many-to-one from track to source provenance (`source`, `source_track_id`, `seen_at`); supports cross-source dedup                                                                                                                                                     |
 | `bucket`                | `id`, `name`, `color`, `centroid vector(64)`, `feature_stats jsonb` (mean+M2 per feature for Welford), `member_count`, `dislike_count`, `created_at`, `is_cold_start_seed bool`                                                                                       |
 | `bucket_member`         | `bucket_id`, `track_id`, `similarity_at_join`, `added_at`                                                                                                                                                                                                             |
@@ -162,13 +164,28 @@ provenance into `track_source`).
 retired `/audio-features` for apps registered after 2024-11-27 (see `docs/SOURCES.md`).
 ReccoBeats is a free, no-auth API keyed by Spotify track id; the enricher is rate-limited
 (2 req/s, batches of 5, `Retry-After` honoured — `rate-limit.ts`) and toggleable via
-`app_config.sources_enabled.reccobeats`. **Genres** come from `spotify-metadata.ts`, which
-looks up each track's artists (individual `GET /artists/{id}` — batch lookups were removed
-in Feb 2026) and fills `genres` / `primary_genre`, rebuilding the embedding. Both enrichers
-are idempotent and cached by a null-column check (`audio_features IS NULL` /
-`cardinality(genres) = 0`); a track missing either still ingests and buckets on partial
-signal. The `audio_feature_coverage` eval metric tracks how much of the catalogue has
-audio features so silent coverage loss is visible on the Console screen.
+`app_config.sources_enabled.reccobeats`. Idempotency: `audio_features IS NULL` filter.
+
+**Genres** come from three layered sources, each gated on its own env credentials and
+each optional. Tags merge additively (case-insensitive dedupe) into the unified
+`track.genres: text[]`; `embedding` is rebuilt after each pass. Per-source idempotency
+via `track.genre_sources_processed: text[]` — each source ID is appended after a
+completed pass (success OR empty OR error). The pipeline runs in fixed order:
+
+1. **Last.fm `artist.getTopTags`** (`lastfm-tags.ts`) — the baseline. Per-artist cache
+   collapses N tracks-by-one-artist to a single call within a run. Primary-artist split
+   handles Spotify's comma-joined credits. "Various Artists" is skipped (still flagged).
+2. **MusicBrainz `/recording/{mbid}?inc=genres+tags`** (`musicbrainz.ts`) — recording-
+   level signal where Last.fm artist-only collapses. MBID resolution: `track.mbid` →
+   else Last.fm `track.getInfo` (cached on the row) → else mark+skip. 1 req/s per MB
+   policy. Requires `MUSICBRAINZ_CONTACT_EMAIL` for the User-Agent.
+3. **Discogs masters/releases** (`discogs.ts`) — coarse genres + the useful styles
+   sub-genre layer. Master-first search/fetch, falls back to release. 50/min paced
+   under the 60/min auth ceiling. Requires `DISCOGS_KEY` + `DISCOGS_SECRET`.
+
+A track missing any enrichment still ingests and buckets on partial signal. The
+`audio_feature_coverage` eval metric tracks how much of the catalogue has audio
+features so silent coverage loss is visible on the Console screen.
 
 ### 3. Bucketing
 

@@ -124,6 +124,9 @@ const fixtureEnv: Env = {
   SPOTIFY_CLIENT_SECRET: "",
   SPOTIFY_REDIRECT_URI: "http://localhost/cb",
   LASTFM_API_KEY: "",
+  MUSICBRAINZ_CONTACT_EMAIL: "",
+  DISCOGS_KEY: "",
+  DISCOGS_SECRET: "",
   VIBERATE_API_KEY: "",
   PORT: 3000,
   NODE_ENV: "test",
@@ -194,10 +197,13 @@ describe("daily-pipeline (step-by-step)", () => {
     expect(pull.resolvedTrackIds).toHaveLength(3);
     expect(pull.newlyCreatedTrackIds).toHaveLength(3);
     // fix-1 + fix-2 carry a Spotify id → ReccoBeats enriches both; fix-3 has
-    // none. The fixture candidates already carry genres, so the Last.fm tags
-    // enricher has nothing to do (and fixtureEnv has no creds anyway).
+    // none. The fixture candidates already carry genres, and fixtureEnv has
+    // no Last.fm / MusicBrainz / Discogs creds — all three genre layers
+    // no-op cleanly.
     expect(pull.audioFeaturesUpdated).toBe(2);
     expect(pull.genresUpdated).toBe(0);
+    expect(pull.mbGenresUpdated).toBe(0);
+    expect(pull.discogsGenresUpdated).toBe(0);
 
     // 2. Bucket — 3 distinct primary genres should each spawn a separate
     //    bucket; with only one track per bucket, every assignment is a spawn.
