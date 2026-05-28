@@ -185,6 +185,24 @@ describe("enrichGenresFromLastfm", () => {
     expect(row?.genreSourcesProcessed).toEqual(["lastfm"]);
   });
 
+  it("does NOT flag processed when the Last.fm request hard-fails (leaves it for retry)", async () => {
+    // Non-OK HTTP is a transient infra failure, not a real "no tags" answer.
+    // fetchWithRetry resolves it to null → the row must stay unprocessed so a
+    // later run retries, rather than silencing the artist permanently.
+    const mock = vi.fn(async () => new Response("upstream error", { status: 503 }));
+    vi.stubGlobal("fetch", mock);
+    const id = await seedTrack("Beach House", "Levitation");
+
+    const result = await enrichGenresFromLastfm(db, env, [id]);
+    expect(result.updated).toBe(0);
+    expect(mock).toHaveBeenCalled();
+
+    const [row] = await db.select().from(schema.track).where(eq(schema.track.id, id));
+    expect(row?.genres).toEqual([]);
+    // The whole point: 'lastfm' is NOT appended, so the track is retried.
+    expect(row?.genreSourcesProcessed).toEqual([]);
+  });
+
   it("merges additively with pre-existing genres (case-insensitive dedupe)", async () => {
     stubLastfm({
       "Beach House": {

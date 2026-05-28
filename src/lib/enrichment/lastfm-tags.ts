@@ -2,6 +2,7 @@ import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import type { Database } from "@/db/client";
 import { type AudioFeatures, track } from "@/db/schema";
 import { buildEmbedding, derivePrimaryGenre } from "@/lib/embedding";
+import { fetchWithRetry } from "@/lib/enrichment/rate-limit";
 import type { Env } from "@/server/env";
 
 /**
@@ -26,11 +27,14 @@ import type { Env } from "@/server/env";
  * unchanged.
  *
  * Idempotency: skip when `'lastfm' ∈ track.genre_sources_processed`. After
- * a completed pass — successful tags, empty result, "Various Artists"
- * skip, or in-body error — `'lastfm'` is appended to the processed list
- * so we never retry. The merge into `track.genres` is additive: existing
- * tags from any prior source are preserved, new tags are appended (de-
- * duplicated case-insensitively). The embedding is rebuilt from the
+ * a completed pass — successful tags, definitive empty result, "Various
+ * Artists" skip, or an in-body Last.fm error — `'lastfm'` is appended to
+ * the processed list so we never retry. A *hard* fetch failure (network
+ * throw, timeout, non-OK HTTP) is the one exception: the row is left
+ * unprocessed so a later run retries, rather than silencing the artist for
+ * good on a transient blip. The merge into `track.genres` is additive:
+ * existing tags from any prior source are preserved, new tags are appended
+ * (de-duplicated case-insensitively). The embedding is rebuilt from the
  * merged array.
  */
 
@@ -125,7 +129,9 @@ async function applyTagEnrichment(
 ): Promise<{ updated: number }> {
   if (targets.length === 0) return { updated: 0 };
 
-  const artistTagCache = new Map<string, string[]>();
+  // null caches a hard fetch failure for the artist within this batch so we
+  // don't re-hit a flaky endpoint per-track; those rows stay unprocessed.
+  const artistTagCache = new Map<string, string[] | null>();
   let updated = 0;
 
   for (const t of targets) {
@@ -143,9 +149,14 @@ async function applyTagEnrichment(
       let tags = artistTagCache.get(primary);
       if (tags === undefined) {
         const raw = await fetchArtistTopTags(primary, env);
-        tags = filterTags(raw);
+        tags = raw === null ? null : filterTags(raw);
         artistTagCache.set(primary, tags);
       }
+
+      // Hard fetch failure (distinct from a definitive empty response): leave
+      // the row unprocessed so a later run retries instead of flagging the
+      // artist permanently tag-less. Must NOT markProcessed here.
+      if (tags === null) continue;
 
       if (tags.length === 0) {
         // Empty response is a valid terminal state — flag processed so we
@@ -235,7 +246,14 @@ function filterTags(raw: RawLastfmTag[]): string[] {
   return cleaned.slice(0, MAX_TAGS_PER_ARTIST).map((t) => t.name);
 }
 
-async function fetchArtistTopTags(artist: string, env: Env): Promise<RawLastfmTag[]> {
+/**
+ * Fetch an artist's raw top-tags. Returns the tag list (possibly empty) on a
+ * definitive Last.fm response, or `null` when the request hard-failed —
+ * network throw, timeout, or non-OK HTTP after `fetchWithRetry`'s transient
+ * retries. The caller treats `null` as "retry later" and a non-null array as
+ * a terminal answer, so a transient blip can't permanently silence an artist.
+ */
+async function fetchArtistTopTags(artist: string, env: Env): Promise<RawLastfmTag[] | null> {
   const url = new URL(API_BASE);
   url.searchParams.set("method", "artist.getTopTags");
   url.searchParams.set("artist", artist);
@@ -244,26 +262,25 @@ async function fetchArtistTopTags(artist: string, env: Env): Promise<RawLastfmTa
   url.searchParams.set("api_key", env.LASTFM_API_KEY);
   url.searchParams.set("format", "json");
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), LASTFM_TIMEOUT_MS);
+  // Route through fetchWithRetry (like the MusicBrainz/Discogs layers) so a
+  // transient throw or 429 is retried with backoff rather than collapsing to
+  // an empty list that the caller would flag processed forever.
+  const res = await fetchWithRetry(url.toString(), {}, { timeoutMs: LASTFM_TIMEOUT_MS });
+  if (!res) return null;
+  let data: GetTopTagsResponse;
   try {
-    const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) {
-      console.error(`[lastfm-tags] HTTP ${res.status} for "${artist}"`);
-      return [];
-    }
-    const data = (await res.json()) as GetTopTagsResponse;
-    // Last.fm signals API errors in-body with HTTP 200 (error 6 = artist
-    // not found, 8 = operation failed, etc.). None are fatal — treat as
-    // "no tags" so bucketing falls back on audio-only signal.
-    if (typeof data?.error === "number") return [];
-    const tag = data?.toptags?.tag;
-    if (!tag) return [];
-    return Array.isArray(tag) ? tag : [tag];
+    data = (await res.json()) as GetTopTagsResponse;
   } catch (err) {
-    console.error(`[lastfm-tags] threw for "${artist}"`, err);
-    return [];
-  } finally {
-    clearTimeout(timeout);
+    // A 200 with an unparseable body is an infra hiccup (truncated response,
+    // proxy error page), not a real "no tags" — retry rather than silence.
+    console.error(`[lastfm-tags] malformed JSON for "${artist}"`, err);
+    return null;
   }
+  // Last.fm signals API errors in-body with HTTP 200 (error 6 = artist not
+  // found, 8 = operation failed, etc.). Treat as a definitive "no tags" so
+  // bucketing falls back on audio-only signal.
+  if (typeof data?.error === "number") return [];
+  const tag = data?.toptags?.tag;
+  if (!tag) return [];
+  return Array.isArray(tag) ? tag : [tag];
 }
