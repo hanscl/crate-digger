@@ -3,8 +3,10 @@ import type { Database } from "@/db/client";
 import { type AudioFeatures, bucket, bucketMember, track } from "@/db/schema";
 import { assignTrack } from "@/lib/bucketing/assign";
 import { evaluateBucketRecommendations } from "@/lib/bucketing/recommendations";
+import { enrichGenresFromDiscogs } from "@/lib/enrichment/discogs";
 import { resolveCandidate } from "@/lib/enrichment/resolve";
 import { enrichGenresFromLastfm } from "@/lib/enrichment/lastfm-tags";
+import { enrichGenresFromMusicBrainz } from "@/lib/enrichment/musicbrainz";
 import { enrichAudioFeaturesForTracks } from "@/lib/enrichment/reccobeats";
 import { retrainBroad } from "@/lib/feedback/retrain";
 import { type SourceAdapter, type SourceId, createDefaultRegistry } from "@/lib/ingestion";
@@ -29,17 +31,25 @@ export type PullEnrichSummary = {
   newlyCreatedTrackIds: number[];
   audioFeaturesUpdated: number;
   genresUpdated: number;
+  mbGenresUpdated: number;
+  discogsGenresUpdated: number;
 };
 
 const DEFAULT_PER_SOURCE_LIMIT = 25;
 
 /**
  * Step 1: pull `mode: "trending"` from every available adapter, resolve each
- * candidate to a `track` row, then enrich. Enrichment runs in order:
- * ReccoBeats audio features first, then Last.fm tags — the genre step
- * rebuilds `track.embedding`, so it must see the post-ReccoBeats
- * `audio_features`. Both must finish before bucketing. Returns the union of
- * touched track IDs so downstream steps know what to bucket.
+ * candidate to a `track` row, then enrich. Enrichment runs in fixed order:
+ *
+ *   ReccoBeats (audio) → Last.fm → MusicBrainz → Discogs
+ *
+ * The genre layers (Last.fm, MB, Discogs) merge tags additively into
+ * `track.genres` and rebuild `track.embedding` from the post-ReccoBeats
+ * audio features at each step. Last.fm runs first because it's the
+ * cheapest (per-artist cache); MB second so it can reuse `track.mbid` if
+ * Last.fm's `track.getInfo` populated it; Discogs last because it's the
+ * slowest (1200ms-paced, 2–3 calls per track). Each is gated on its own
+ * credentials and degrades silently when absent.
  *
  * Adapter failures degrade silently (constraint #1) — `pullCandidates`
  * already returns `[]` rather than throwing.
@@ -71,6 +81,8 @@ export async function pullAndEnrichTrending(
   const ids = [...resolvedIds];
   const enrichResult = await enrichAudioFeaturesForTracks(db, ids);
   const genreResult = await enrichGenresFromLastfm(db, env, ids);
+  const mbResult = await enrichGenresFromMusicBrainz(db, env, ids);
+  const discogsResult = await enrichGenresFromDiscogs(db, env, ids);
 
   return {
     pulledCount,
@@ -79,6 +91,8 @@ export async function pullAndEnrichTrending(
     newlyCreatedTrackIds: newlyCreatedIds,
     audioFeaturesUpdated: enrichResult.updated,
     genresUpdated: genreResult.updated,
+    mbGenresUpdated: mbResult.updated,
+    discogsGenresUpdated: discogsResult.updated,
   };
 }
 
