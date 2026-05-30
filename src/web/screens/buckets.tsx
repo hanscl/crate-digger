@@ -62,6 +62,12 @@ export function BucketsScreen({ selectedId }: { selectedId?: number }) {
   const recompute = trpc.buckets.recompute.useMutation({
     onSuccess: () => void utils.buckets.recommendations.invalidate(),
   });
+  const renamePlaceholders = trpc.buckets.renamePlaceholders.useMutation({
+    onSuccess: () => {
+      void utils.buckets.list.invalidate();
+      void utils.buckets.detail.invalidate();
+    },
+  });
 
   return (
     <div className="p-8 max-w-7xl">
@@ -134,6 +140,34 @@ export function BucketsScreen({ selectedId }: { selectedId?: number }) {
         </div>
 
         <div className="col-span-3 flex flex-col gap-4">
+          <div className="panel p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+              <div className="cap text-ink-3">names</div>
+              <button
+                type="button"
+                className="btn ghost sm shrink-0"
+                onClick={() => renamePlaceholders.mutate()}
+                disabled={renamePlaceholders.isPending}
+              >
+                {renamePlaceholders.isPending ? "…" : "backfill placeholders"}
+              </button>
+            </div>
+            {renamePlaceholders.data ? (
+              <div className="text-ink-3 text-xs">
+                {renamePlaceholders.data.eligibleCount} eligible ·{" "}
+                {renamePlaceholders.data.renamedCount} renamed
+                {renamePlaceholders.data.errorCount > 0
+                  ? ` · ${renamePlaceholders.data.errorCount} errors`
+                  : null}
+              </div>
+            ) : (
+              <div className="text-ink-3 text-xs italic">
+                Name <span className="mono">(auto)</span> buckets at N≥3 and re-name buckets whose
+                centroid drifted.
+              </div>
+            )}
+          </div>
+
           <div className="panel p-4">
             <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
               <div className="cap text-ink-3">recommendations</div>

@@ -5,6 +5,7 @@ import {
   bucketAndName,
   pullAndEnrichTrending,
   recommendationsStep,
+  renameEligibleBuckets,
   retrainStep,
   surfaceStep,
 } from "@/mastra/lib/pipeline-steps";
@@ -30,7 +31,15 @@ const PullEnrichResult = z.object({
 const BucketResult = z.object({
   spawnedBucketIds: z.array(z.number().int()),
   joinedBucketIds: z.array(z.number().int()),
-  namedBucketCount: z.number().int().nonnegative(),
+});
+
+const RenameResult = z.object({
+  /** Buckets the rename step's eligibility rule accepted (LAB-25). */
+  eligibleBucketCount: z.number().int().nonnegative(),
+  /** Buckets the agent successfully renamed in this run. */
+  renamedBucketCount: z.number().int().nonnegative(),
+  /** Eligible buckets the namer failed on. */
+  renameErrorCount: z.number().int().nonnegative(),
 });
 
 const RetrainResult = z.object({
@@ -62,6 +71,7 @@ export type DailyPipelineInputT = z.infer<typeof DailyPipelineInput>;
 export const DailyPipelineAccumulator = DailyPipelineInput.extend({})
   .merge(PullEnrichResult.partial())
   .merge(BucketResult.partial())
+  .merge(RenameResult.partial())
   .merge(RetrainResult.partial())
   .merge(RecommendationsResult.partial())
   .merge(SurfaceResult.partial());
@@ -69,6 +79,7 @@ export const DailyPipelineAccumulator = DailyPipelineInput.extend({})
 export const DailyPipelineOutput = DailyPipelineInput.extend({})
   .merge(PullEnrichResult)
   .merge(BucketResult)
+  .merge(RenameResult)
   .merge(RetrainResult)
   .merge(RecommendationsResult)
   .merge(SurfaceResult);
@@ -107,7 +118,30 @@ const bucketStep = createStep({
       ...inputData,
       spawnedBucketIds: result.spawnedBucketIds,
       joinedBucketIds: result.joinedBucketIds,
-      namedBucketCount: result.namedBuckets.length,
+    };
+  },
+});
+
+/**
+ * LAB-25: lazy + drift-triggered rename pass. Walks every bucket, applies
+ * the eligibility rule (first-time at N≥3, doubled member count, or centroid
+ * drift), and names eligible buckets via the `bucket-namer` agent. Runs
+ * after assignment so any joins from the bucket step contribute to the
+ * decision.
+ */
+const renameWorkflowStep = createStep({
+  id: "rename-eligible",
+  inputSchema: DailyPipelineAccumulator,
+  outputSchema: DailyPipelineAccumulator,
+  execute: async ({ inputData, requestContext }) => {
+    const db = getDb(requestContext);
+    const env = getEnv(requestContext);
+    const result = await renameEligibleBuckets(db, env);
+    return {
+      ...inputData,
+      eligibleBucketCount: result.eligibleCount,
+      renamedBucketCount: result.renamedCount,
+      renameErrorCount: result.errorCount,
     };
   },
 });
@@ -163,7 +197,9 @@ const surfaceWorkflowStep = createStep({
       genresUpdated: inputData.genresUpdated ?? 0,
       spawnedBucketIds: inputData.spawnedBucketIds ?? [],
       joinedBucketIds: inputData.joinedBucketIds ?? [],
-      namedBucketCount: inputData.namedBucketCount ?? 0,
+      eligibleBucketCount: inputData.eligibleBucketCount ?? 0,
+      renamedBucketCount: inputData.renamedBucketCount ?? 0,
+      renameErrorCount: inputData.renameErrorCount ?? 0,
       retrainSkipped: inputData.retrainSkipped ?? true,
       retrainSkipReason: inputData.retrainSkipReason ?? null,
       retrainSampleCount: inputData.retrainSampleCount ?? 0,
@@ -186,6 +222,7 @@ export const dailyPipeline = createWorkflow({
 })
   .then(pullStep)
   .then(bucketStep)
+  .then(renameWorkflowStep)
   .then(retrainWorkflowStep)
   .then(recommendationsWorkflowStep)
   .then(surfaceWorkflowStep)

@@ -1,8 +1,18 @@
 import { describe, expect, it } from "vitest";
+import type { AudioFeatures } from "@/db/schema";
 import { nameBucket } from "@/mastra/agents/bucket-namer";
 import { parsePlaylistText } from "@/mastra/agents/playlist-parser";
 import { explainWhySurfaced } from "@/mastra/agents/why-surfaced";
 import type { Env } from "@/server/env";
+
+const NEUTRAL_AUDIO: AudioFeatures = {
+  tempo: 120,
+  energy: 0.5,
+  valence: 0.5,
+  danceability: 0.5,
+  acousticness: 0.5,
+  instrumentalness: 0,
+};
 
 /**
  * Agent-fallback unit tests. The agents are LLM transformers; integration
@@ -34,6 +44,12 @@ describe("bucket-namer fallback", () => {
     const result = await nameBucket(
       {
         primaryGenre: "indie-rock",
+        memberCount: 3,
+        genreDistribution: [
+          { genre: "indie-rock", count: 2 },
+          { genre: "alternative", count: 1 },
+        ],
+        audioProfile: NEUTRAL_AUDIO,
         sampleTracks: [
           { title: "Track A", artist: "Artist A" },
           { title: "Track B", artist: "Artist B" },
@@ -46,14 +62,52 @@ describe("bucket-namer fallback", () => {
   });
 
   it("handles a null primary genre", async () => {
-    const result = await nameBucket({ primaryGenre: null, sampleTracks: [] }, noKeyEnv);
+    const result = await nameBucket(
+      {
+        primaryGenre: null,
+        memberCount: 0,
+        genreDistribution: [],
+        audioProfile: NEUTRAL_AUDIO,
+        sampleTracks: [],
+      },
+      noKeyEnv,
+    );
     expect(result.name).toBe("Unnamed (auto)");
   });
 
   it("truncates long primary genres so the fallback name fits the schema", async () => {
     const longGenre = "very-long-genre-name-that-exceeds-the-schema-limit";
-    const result = await nameBucket({ primaryGenre: longGenre, sampleTracks: [] }, noKeyEnv);
+    const result = await nameBucket(
+      {
+        primaryGenre: longGenre,
+        memberCount: 0,
+        genreDistribution: [],
+        audioProfile: NEUTRAL_AUDIO,
+        sampleTracks: [],
+      },
+      noKeyEnv,
+    );
     expect(result.name.length).toBeLessThanOrEqual(40);
+    expect(result.name.endsWith(" (auto)")).toBe(true);
+  });
+
+  it("falls back to the top of genreDistribution when primaryGenre is null", async () => {
+    // The LAB-24 case: derivePrimaryGenre may be null or noisy, but the
+    // aggregated member-genre distribution still has a clear top tag.
+    const result = await nameBucket(
+      {
+        primaryGenre: null,
+        memberCount: 4,
+        genreDistribution: [
+          { genre: "synth-pop", count: 3 },
+          { genre: "new wave", count: 2 },
+        ],
+        audioProfile: NEUTRAL_AUDIO,
+        sampleTracks: [],
+      },
+      noKeyEnv,
+    );
+    expect(result.name).toContain("Synth");
     expect(result.name.endsWith(" (auto)")).toBe(true);
   });
 });

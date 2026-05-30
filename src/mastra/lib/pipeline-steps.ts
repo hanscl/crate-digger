@@ -1,8 +1,9 @@
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import type { Database } from "@/db/client";
 import { type AudioFeatures, bucket, bucketMember, track } from "@/db/schema";
 import { assignTrack } from "@/lib/bucketing/assign";
 import { evaluateBucketRecommendations } from "@/lib/bucketing/recommendations";
+import { cosine } from "@/lib/embedding";
 import { enrichGenresFromDiscogs } from "@/lib/enrichment/discogs";
 import { resolveCandidate } from "@/lib/enrichment/resolve";
 import { enrichGenresFromLastfm } from "@/lib/enrichment/lastfm-tags";
@@ -13,7 +14,7 @@ import { type SourceAdapter, type SourceId, createDefaultRegistry } from "@/lib/
 import type { Candidate } from "@/lib/ranking/types";
 import { runSurfacingBatch } from "@/lib/surfacing/pipeline";
 import type { Env } from "@/server/env";
-import { nameBucket } from "@/mastra/agents/bucket-namer";
+import { type BucketNamerInput, type GenreCount, nameBucket } from "@/mastra/agents/bucket-namer";
 
 /**
  * Pure(-ish) step bodies for the daily pipeline workflow. Kept out of the
@@ -100,25 +101,23 @@ export type BucketSummary = {
   spawnedBucketIds: number[];
   joinedBucketIds: number[];
   alreadyAssignedCount: number;
-  namedBuckets: { bucketId: number; name: string; color: string | null }[];
 };
 
 /**
- * Step 2: bucket each resolved track. Newly-spawned buckets get auto-named
- * by the `bucket-namer` agent (one call per spawn — naming is the dominant
- * agent cost in the daily run). Naming runs after assignment so a failure
- * just leaves the deterministic placeholder in place; bucketing itself
- * never depends on the agent.
+ * Step 2: bucket each resolved track. LAB-25: spawn-time naming is gone —
+ * new buckets ship with the deterministic `<primary> (auto)` placeholder
+ * from `defaultBucketName` and the rename step (below) names them once
+ * they reach N ≥ 3 members. Naming a bucket from a single founding track
+ * was the founding LAB-25 bug.
  */
 export async function bucketAndName(
   db: Database,
-  env: Env,
+  _env: Env,
   trackIds: readonly number[],
 ): Promise<BucketSummary> {
   const spawned = new Set<number>();
   const joined = new Set<number>();
   let alreadyAssignedCount = 0;
-  const namedBuckets: { bucketId: number; name: string; color: string | null }[] = [];
 
   for (const id of trackIds) {
     const result = await assignTrack(db, id);
@@ -128,8 +127,6 @@ export async function bucketAndName(
     }
     if (result.spawned) {
       spawned.add(result.bucketId);
-      const naming = await nameNewBucket(db, env, result.bucketId);
-      if (naming) namedBuckets.push(naming);
     } else {
       joined.add(result.bucketId);
     }
@@ -139,41 +136,167 @@ export async function bucketAndName(
     spawnedBucketIds: [...spawned],
     joinedBucketIds: [...joined],
     alreadyAssignedCount,
-    namedBuckets,
   };
 }
 
-async function nameNewBucket(
-  db: Database,
-  env: Env,
-  bucketId: number,
-): Promise<{ bucketId: number; name: string; color: string | null } | null> {
-  const [bucketRow] = await db
-    .select({ primaryGenre: bucket.primaryGenre })
-    .from(bucket)
-    .where(eq(bucket.id, bucketId))
-    .limit(1);
-  if (!bucketRow) return null;
+export type RenameSummary = {
+  /** Buckets the eligibility rule accepted. */
+  eligibleCount: number;
+  /** Buckets whose name was actually written (eligible AND the agent returned). */
+  renamedCount: number;
+  /** Eligible buckets the namer failed on; the placeholder/old name is kept. */
+  errorCount: number;
+};
 
-  const sample = await db
-    .select({ title: track.title, artist: track.artist })
-    .from(bucketMember)
-    .innerJoin(track, eq(track.id, bucketMember.trackId))
-    .where(eq(bucketMember.bucketId, bucketId))
-    .orderBy(track.id)
-    .limit(10);
+/** Lazy-naming threshold (LAB-25). Below this, buckets keep their placeholder. */
+const LAZY_NAMING_MIN_MEMBERS = 3;
+/** Centroid drift threshold — cosine < this against the last-named centroid → rename. */
+const RENAME_DRIFT_THRESHOLD = 0.95;
+/** Marker for un-named auto placeholder (see `defaultBucketName`). */
+const PLACEHOLDER_SUFFIX = " (auto)";
 
-  const naming = await nameBucket(
-    { primaryGenre: bucketRow.primaryGenre, sampleTracks: sample },
-    env,
-  );
+/**
+ * Eligibility rule for {@link renameEligibleBuckets}. Pure — exposed for
+ * unit tests so we can pin the boundaries without spinning Postgres.
+ *
+ * Eligibility (any of):
+ *  - **first-time**: still on the `(auto)` placeholder AND member_count ≥ 3.
+ *  - **doubled**: previously named, member_count ≥ 2 × `last_named_at_count`.
+ *  - **drift**: previously named, cosine(centroid, `last_named_centroid`) <
+ *    `RENAME_DRIFT_THRESHOLD` — the bucket's geometry moved.
+ *
+ * Human-renamed buckets (real name AND `last_named_at_count = NULL`) are
+ * deliberately ineligible: the rename pass never overwrites a user choice.
+ */
+export function isRenameEligible(b: {
+  name: string;
+  centroid: readonly number[];
+  memberCount: number;
+  lastNamedAtCount: number | null;
+  lastNamedCentroid: readonly number[] | null;
+}): boolean {
+  if (b.memberCount < LAZY_NAMING_MIN_MEMBERS) return false;
+  const isPlaceholder = b.name.endsWith(PLACEHOLDER_SUFFIX);
 
-  await db
-    .update(bucket)
-    .set({ name: naming.name, color: naming.color, updatedAt: new Date() })
-    .where(eq(bucket.id, bucketId));
+  // First-time naming: the (auto) placeholder that's grown into view.
+  if (b.lastNamedAtCount === null) return isPlaceholder;
 
-  return { bucketId, name: naming.name, color: naming.color };
+  // Already named once before — drift / doubling checks apply.
+  if (b.memberCount >= 2 * b.lastNamedAtCount) return true;
+  if (b.lastNamedCentroid && cosine(b.centroid, b.lastNamedCentroid) < RENAME_DRIFT_THRESHOLD) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Aggregate a flat `track.genres[]` array across the bucket's members into a
+ * descending count map. Top entries front-loaded since the agent only sees
+ * the first 10.
+ */
+function aggregateGenres(memberGenres: readonly (readonly string[])[]): GenreCount[] {
+  const counts = new Map<string, number>();
+  for (const arr of memberGenres) {
+    for (const g of arr) {
+      if (!g) continue;
+      counts.set(g, (counts.get(g) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([genre, count]) => ({ genre, count }));
+}
+
+/**
+ * Lazy + drift-triggered rename pass. Walks every bucket and applies the
+ * eligibility rule above; eligible buckets are named via the `bucket-namer`
+ * agent from their aggregated member-genre distribution + centroid audio
+ * profile + a handful of sample tracks.
+ *
+ * Idempotent: re-running won't re-name buckets that aren't eligible. Errors
+ * from the namer keep the existing name; the bucket becomes eligible again
+ * on the next drift event.
+ *
+ * Exposed both as the daily-pipeline step body and as the backfill mutation
+ * (`buckets.renamePlaceholders`) — the eligibility rule covers both cases.
+ */
+export async function renameEligibleBuckets(db: Database, env: Env): Promise<RenameSummary> {
+  const all = await db
+    .select({
+      id: bucket.id,
+      name: bucket.name,
+      centroid: bucket.centroid,
+      featureStats: bucket.featureStats,
+      memberCount: bucket.memberCount,
+      primaryGenre: bucket.primaryGenre,
+      lastNamedAtCount: bucket.lastNamedAtCount,
+      lastNamedCentroid: bucket.lastNamedCentroid,
+    })
+    .from(bucket);
+
+  let eligibleCount = 0;
+  let renamedCount = 0;
+  let errorCount = 0;
+
+  for (const b of all) {
+    if (!isRenameEligible(b)) continue;
+    eligibleCount += 1;
+
+    // Per-bucket try/catch: a transient DB or agent failure on one bucket
+    // must not abort the rest of the pass. `nameBucket` already swallows
+    // its own errors → the fallback name; this catch handles DB-side
+    // failures around the queries and the row update.
+    try {
+      const memberGenres = await db
+        .select({ genres: track.genres })
+        .from(bucketMember)
+        .innerJoin(track, eq(track.id, bucketMember.trackId))
+        .where(eq(bucketMember.bucketId, b.id));
+      const sampleTracks = await db
+        .select({ title: track.title, artist: track.artist })
+        .from(bucketMember)
+        .innerJoin(track, eq(track.id, bucketMember.trackId))
+        .where(eq(bucketMember.bucketId, b.id))
+        .orderBy(track.id)
+        .limit(10);
+
+      const input: BucketNamerInput = {
+        primaryGenre: b.primaryGenre,
+        memberCount: b.memberCount,
+        genreDistribution: aggregateGenres(memberGenres.map((m) => m.genres)),
+        audioProfile: b.featureStats.mean,
+        sampleTracks,
+      };
+
+      const naming = await nameBucket(input, env);
+      // `nameBucket` swallows its own errors and returns a `(auto)` fallback
+      // on missing API key or call failure. Stamping the drift trackers from
+      // that fallback would burn first-time eligibility (so the bucket sits
+      // on the placeholder until membership doubles), and in drift mode
+      // would clobber a real previous name. Treat it as an error and let the
+      // next pass retry.
+      if (naming.name.endsWith(PLACEHOLDER_SUFFIX)) {
+        errorCount += 1;
+        continue;
+      }
+      await db
+        .update(bucket)
+        .set({
+          name: naming.name,
+          color: naming.color,
+          lastNamedAtCount: b.memberCount,
+          lastNamedCentroid: b.centroid,
+          updatedAt: sql`NOW()`,
+        })
+        .where(eq(bucket.id, b.id));
+      renamedCount += 1;
+    } catch (err) {
+      console.error(`[rename-step] bucket ${b.id} failed`, err);
+      errorCount += 1;
+    }
+  }
+
+  return { eligibleCount, renamedCount, errorCount };
 }
 
 export type RetrainSummary = {
