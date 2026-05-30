@@ -269,6 +269,16 @@ export async function renameEligibleBuckets(db: Database, env: Env): Promise<Ren
       };
 
       const naming = await nameBucket(input, env);
+      // `nameBucket` swallows its own errors and returns a `(auto)` fallback
+      // on missing API key or call failure. Stamping the drift trackers from
+      // that fallback would burn first-time eligibility (so the bucket sits
+      // on the placeholder until membership doubles), and in drift mode
+      // would clobber a real previous name. Treat it as an error and let the
+      // next pass retry.
+      if (naming.name.endsWith(PLACEHOLDER_SUFFIX)) {
+        errorCount += 1;
+        continue;
+      }
       await db
         .update(bucket)
         .set({
