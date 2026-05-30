@@ -93,7 +93,7 @@ crate-digger/
 │   ├── mastra/                     # AGENTIC code only
 │   │   ├── index.ts                # new Mastra({ agents, workflows, tools })
 │   │   ├── agents/
-│   │   │   ├── bucket-namer.ts     # one call per new bucket
+│   │   │   ├── bucket-namer.ts     # lazy + drift-triggered (LAB-25)
 │   │   │   ├── why-surfaced.ts     # on-demand explanation
 │   │   │   └── playlist-parser.ts  # cold-start (optional)
 │   │   ├── tools/                  # wraps src/lib/* + src/db/* for agent use
@@ -195,7 +195,12 @@ applies Welford incremental update on each keep/dislike (no full recompute). `re
 runs as part of feedback ingestion when thresholds tripped — writes to `bucket_recommendation`,
 never auto-applies.
 
-Bucket auto-naming on spawn → calls Mastra `bucket-namer` agent (one Claude call per new bucket).
+Bucket auto-naming is lazy (LAB-25): the `bucket-namer` agent runs in the daily-pipeline rename
+step on buckets that reach N ≥ 3 members or whose centroid drifted past the rename threshold
+since their last naming. Spawning a bucket just writes the deterministic `"<primary> (auto)"`
+placeholder; the agent names from the aggregated member-genre distribution + centroid audio
+profile, not the founding track. A `buckets.renamePlaceholders` mutation lets the user trigger
+the same pass on demand from the Buckets screen.
 
 ### 4. Ranking & surfacing
 
