@@ -215,25 +215,31 @@ produced — if a 100-track varied seed still falls into ≤2 buckets, genre
 enrichment isn't reaching tracks (re-check step 3.4).
 
 **On bucket names — read this before flagging `"<genre> (auto)"` as a
-bug.** The `bucket-namer` agent runs **only in the daily pipeline**
-(`pipeline-steps.ts` → `bucketAndName`), never in the cold-start seed
-path (`cold-start.ts` calls `assignTrack` directly). So buckets created
-by the Setup-screen seed show the deterministic placeholder
-`"<genre> (auto)"` **regardless of whether `ANTHROPIC_API_KEY` is set** —
-expected, not a misconfiguration. Agent names appear only for buckets a
-**daily-pipeline run spawns**; a later run does **not** retroactively
-rename existing seed buckets (it names only buckets it spawns itself,
-`pipeline-steps.ts:129-132`). Until a naming backfill exists, the only
-way to name a seed bucket is the manual `rename` on the Buckets screen
-(`buckets.rename`). **Known gap — Hans is resolving it; tracked off
-LAB-1.**
+bug.** Naming is **lazy (LAB-25)**: every new bucket — spawned by the
+cold-start seed or the daily pipeline — ships with the deterministic
+placeholder `"<genre> (auto)"` until it reaches **N ≥ 3 members**. Below
+that threshold there is no signal to name from; the `bucket-namer` agent
+is held back on purpose. Once a bucket crosses N ≥ 3 (either organically
+during a daily pipeline run or because the user clicks the "backfill
+placeholders" button on the Buckets screen), the agent names it from the
+aggregated member-genre distribution + centroid audio profile — not the
+founding track's genre.
 
-Two buckets sharing a name (e.g. two `"alternative (auto)"`) is also
-expected, not a dedupe failure: clustering keys on the 64-dim
+So at small cohort sizes, `"<genre> (auto)"` is **expected, not a
+misconfiguration**. The rename pass is idempotent: re-running it won't
+churn names that aren't drifting, and a centroid that hasn't moved past
+the drift threshold (`pipeline-steps.ts: RENAME_DRIFT_THRESHOLD = 0.95`)
+isn't eligible. Manual `rename` on the Buckets screen
+(`buckets.rename`) still works for explicit overrides — human-renamed
+buckets are deliberately ineligible for auto re-naming.
+
+Two buckets sharing a placeholder name (e.g. two `"alternative (auto)"`)
+is also expected, not a dedupe failure: clustering keys on the 64-dim
 audio+genre **vector**, not the label. Two same-genre tracks more than
 the spawn threshold apart in cosine each spawn their own bucket and both
-inherit the shared primary-genre name (`assign.ts` spawn-or-join
-contract). Most likely at small N, before any merge pass runs.
+carry the shared placeholder until each independently reaches N ≥ 3 and
+gets a centroid-descriptive name (likely distinct, since their centroids
+disagreed enough to spawn separately in the first place).
 
 ### 3.7 Console — novelty knob bumps `model_version`
 

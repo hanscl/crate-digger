@@ -210,8 +210,16 @@ describe("daily-pipeline (step-by-step)", () => {
     const bucketed = await bucketAndName(db, fixtureEnv, pull.resolvedTrackIds);
     expect(bucketed.spawnedBucketIds.length).toBe(3);
     expect(bucketed.joinedBucketIds.length).toBe(0);
-    // No ANTHROPIC_API_KEY → the deterministic fallback names every bucket.
-    expect(bucketed.namedBuckets.length).toBe(3);
+    // LAB-25: spawn-time naming is gone. Every new bucket gets the
+    // deterministic `<primary> (auto)` placeholder; the rename pass fires
+    // once member_count ≥ 3. With one member per bucket here, the rename
+    // step sees no eligible buckets.
+    const buckets = await db.select().from(schema.bucket);
+    expect(buckets).toHaveLength(3);
+    for (const b of buckets) {
+      expect(b.name.endsWith(" (auto)")).toBe(true);
+      expect(b.lastNamedAtCount).toBeNull();
+    }
 
     // 3. Retrain — no ratings yet, so this short-circuits with `no_samples`
     //    and does NOT pollute the broad version chain.

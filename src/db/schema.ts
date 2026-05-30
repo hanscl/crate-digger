@@ -116,6 +116,12 @@ export const bucket = pgTable(
     dislikeCount: integer("dislike_count").notNull().default(0),
     isColdStartSeed: boolean("is_cold_start_seed").notNull().default(false),
     primaryGenre: text("primary_genre"),
+    // LAB-25 drift-tracking: member count and centroid snapshot at the moment
+    // of the last successful agent naming. Null on rows that still carry the
+    // deterministic " (auto)" placeholder — the rename pass treats null as
+    // "never named, eligible at N ≥ 3."
+    lastNamedAtCount: integer("last_named_at_count"),
+    lastNamedCentroid: vector("last_named_centroid", { dimensions: EMBEDDING_DIM }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

@@ -2,6 +2,118 @@
 
 Phase tracker. Update at the end of every phase. Newest at the top.
 
+## LAB-25 — Centroid-descriptive bucket naming + `(auto)` backfill
+
+- **Status:** review
+- **Branch:** `lab-25-rework-bucket-naming-centroid-descriptive-lazy-re-runnable`
+- **PR:** _pending_
+- **Scope landed:** Bucket naming reworked from "primary genre of the
+  founding track" to centroid-descriptive aggregate, with lazy timing,
+  drift-triggered re-runs, and a one-shot backfill of existing `(auto)`
+  placeholders. The naming-layer fix flagged in LAB-24's verdict; the
+  deeper pre-filter membership question is filed as LAB-36, deliberately
+  out of scope.
+  Bucket-namer agent (`src/mastra/agents/bucket-namer.ts`) input shape
+  swapped from `{primaryGenre, sampleTracks}` to `{primaryGenre,
+memberCount, genreDistribution, audioProfile, sampleTracks}` —
+  aggregated member-genre counts together with the bucket's centroid
+  audio means (`bucket.featureStats.mean`) together with the same
+  handful of sample tracks. Instructions rewritten with explicit cues
+  that map the 6 audio dims to natural-language descriptors (high
+  acousticness with low energy ≈ ballads; high energy with high
+  danceability ≈ dance; etc.) and that name from the SHARED character of
+  the members, not any one tag or any one track. Sidesteps the LAB-24
+  finding about `derivePrimaryGenre` ordering sensitivity. Model stays
+  `anthropic/claude-haiku-4-5`.
+  Pipeline changes (`src/mastra/lib/pipeline-steps.ts`): spawn-time
+  naming is gone. `bucketAndName` no longer calls the agent for
+  newly-spawned buckets; they ship with the deterministic
+  `<primaryGenre> (auto)` placeholder from `defaultBucketName` and wait
+  for the rename pass. New `renameEligibleBuckets(db, env)` walks every
+  bucket, applies a pure `isRenameEligible(...)` rule, and names
+  eligible buckets via the agent. Eligibility is any of: (a) still on
+  the `(auto)` placeholder AND `memberCount ≥ 3` (first-time lazy
+  threshold); (b) previously agent-named AND `memberCount ≥ 2 ×
+last_named_at_count` (doubled); (c) previously agent-named AND
+  cosine(centroid, `last_named_centroid`) < 0.95 (drift). Human-renamed
+  buckets (real name with `last_named_at_count = NULL`) are
+  deliberately ineligible — the rename pass never overwrites a user
+  choice. Idempotent: re-running won't churn names without drift.
+  Returns `{ eligibleCount, renamedCount, errorCount }`.
+  Daily-pipeline workflow (`src/mastra/workflows/daily-pipeline.ts`):
+  new `rename-eligible` step inserted between `bucket-and-name` and
+  `retrain-broad`. Replaces the old `namedBucketCount` accumulator
+  field with three new fields: `eligibleBucketCount`,
+  `renamedBucketCount`, `renameErrorCount`.
+  tRPC and UI: new `buckets.renamePlaceholders` mutation calls the
+  same `renameEligibleBuckets` function as a manual button trigger.
+  Buckets screen (`src/web/screens/buckets.tsx`) gains a "names" panel
+  above the existing "recommendations" panel in the right column, with
+  a "backfill placeholders" button mirroring the `recompute` pattern.
+  Result chip reads `"{eligible} eligible · {renamed} renamed"` plus an
+  optional errors tail.
+  Schema delta: two new nullable columns on `bucket` via migration
+  `0005_illegal_lizard.sql`. `last_named_at_count integer` stores the
+  member count at the moment of the last successful agent naming, NULL
+  on rows that still carry the deterministic `(auto)` placeholder.
+  `last_named_centroid vector(64)` stores the centroid snapshot at the
+  same moment, NULL until first naming. No data backfill needed:
+  existing `(auto)` buckets correctly read as "never named, eligible at
+  N ≥ 3".
+  Tests (8 new and 1 updated, 182 total green).
+  `tests/mastra/agents.test.ts`: bucket-namer fallback tests updated to
+  the new input shape; new case verifies the `genreDistribution`-
+  fallback path when `primaryGenre` is null.
+  `tests/mastra/rename-eligibility.test.ts` (new, 7 cases): pure
+  boundary pinning on `isRenameEligible` — below threshold, first-time
+  at N=3 placeholder, human-rename guard, member-count doubling, drift
+  below 0.95, no-rename when stable.
+  `tests/mastra/daily-pipeline.test.ts`: spawn-time naming assertion
+  replaced with the lazy expectation — every new bucket carries the
+  `(auto)` placeholder and `lastNamedAtCount = NULL`.
+
+- **Decisions locked:**
+  - **Scope split**: keep this ticket as-spec'd (naming only). File
+    the deeper pre-filter rework as a separate ticket (LAB-36). The
+    `assign.ts:155` `primary_genre` exact-match candidate filter is
+    the real "membership decision" lever that locks tracks to their
+    artist-genre lane; rebalancing that is a `model_version` event
+    and earns its own change window.
+  - **Drift trigger**: dual signal — cosine drift < 0.95 OR member
+    count doubled since last naming. The doubling check is bulletproof
+    at small N where centroids move slowly per addition; the cosine
+    check covers large clusters where individual joins barely budge
+    the centroid but accumulated drift matters.
+  - **Human-renamed buckets are sacred**: the rule treats "real name +
+    `last_named_at_count NULL`" as a manual override and never
+    re-names. The agent path always sets `last_named_at_count`
+    alongside the name so the next eligibility check has the anchor.
+  - **No backfill via `force` flag**: the eligibility rule is
+    sufficient. The "backfill placeholders" button invokes the same
+    `renameEligibleBuckets` as the daily step. Idempotent by
+    construction.
+
+- **Notes for future phases:**
+  - **LAB-36 is the next architectural lever.** Even with
+    centroid-descriptive naming, the "More Than Words → metal bucket"
+    symptom only resolves once the bucket grows to ≥3 members. At the
+    current 1-member-per-bucket density of the cold-start seed, the
+    placeholder persists. The pre-filter rework in LAB-36 is what
+    actually rearranges which tracks land in which bucket.
+  - The bucket-namer prompt explicitly maps audio dims to mood
+    descriptors — that mapping is the most likely place to tune if
+    name quality looks off in practice. Bumping to Sonnet is a
+    one-line change in `bucketNamerAgent`; keep Haiku unless eval
+    shows the prompt hints aren't carrying enough signal.
+  - `derivePrimaryGenre`'s ordering sensitivity (Spider Murphy Gang
+    "rock" vs Extrabreit "electronic" on near-identical NDW genre
+    lists) is now sidestepped _for naming_ but still drives
+    membership through the pre-filter — LAB-36 problem.
+  - `RENAME_DRIFT_THRESHOLD = 0.95` and the lazy-naming `N ≥ 3`
+    constants are hardcoded in `pipeline-steps.ts`. Surface to
+    `app_config` only if eval data shows we want to tune them; YAGNI
+    until then.
+
 ## LAB-23 — Multi-source genre tagging (Last.fm artist + MusicBrainz + Discogs)
 
 - **Status:** review

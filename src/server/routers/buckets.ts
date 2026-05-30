@@ -7,6 +7,7 @@ import {
   evaluateBucketRecommendations,
   listPendingRecommendations,
 } from "@/lib/bucketing/recommendations";
+import { renameEligibleBuckets } from "@/mastra/lib/pipeline-steps";
 import { protectedProcedure, router } from "../trpc-base";
 
 /**
@@ -128,6 +129,24 @@ export const bucketsRouter = router({
       newMergeCount: result.merges.length,
       newSplitCount: result.splits.length,
       totalPending: result.totalPending,
+    };
+  }),
+
+  /**
+   * LAB-25 backfill: name all `(auto)` placeholder buckets that have reached
+   * the lazy-naming threshold, plus re-name buckets whose centroid drifted
+   * significantly since their last agent naming. Idempotent — eligibility
+   * filter rejects already-named buckets without drift.
+   *
+   * Same code path as the daily-pipeline rename step; this just lets the
+   * user trigger it on demand from the Buckets screen.
+   */
+  renamePlaceholders: protectedProcedure.mutation(async ({ ctx }) => {
+    const result = await renameEligibleBuckets(ctx.db, ctx.appEnv);
+    return {
+      eligibleCount: result.eligibleCount,
+      renamedCount: result.renamedCount,
+      errorCount: result.errorCount,
     };
   }),
 
