@@ -242,28 +242,32 @@ export async function renameEligibleBuckets(db: Database, env: Env): Promise<Ren
     if (!isRenameEligible(b)) continue;
     eligibleCount += 1;
 
-    const memberGenres = await db
-      .select({ genres: track.genres })
-      .from(bucketMember)
-      .innerJoin(track, eq(track.id, bucketMember.trackId))
-      .where(eq(bucketMember.bucketId, b.id));
-    const sampleTracks = await db
-      .select({ title: track.title, artist: track.artist })
-      .from(bucketMember)
-      .innerJoin(track, eq(track.id, bucketMember.trackId))
-      .where(eq(bucketMember.bucketId, b.id))
-      .orderBy(track.id)
-      .limit(10);
-
-    const input: BucketNamerInput = {
-      primaryGenre: b.primaryGenre,
-      memberCount: b.memberCount,
-      genreDistribution: aggregateGenres(memberGenres.map((m) => m.genres)),
-      audioProfile: b.featureStats.mean,
-      sampleTracks,
-    };
-
+    // Per-bucket try/catch: a transient DB or agent failure on one bucket
+    // must not abort the rest of the pass. `nameBucket` already swallows
+    // its own errors → the fallback name; this catch handles DB-side
+    // failures around the queries and the row update.
     try {
+      const memberGenres = await db
+        .select({ genres: track.genres })
+        .from(bucketMember)
+        .innerJoin(track, eq(track.id, bucketMember.trackId))
+        .where(eq(bucketMember.bucketId, b.id));
+      const sampleTracks = await db
+        .select({ title: track.title, artist: track.artist })
+        .from(bucketMember)
+        .innerJoin(track, eq(track.id, bucketMember.trackId))
+        .where(eq(bucketMember.bucketId, b.id))
+        .orderBy(track.id)
+        .limit(10);
+
+      const input: BucketNamerInput = {
+        primaryGenre: b.primaryGenre,
+        memberCount: b.memberCount,
+        genreDistribution: aggregateGenres(memberGenres.map((m) => m.genres)),
+        audioProfile: b.featureStats.mean,
+        sampleTracks,
+      };
+
       const naming = await nameBucket(input, env);
       await db
         .update(bucket)

@@ -104,11 +104,18 @@ export const bucketsRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      // LAB-25: reset the drift-tracking anchor so the rename step's
+      // doubling / drift conditions can't overwrite a manual rename on a
+      // subsequent run. The `isRenameEligible` rule treats
+      // `lastNamedAtCount = null` + non-placeholder name as "human-chosen,
+      // do not touch."
       const [updated] = await ctx.db
         .update(bucket)
         .set({
           name: input.name,
           ...(input.color !== undefined ? { color: input.color } : {}),
+          lastNamedAtCount: null,
+          lastNamedCentroid: null,
           updatedAt: sql`NOW()`,
         })
         .where(eq(bucket.id, input.id))
