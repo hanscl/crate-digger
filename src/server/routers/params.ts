@@ -23,9 +23,9 @@ const PARAMS_INPUT = z.object({
   splitDislikeRate: z.number().min(0).max(1).optional(),
   // LAB-51 — per-run pull throttle. min(0) allows disabling a pull mode
   // (0 trending = similar-only; 0 seed buckets = trending-only).
-  trendingLimitPerSource: z.number().int().min(0).max(50).optional(),
-  similarLimitPerSource: z.number().int().min(0).max(50).optional(),
-  similarSeedBuckets: z.number().int().min(0).max(20).optional(),
+  trendingLimitPerSource: z.number().int().min(0).max(25).optional(),
+  similarLimitPerSource: z.number().int().min(0).max(25).optional(),
+  similarSeedBuckets: z.number().int().min(0).max(15).optional(),
 });
 
 export const paramsRouter = router({
