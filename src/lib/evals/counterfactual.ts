@@ -1,6 +1,7 @@
 import { and, desc, eq, gte, inArray, lte } from "drizzle-orm";
 import type { Database } from "@/db/client";
 import {
+  bucket,
   bucketMember,
   type CandidatePoolEntry,
   rating,
@@ -8,6 +9,7 @@ import {
   type SurfaceEvent,
   track,
 } from "@/db/schema";
+import { sameGenreScope } from "@/lib/bucketing/genre-scope";
 import { scoreBroad } from "@/lib/ranking/broad";
 import { scoreRefill } from "@/lib/ranking/refill";
 import type { Candidate, RatedTrack, ScoredCandidate } from "@/lib/ranking/types";
@@ -156,6 +158,10 @@ export async function counterfactualReplay(
     }
   }
   const keepsByBucket = await loadKeepsByBucket(db, [...refillBucketIds]);
+  // Sibling lookup: the bucket's primary genre keyed by id, so the refill
+  // winner pick can apply the same same-genre eligibility gate the live
+  // surfacing pipeline uses (assign.ts is the canonical JOIN gate).
+  const genreByBucket = await loadGenreByBucket(db, [...refillBucketIds]);
 
   // Dislikes for refill scoring use whatever the user has currently rated
   // 'dislike'. The original surface time may have seen a different dislike
@@ -207,7 +213,21 @@ export async function counterfactualReplay(
     // Tie-break by trackId (matches surfacing pipeline) so replay is
     // deterministic given identical scores.
     scored.sort((a, b) => b.score - a.score || a.candidate.trackId - b.candidate.trackId);
-    const winner = scored[0];
+    // Refill winner selection mirrors the live pipeline's primary-genre
+    // eligibility gate (assign.ts is the canonical JOIN gate): only a
+    // same-genre candidate can win the slot. Off-genre candidates stay in
+    // `scored`/`replayedPool` (Constraint #2) but are never the replay winner.
+    // Broad events have no bucket scope, so every candidate is eligible.
+    const eligible =
+      targetKind === "refill"
+        ? scored.filter((s) =>
+            sameGenreScope(
+              s.candidate.primaryGenre,
+              event.bucketId !== null ? (genreByBucket.get(event.bucketId) ?? null) : null,
+            ),
+          )
+        : scored;
+    const winner = eligible[0];
     if (!winner) {
       skippedEventIds.push(event.id);
       continue;
@@ -303,6 +323,30 @@ async function loadKeepsByBucket(
     out.set(r.bucketId, list);
   }
   return out;
+}
+
+/**
+ * Primary genre keyed by bucket id, for the refill replay eligibility gate.
+ * Buckets absent from the result (e.g. deleted by a merge) map to undefined,
+ * which the caller treats as a null genre scope.
+ *
+ * Deleted-bucket edge: if a refill event's bucket was deleted between surface
+ * and replay, `genreByBucket.get(id)` is undefined → coerced to a null scope
+ * at the gate. A genre-having pool then has no eligible (null-genre) winner,
+ * so the event is SKIPPED rather than replayed against the wrong scope —
+ * consistent with the "bucket membership is a moving target" replay semantics
+ * documented at the top of this file.
+ */
+async function loadGenreByBucket(
+  db: Database,
+  bucketIds: readonly number[],
+): Promise<Map<number, string | null>> {
+  if (bucketIds.length === 0) return new Map();
+  const rows = await db
+    .select({ id: bucket.id, primaryGenre: bucket.primaryGenre })
+    .from(bucket)
+    .where(inArray(bucket.id, [...bucketIds]));
+  return new Map(rows.map((r) => [r.id, r.primaryGenre]));
 }
 
 async function loadGlobalDislikes(db: Database): Promise<RatedTrack[]> {

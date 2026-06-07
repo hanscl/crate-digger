@@ -9,6 +9,7 @@ import {
   surfaceEvent,
   track,
 } from "@/db/schema";
+import { sameGenreScope } from "@/lib/bucketing/genre-scope";
 import { scoreBroadBatch } from "@/lib/ranking/broad";
 import { scoreRefillBatch } from "@/lib/ranking/refill";
 import type { Candidate, RatedTrack, RefillConfig, ScoredCandidate } from "@/lib/ranking/types";
@@ -176,9 +177,14 @@ export async function runSurfacingBatch(
 }
 
 type RefillPhaseInput = {
+  // Invariant for the winner-eligibility gate: each candidate MUST carry the
+  // persisted `track.primary_genre` so `sameGenreScope` can compare it to the
+  // bucket's genre. An absent/undefined primaryGenre is coerced to null and is
+  // therefore excluded from every genre-having bucket. Satisfied today by
+  // `loadCandidates`, which projects `track.primary_genre` onto each Candidate.
   candidates: readonly Candidate[];
   quota: number;
-  buckets: { id: number; memberTrackIds: readonly number[] }[];
+  buckets: { id: number; primaryGenre: string | null; memberTrackIds: readonly number[] }[];
   dislikes: readonly RatedTrack[];
   refillConfig: RefillConfig;
   refillVersionId: number;
@@ -216,11 +222,23 @@ async function runRefillPhase(db: Database, input: RefillPhaseInput): Promise<Re
     }
     const pool = scoreRefillBatch(candidates, keepEmbeddings, dislikes, refillConfig);
     lastPool = pool;
+    // HARD primary-genre eligibility gate on the refill WINNER only. Mirrors
+    // the bucket JOIN gate (assign.ts is the canonical rule: same primary
+    // genre, null===null matches) and the MERGE gate. Off-genre candidates
+    // stay scored in `pool` (Constraint #2) but can never win a slot for a
+    // bucket they could never JOIN/MERGE into.
     const eligible = pool
-      .filter((s) => !surfacedIds.has(s.candidate.trackId))
+      .filter(
+        (s) =>
+          !surfacedIds.has(s.candidate.trackId) &&
+          sameGenreScope(s.candidate.primaryGenre, targetBucket.primaryGenre),
+      )
       .sort((a, b) => b.score - a.score || a.candidate.trackId - b.candidate.trackId);
     const winner = eligible[0];
-    if (!winner) break;
+    // No same-genre candidate for this bucket — advance the round-robin rather
+    // than abandoning the remaining slots/buckets. The refill-shortfall path
+    // rolls any unfilled slots forward into broad.
+    if (!winner) continue;
 
     surfaced.push(winner);
     surfacedIds.add(winner.candidate.trackId);
@@ -350,22 +368,23 @@ async function todaysSurfacedCount(db: Database): Promise<number> {
 
 async function loadRefillableBuckets(
   db: Database,
-): Promise<{ id: number; memberTrackIds: number[] }[]> {
+): Promise<{ id: number; primaryGenre: string | null; memberTrackIds: number[] }[]> {
   const rows = await db
     .select({
       id: bucket.id,
+      primaryGenre: bucket.primaryGenre,
       trackId: bucketMember.trackId,
     })
     .from(bucket)
     .innerJoin(bucketMember, eq(bucketMember.bucketId, bucket.id));
-  const grouped = new Map<number, number[]>();
+  const grouped = new Map<number, { primaryGenre: string | null; memberTrackIds: number[] }>();
   for (const r of rows) {
-    const list = grouped.get(r.id) ?? [];
-    list.push(r.trackId);
-    grouped.set(r.id, list);
+    const entry = grouped.get(r.id) ?? { primaryGenre: r.primaryGenre, memberTrackIds: [] };
+    entry.memberTrackIds.push(r.trackId);
+    grouped.set(r.id, entry);
   }
   return [...grouped.entries()]
-    .map(([id, memberTrackIds]) => ({ id, memberTrackIds }))
+    .map(([id, v]) => ({ id, primaryGenre: v.primaryGenre, memberTrackIds: v.memberTrackIds }))
     .sort((a, b) => a.id - b.id);
 }
 
