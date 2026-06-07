@@ -5,6 +5,7 @@ import { assignTrack } from "@/lib/bucketing/assign";
 import { evaluateBucketRecommendations } from "@/lib/bucketing/recommendations";
 import { cosine } from "@/lib/embedding";
 import { enrichGenresFromDiscogs } from "@/lib/enrichment/discogs";
+import { selectBucketSeeds } from "@/lib/ingestion/exemplar";
 import { resolveCandidate, resolveSpotifyId } from "@/lib/enrichment/resolve";
 import { enrichGenresFromLastfm } from "@/lib/enrichment/lastfm-tags";
 import { enrichGenresFromMusicBrainz } from "@/lib/enrichment/musicbrainz";
@@ -41,9 +42,13 @@ export type PullEnrichSummary = {
   genresUpdated: number;
   mbGenresUpdated: number;
   discogsGenresUpdated: number;
+  /** Candidates pulled by the taste-seeded Last.fm `getSimilar` pass (LAB-39). */
+  similarPulledCount: number;
 };
 
 const DEFAULT_PER_SOURCE_LIMIT = 25;
+/** Top-N buckets seeded for the Last.fm similar pull (LAB-39). */
+const SIMILAR_SEED_BUCKETS = 5;
 
 /**
  * Step 1: pull `mode: "trending"` from every available adapter, resolve each
@@ -61,11 +66,24 @@ const DEFAULT_PER_SOURCE_LIMIT = 25;
  *
  * Adapter failures degrade silently (constraint #1) — `pullCandidates`
  * already returns `[]` rather than throwing.
+ *
+ * LAB-39 — taste-seeded similar pull: after the generic trending sweep, if a
+ * Last.fm adapter is present we pick a centroid-nearest exemplar from each of
+ * the top-N buckets (by member count) and call Last.fm `track.getSimilar`
+ * seeded on it. Those candidates merge into the SAME pool — deduped, resolved,
+ * and enriched identically — so refill draws from taste-relevant tracks rather
+ * than only generic trending. Per-seed pulls are issued sequentially to
+ * respect Last.fm's rate limits. Last.fm-only first cut; the pass is a strict
+ * no-op when no `lastfm` adapter is available.
  */
 export async function pullAndEnrichTrending(
   db: Database,
   env: Env,
-  options: { limitPerSource?: number; adapters?: readonly SourceAdapter[] } = {},
+  options: {
+    limitPerSource?: number;
+    adapters?: readonly SourceAdapter[];
+    similarSeedBuckets?: number;
+  } = {},
 ): Promise<PullEnrichSummary> {
   const limit = options.limitPerSource ?? DEFAULT_PER_SOURCE_LIMIT;
   const adapters = options.adapters ?? createDefaultRegistry().available(env);
@@ -96,6 +114,38 @@ export async function pullAndEnrichTrending(
     }
   }
 
+  // LAB-39 — taste-seeded similar pull. Strict no-op unless a Last.fm adapter
+  // is available (Last.fm-only first cut). Seeds are the centroid-nearest
+  // exemplar of each top-N bucket; per-seed `getSimilar` calls are issued
+  // sequentially to respect Last.fm rate limits — NEVER Promise.all.
+  let similarPulled = 0;
+  const lastfm = adapters.find((a) => a.id === "lastfm");
+  if (lastfm) {
+    const seeds = await selectBucketSeeds(db, {
+      maxBuckets: options.similarSeedBuckets ?? SIMILAR_SEED_BUCKETS,
+    });
+    for (const seed of seeds) {
+      const cands = await lastfm.pullCandidates(
+        { mode: "similar", seedArtist: seed.seedArtist, seedTrack: seed.seedTrack, limit },
+        env,
+      );
+      similarPulled += cands.length;
+      for (const c of cands) {
+        await resolveInto(c);
+      }
+    }
+    pulledCount += similarPulled;
+    // Keep the `pulledCount === sum(perSource.pulled)` invariant: fold the
+    // similar pulls into Last.fm's existing per-source entry (it already
+    // pushed one during the trending sweep) rather than adding a second row.
+    const lastfmEntry = perSource.find((p) => p.source === "lastfm");
+    if (lastfmEntry) {
+      lastfmEntry.pulled += similarPulled;
+    } else {
+      perSource.push({ source: "lastfm", pulled: similarPulled });
+    }
+  }
+
   const ids = [...resolvedIds];
   const enrichResult = await enrichAudioFeaturesForTracks(db, ids);
   const genreResult = await enrichGenresFromLastfm(db, env, ids);
@@ -112,6 +162,7 @@ export async function pullAndEnrichTrending(
     genresUpdated: genreResult.updated,
     mbGenresUpdated: mbResult.updated,
     discogsGenresUpdated: discogsResult.updated,
+    similarPulledCount: similarPulled,
   };
 }
 
