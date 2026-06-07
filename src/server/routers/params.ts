@@ -15,8 +15,10 @@ import { protectedProcedure, router } from "../trpc-base";
 const PARAMS_INPUT = z.object({
   novelty: z.number().min(0).max(1).optional(),
   sourceMix: z.number().min(0).max(1).optional(),
-  dailySurfaceCap: z.number().int().min(0).max(500).optional(),
   queueCeiling: z.number().int().min(0).max(1000).optional(),
+  // LAB-53 — per-ranker quality bars (live config; no model_version bump).
+  refillQualityBar: z.number().min(0).max(1).optional(),
+  broadQualityBar: z.number().min(0).max(1).optional(),
   spawnThreshold: z.number().min(0).max(1).optional(),
   refillLambda: z.number().min(0).max(5).optional(),
   mergeThreshold: z.number().min(0).max(1).optional(),
@@ -44,8 +46,9 @@ export const paramsRouter = router({
     const update: Record<string, unknown> = {};
     if (input.novelty !== undefined) update.novelty = input.novelty;
     if (input.sourceMix !== undefined) update.sourceMix = input.sourceMix;
-    if (input.dailySurfaceCap !== undefined) update.dailySurfaceCap = input.dailySurfaceCap;
     if (input.queueCeiling !== undefined) update.queueCeiling = input.queueCeiling;
+    if (input.refillQualityBar !== undefined) update.refillQualityBar = input.refillQualityBar;
+    if (input.broadQualityBar !== undefined) update.broadQualityBar = input.broadQualityBar;
     if (input.spawnThreshold !== undefined) update.spawnThreshold = input.spawnThreshold;
     if (input.refillLambda !== undefined) update.refillLambda = input.refillLambda;
     if (input.mergeThreshold !== undefined) update.mergeThreshold = input.mergeThreshold;

@@ -126,7 +126,7 @@ describe("counterfactualReplay — broad", () => {
     await runSurfacingBatch(db, {
       candidates,
       noveltyOverride: 1,
-      dailyCapOverride: 1,
+      queueCeilingOverride: 1,
     });
 
     const active = await getActiveModelVersion(db, "broad");
@@ -167,7 +167,7 @@ describe("counterfactualReplay — broad", () => {
     await runSurfacingBatch(db, {
       candidates,
       noveltyOverride: 1,
-      dailyCapOverride: 1,
+      queueCeilingOverride: 1,
     });
 
     // Build weights that put strong positive coefficients on the high-valence
@@ -235,7 +235,8 @@ describe("counterfactualReplay — broad", () => {
     await runSurfacingBatch(db, {
       candidates: [c1, c2],
       noveltyOverride: 0, // pure refill
-      dailyCapOverride: 1,
+      refillBarOverride: 0,
+      queueCeilingOverride: 1,
     });
 
     const broadActive = await getActiveModelVersion(db, "broad");
@@ -313,7 +314,8 @@ describe("counterfactualReplay — refill primary-genre gate (LAB-45)", () => {
     const surfacing = await runSurfacingBatch(db, {
       candidates,
       noveltyOverride: 0, // pure refill — live winner is the metal candidate
-      dailyCapOverride: 1,
+      refillBarOverride: 0,
+      queueCeilingOverride: 1,
     });
 
     // Confirm the persisted event is a refill event for the metal bucket whose
@@ -394,7 +396,8 @@ describe("counterfactualReplay — refill primary-genre gate (LAB-45)", () => {
     const surfacing = await runSurfacingBatch(db, {
       candidates,
       noveltyOverride: 0, // pure refill
-      dailyCapOverride: 1,
+      refillBarOverride: 0,
+      queueCeilingOverride: 1,
     });
     expect(surfacing.events).toHaveLength(1);
 

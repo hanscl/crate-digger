@@ -1,0 +1,2 @@
+ALTER TABLE "app_config" ADD COLUMN "refill_quality_bar" double precision DEFAULT 0.7 NOT NULL;--> statement-breakpoint
+ALTER TABLE "app_config" ADD COLUMN "broad_quality_bar" double precision DEFAULT 0.5 NOT NULL;

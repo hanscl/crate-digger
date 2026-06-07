@@ -108,7 +108,7 @@ describe("ingestRating — Constraint #3 (ratings tag the surface-time model_ver
     await runSurfacingBatch(db, {
       candidates: [cand],
       noveltyOverride: 1,
-      dailyCapOverride: 1,
+      queueCeilingOverride: 1,
     });
     const events = await db.select().from(schema.surfaceEvent);
     const surfacedEvent = events[0]!;

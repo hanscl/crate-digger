@@ -466,9 +466,10 @@ export type SurfaceSummary = {
 
 /**
  * Step 5: load embeddings + audio for the day's resolved track IDs and run
- * the surfacing pipeline. We pass the day's pool — not the entire catalog —
- * so the cap interactions stay per-batch. Per-day caps are enforced inside
- * `runSurfacingBatch` against `surface_event` history.
+ * the surfacing pipeline. We pass the day's pool — not the entire catalog.
+ * LAB-53: surfacing emits every candidate that clears its ranker's quality bar,
+ * bounded only by the queue ceiling (`effectiveCap = queueCeiling − unrated`);
+ * there is no per-day cap. `effectiveCap` here is that ceiling headroom.
  */
 export async function surfaceStep(
   db: Database,
