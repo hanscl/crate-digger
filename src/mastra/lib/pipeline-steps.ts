@@ -5,12 +5,17 @@ import { assignTrack } from "@/lib/bucketing/assign";
 import { evaluateBucketRecommendations } from "@/lib/bucketing/recommendations";
 import { cosine } from "@/lib/embedding";
 import { enrichGenresFromDiscogs } from "@/lib/enrichment/discogs";
-import { resolveCandidate } from "@/lib/enrichment/resolve";
+import { resolveCandidate, resolveSpotifyId } from "@/lib/enrichment/resolve";
 import { enrichGenresFromLastfm } from "@/lib/enrichment/lastfm-tags";
 import { enrichGenresFromMusicBrainz } from "@/lib/enrichment/musicbrainz";
 import { enrichAudioFeaturesForTracks } from "@/lib/enrichment/reccobeats";
 import { retrainBroad } from "@/lib/feedback/retrain";
-import { type SourceAdapter, type SourceId, createDefaultRegistry } from "@/lib/ingestion";
+import {
+  type RawCandidate,
+  type SourceAdapter,
+  type SourceId,
+  createDefaultRegistry,
+} from "@/lib/ingestion";
 import type { Candidate } from "@/lib/ranking/types";
 import { runSurfacingBatch } from "@/lib/surfacing/pipeline";
 import type { Env } from "@/server/env";
@@ -30,6 +35,8 @@ export type PullEnrichSummary = {
   perSource: { source: SourceId; pulled: number }[];
   resolvedTrackIds: number[];
   newlyCreatedTrackIds: number[];
+  /** Candidates whose `spotifyId` was stamped by the ingest-time search pass (LAB-46). */
+  spotifyResolvedCount: number;
   audioFeaturesUpdated: number;
   genresUpdated: number;
   mbGenresUpdated: number;
@@ -67,15 +74,25 @@ export async function pullAndEnrichTrending(
   const resolvedIds = new Set<number>();
   const newlyCreatedIds: number[] = [];
   let pulledCount = 0;
+  let spotifyResolvedCount = 0;
+
+  // Per-candidate body, extracted so the spotify-id pre-resolution + resolution
+  // is a single reusable unit. LAB-39 stacks similar-seeded candidates onto this
+  // same loop and can reuse this closure verbatim.
+  const resolveInto = async (c: RawCandidate): Promise<void> => {
+    const resolved = await resolveSpotifyId(c, env);
+    if (resolved.spotifyId !== c.spotifyId) spotifyResolvedCount += 1;
+    const r = await resolveCandidate(db, resolved);
+    resolvedIds.add(r.trackId);
+    if (r.created) newlyCreatedIds.push(r.trackId);
+  };
 
   for (const adapter of adapters) {
     const candidates = await adapter.pullCandidates({ mode: "trending", limit }, env);
     perSource.push({ source: adapter.id, pulled: candidates.length });
     pulledCount += candidates.length;
     for (const c of candidates) {
-      const result = await resolveCandidate(db, c);
-      resolvedIds.add(result.trackId);
-      if (result.created) newlyCreatedIds.push(result.trackId);
+      await resolveInto(c);
     }
   }
 
@@ -90,6 +107,7 @@ export async function pullAndEnrichTrending(
     perSource,
     resolvedTrackIds: ids,
     newlyCreatedTrackIds: newlyCreatedIds,
+    spotifyResolvedCount,
     audioFeaturesUpdated: enrichResult.updated,
     genresUpdated: genreResult.updated,
     mbGenresUpdated: mbResult.updated,

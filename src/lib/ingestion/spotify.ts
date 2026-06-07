@@ -164,6 +164,27 @@ export function spotifyTrackToCandidate(t: SpotifyTrack): RawCandidate {
 }
 
 /**
+ * Field-scoped `/search` for a single artist+title pair, returning the RAW
+ * top hit (or null) so the caller can confidence-check before trusting it.
+ * Used by the ingest-time spotify-id resolution pass (LAB-46) to stamp a
+ * `spotifyId` onto Last.fm-only candidates. Reuses `spotifyGet`, which
+ * already returns null on auth/rate-limit/non-200 — no separate fetch path.
+ */
+export async function searchSpotifyTrack(
+  artist: string,
+  title: string,
+  env: Env,
+): Promise<SpotifyTrack | null> {
+  const q = `artist:"${artist}" track:"${title}"`;
+  const data = await spotifyGet<{ tracks: { items: SpotifyTrack[] } }>(
+    "/search",
+    { q, type: "track", limit: SEARCH_PAGE_SIZE },
+    env,
+  );
+  return data?.tracks?.items?.[0] ?? null;
+}
+
+/**
  * Search, paging with `offset` to assemble up to `limit` results out of
  * 10-track pages (the Feb 2026 Dev Mode cap). Stops early on an empty/short
  * page or a missing `next` cursor.
