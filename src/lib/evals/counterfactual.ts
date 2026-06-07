@@ -31,7 +31,11 @@ import { configFromVersion, getModelVersion } from "@/lib/ranking/version";
  * the keep set from the bucket's CURRENT members (not the original ones —
  * we don't snapshot bucket membership at surface time, since it's a moving
  * target by design). This is fine for "would v6 have done better" questions
- * and matches what the live ranker would have seen at replay time.
+ * and matches what the live ranker would have seen at replay time. Refill
+ * events whose bucket was deleted/merged before replay (their `bucketId`
+ * nulled by the FK) are SKIPPED — a bucket-scoped event with no bucket can't
+ * be faithfully re-ranked, and replaying it under a null scope would corrupt
+ * `agreementRate` with a deletion artifact.
  *
  * Broad semantics: broad events have no bucket scope; replay rescores each
  * pool entry under the target broad config. Embeddings come from the pool
@@ -192,6 +196,22 @@ export async function counterfactualReplay(
       continue;
     }
 
+    // A refill event whose bucket was deleted/merged between surface and replay
+    // has its `bucketId` nulled by the FK (surface_event.bucket_id ON DELETE SET
+    // NULL); refill events are always written with a non-null bucketId, so a
+    // null one is exclusively a deletion artifact. With the bucket gone, the
+    // genre gate and keep-set can't be faithfully reconstructed: replaying under
+    // a null scope would let a null-genre candidate win a slot the original
+    // genre bucket required (or skip only genre-having pools) — contaminating
+    // agreementRate with a data-deletion artifact rather than a ranker
+    // comparison. Skip uniformly, same honesty as the empty-pool short-circuit.
+    // (A live bucket whose primaryGenre is null keeps a non-null id and replays
+    // normally under the valid null===null scope.)
+    if (targetKind === "refill" && event.bucketId === null) {
+      skippedEventIds.push(event.id);
+      continue;
+    }
+
     const candidates = poolToCandidates(event.candidatePool, trackById);
     if (candidates.length === 0) {
       skippedEventIds.push(event.id);
@@ -327,15 +347,13 @@ async function loadKeepsByBucket(
 
 /**
  * Primary genre keyed by bucket id, for the refill replay eligibility gate.
- * Buckets absent from the result (e.g. deleted by a merge) map to undefined,
- * which the caller treats as a null genre scope.
- *
- * Deleted-bucket edge: if a refill event's bucket was deleted between surface
- * and replay, `genreByBucket.get(id)` is undefined → coerced to a null scope
- * at the gate. A genre-having pool then has no eligible (null-genre) winner,
- * so the event is SKIPPED rather than replayed against the wrong scope —
- * consistent with the "bucket membership is a moving target" replay semantics
- * documented at the top of this file.
+ * Every id passed here is a refill event's non-null `bucketId`. Because
+ * `surface_event.bucket_id` is an FK with ON DELETE SET NULL, a non-null
+ * bucketId always references a still-live bucket — so this query returns a
+ * row for every id, and a `.get()` miss never happens. (A bucket deleted or
+ * merged away nulls the event's bucketId instead; the caller skips those
+ * events upstream before the gate.) A live bucket whose primaryGenre is null
+ * maps to null — the valid null===null scope.
  */
 async function loadGenreByBucket(
   db: Database,

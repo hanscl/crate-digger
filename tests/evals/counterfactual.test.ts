@@ -1,6 +1,6 @@
 import path from "node:path";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
@@ -357,5 +357,71 @@ describe("counterfactualReplay — refill primary-genre gate (LAB-45)", () => {
     const replayedIds = evt.replayedPool.map((p) => p.trackId);
     expect(replayedIds).toContain(indieCand.id);
     expect(replayedIds).toContain(metalCand.id);
+  });
+
+  it("skips a refill event whose bucket was deleted/merged before replay", async () => {
+    // Guards the bucket-deletion artifact: when a refill event's bucket is
+    // deleted (or merged away), `surface_event.bucket_id` is nulled by the FK
+    // (ON DELETE SET NULL). The gate then has no genre scope to enforce, so a
+    // null-genre candidate in the pool would "win" the slot the original metal
+    // bucket required — a false (dis)agreement that corrupts agreementRate.
+    // The replay must SKIP such events instead of replaying them.
+    const metalSeed = await seed({
+      title: "Heavy Metal Thunder (seed)",
+      audio: audio({ tempo: 160, energy: 0.98, valence: 0.3 }),
+      genres: ["heavy metal"],
+    });
+    const seedAssign = await assignTrack(db, metalSeed.id, { spawnThreshold: 0.7 });
+    expect(seedAssign.spawned).toBe(true);
+    expect(seedAssign.primaryGenre).toBe("metal");
+
+    // In-genre metal candidate — the live refill winner for the metal bucket.
+    const metalCand = await seed({
+      title: "Iron Anthem",
+      audio: audio({ tempo: 158, energy: 0.95, valence: 0.32 }),
+      genres: ["heavy metal"],
+    });
+    // Untagged candidate → primaryGenre null. Under a (buggy) coerced-null
+    // scope it would be the ONLY eligible candidate and win the replay slot.
+    const nullCand = await seed({
+      title: "Untagged Drone",
+      audio: audio({ tempo: 159, energy: 0.96, valence: 0.31 }),
+      genres: [],
+    });
+    expect(derivePrimaryGenre(nullCand.genres)).toBeNull();
+
+    const candidates = await Promise.all([metalCand, nullCand].map(asCand));
+    const surfacing = await runSurfacingBatch(db, {
+      candidates,
+      noveltyOverride: 0, // pure refill
+      dailyCapOverride: 1,
+    });
+    expect(surfacing.events).toHaveLength(1);
+
+    // The logged refill event targets the metal bucket; the metal candidate is
+    // the live winner and the null-genre candidate sits in the full pool.
+    const before = (await db.select().from(schema.surfaceEvent))[0]!;
+    expect(before.rankerKind).toBe("refill");
+    expect(before.bucketId).toBe(seedAssign.bucketId);
+    expect(before.trackId).toBe(metalCand.id);
+    expect(before.candidatePool.map((p: schema.CandidatePoolEntry) => p.trackId)).toContain(
+      nullCand.id,
+    );
+
+    // Delete the bucket (as a merge/cleanup would). The FK nulls the event's
+    // bucketId — reproducing the deletion artifact this test guards.
+    await db.delete(schema.bucket).where(eq(schema.bucket.id, seedAssign.bucketId));
+    const after = (await db.select().from(schema.surfaceEvent))[0]!;
+    expect(after.bucketId).toBeNull();
+
+    const active = await getActiveModelVersion(db, "refill");
+    if (!active) throw new Error("expected active refill version");
+    const replay = await counterfactualReplay(db, active.id);
+
+    // Skipped, not replayed: no winner is chosen, so agreementRate stays clean.
+    expect(replay.scannedEventCount).toBe(1);
+    expect(replay.replayedEventCount).toBe(0);
+    expect(replay.skippedEventIds).toContain(after.id);
+    expect(replay.perEvent).toHaveLength(0);
   });
 });
