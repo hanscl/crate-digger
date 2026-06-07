@@ -127,6 +127,19 @@ describe("searchSpotifyTrack", () => {
     stubFetch(null);
     await expect(searchSpotifyTrack("Radiohead", "Reckoner", envWithCreds())).resolves.toBeNull();
   });
+
+  it("sanitizes embedded double-quotes in the field-scoped query (fix 2)", async () => {
+    const fn = stubFetch([spotifyTrack()]);
+    // A `"Weird Al" Yankovic`-style artist must not throw or malform the query;
+    // the stubbed /search must still be reached and return the hit.
+    const out = await searchSpotifyTrack('"Weird Al" Yankovic', 'Foil "parody"', envWithCreds());
+    expect(out?.id).toBe("sp-reckoner");
+    const searchCall = fn.mock.calls.find(([input]) => String(input).includes("/v1/search"));
+    expect(searchCall).toBeDefined();
+    // No raw double-quote should survive inside the q value's field phrases.
+    const q = new URL(String(searchCall?.[0])).searchParams.get("q") ?? "";
+    expect(q).toBe('artist:"Weird Al Yankovic" track:"Foil parody"');
+  });
 });
 
 describe("resolveSpotifyId", () => {
@@ -144,6 +157,48 @@ describe("resolveSpotifyId", () => {
         id: "sp-karaoke",
         name: "Reckoner (Karaoke Version)",
         artists: [{ id: "z", name: "Ameritz Karaoke Standards" }],
+      }),
+    ]);
+    const out = await resolveSpotifyId(lastfmCandidate(), envWithCreds());
+    expect(out.spotifyId).toBeNull();
+    expect(out.isrc).toBeNull();
+  });
+
+  it("rejects a SUFFIX-form cover whose artist contains the original (the bug; fix 1)", async () => {
+    // Realistic karaoke artist that CONTAINS "Radiohead" as a suffix. Under the
+    // old `useSellers:true` (Sellers substring) scoring this pair scores a
+    // perfect 1.0 and mis-resolves; full-string scoring drops it far below 0.9.
+    stubFetch([
+      spotifyTrack({
+        id: "sp-karaoke-suffix",
+        name: "Reckoner",
+        artists: [{ id: "k", name: "Karaoke - Originally Performed By Radiohead" }],
+      }),
+    ]);
+    const out = await resolveSpotifyId(lastfmCandidate(), envWithCreds());
+    expect(out.spotifyId).toBeNull();
+    expect(out.isrc).toBeNull();
+  });
+
+  it("rejects a same-artist, different-title hit", async () => {
+    stubFetch([
+      spotifyTrack({
+        id: "sp-karma",
+        name: "Karma Police",
+        artists: [{ id: "a1", name: "Radiohead" }],
+      }),
+    ]);
+    const out = await resolveSpotifyId(lastfmCandidate(), envWithCreds());
+    expect(out.spotifyId).toBeNull();
+    expect(out.isrc).toBeNull();
+  });
+
+  it("rejects a same-title, different-artist (tribute) hit", async () => {
+    stubFetch([
+      spotifyTrack({
+        id: "sp-tribute",
+        name: "Reckoner",
+        artists: [{ id: "t", name: "Some Tribute Band" }],
       }),
     ]);
     const out = await resolveSpotifyId(lastfmCandidate(), envWithCreds());

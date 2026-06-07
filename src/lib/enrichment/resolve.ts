@@ -62,9 +62,18 @@ export async function resolveSpotifyId(candidate: RawCandidate, env: Env): Promi
     const hit = await searchSpotifyTrack(candidate.artist, candidate.title, env);
     if (!hit) return candidate;
     const hitArtist = hit.artists.map((a) => a.name).join(", ");
+    // `useSellers: false` forces full-string Damerau-Levenshtein instead of
+    // fast-fuzzy's default Sellers substring scoring. With substring scoring a
+    // suffix-form cover/karaoke/tribute whose artist CONTAINS the original
+    // (e.g. "...originally performed by coldplay :: yellow" vs "coldplay ::
+    // yellow") scores a perfect 1.0 and clears the gate — a mis-resolve. Scoring
+    // the whole string instead makes that pair score far below threshold while
+    // legitimate accent-fold variants (e.g. "Sigur Rós"/"Sigur Ros" ≈ 0.90)
+    // still pass, so `RESOLVE_SEARCH_THRESHOLD` stays at 0.9.
     const score = fuzzy(
       fuzzyKey({ artist: candidate.artist, title: candidate.title }),
       fuzzyKey({ artist: hitArtist, title: hit.name }),
+      { useSellers: false },
     );
     if (score < RESOLVE_SEARCH_THRESHOLD) return candidate; // low confidence → leave null
     return {

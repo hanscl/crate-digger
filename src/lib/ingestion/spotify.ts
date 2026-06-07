@@ -175,7 +175,11 @@ export async function searchSpotifyTrack(
   title: string,
   env: Env,
 ): Promise<SpotifyTrack | null> {
-  const q = `artist:"${artist}" track:"${title}"`;
+  // Raw Last.fm strings can contain double-quotes (e.g. `"Weird Al" Yankovic`),
+  // which would terminate the field-scoped phrase early and malform the query.
+  // Strip quotes (and collapse the resulting whitespace) before interpolation.
+  const clean = (s: string): string => s.replace(/"/g, " ").replace(/\s+/g, " ").trim();
+  const q = `artist:"${clean(artist)}" track:"${clean(title)}"`;
   const data = await spotifyGet<{ tracks: { items: SpotifyTrack[] } }>(
     "/search",
     { q, type: "track", limit: SEARCH_PAGE_SIZE },
