@@ -1,11 +1,12 @@
 import path from "node:path";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/db/schema";
+import { selectBucketSeeds } from "@/lib/ingestion/exemplar";
 import type { SourceAdapter, RawCandidate } from "@/lib/ingestion";
 import {
   bucketAndName,
@@ -271,6 +272,288 @@ describe("daily-pipeline (step-by-step)", () => {
   });
 });
 
+describe("daily-pipeline (LAB-39 taste-seeded similar pull)", () => {
+  /**
+   * A distinct Last.fm candidate the similar pass should round-trip. Uses a
+   * fresh sourceTrackId/ISRC not present in `fixtureCandidates()` so we can
+   * prove it's the similar pull (not a trending dedupe) that created the row.
+   */
+  function similarCandidate(): RawCandidate {
+    return {
+      source: "lastfm",
+      sourceTrackId: "lfm-sim-1",
+      isrc: "GBARL9900099",
+      spotifyId: null,
+      title: "Avril 14th",
+      artist: "Aphex Twin",
+      album: "Drukqs",
+      releaseYear: 2001,
+      durationMs: 124_000,
+      genres: ["idm", "ambient"],
+      rawPayload: {},
+    };
+  }
+
+  /**
+   * Local Last.fm-id fixture adapter. `pullCandidates` branches on
+   * `params.mode`: trending returns nothing (so the only candidates are the
+   * similar-seeded ones), similar returns one distinct candidate. The outer
+   * `vi.fn` captures every call so we can assert the seed shape.
+   */
+  function lastfmSimilarAdapter(): { adapter: SourceAdapter; spy: ReturnType<typeof vi.fn> } {
+    const spy = vi.fn(async (params: { mode: string }) => {
+      if (params.mode === "similar") return [similarCandidate()];
+      return [] as RawCandidate[];
+    });
+    const adapter: SourceAdapter = {
+      id: "lastfm",
+      isPaid: false,
+      isAvailable: () => true,
+      pullCandidates: spy as unknown as SourceAdapter["pullCandidates"],
+    };
+    return { adapter, spy };
+  }
+
+  it("seeds Last.fm getSimilar from the top bucket and merges the result into the pool", async () => {
+    // 1. Seed a bucket with an embedded member via the spotify fixture pool.
+    const seedPull = await pullAndEnrichTrending(db, fixtureEnv, {
+      adapters: [fixtureAdapter()],
+      limitPerSource: 10,
+    });
+    await bucketAndName(db, fixtureEnv, seedPull.resolvedTrackIds);
+
+    const seededBuckets = await db.select().from(schema.bucket);
+    expect(seededBuckets.length).toBeGreaterThan(0);
+
+    // The centroid-nearest member of each one-member bucket is that member
+    // itself; capture the expected seed artist/title for assertion (c).
+    const seeds = await selectBucketSeeds(db, { maxBuckets: 5 });
+    expect(seeds.length).toBeGreaterThan(0);
+    const expectedSeed = seeds[0];
+    expect(expectedSeed).toBeDefined();
+    if (!expectedSeed) return;
+
+    // 2. Run the similar pass with an explicit Last.fm adapter (no real
+    //    registry). Trending returns []; only the similar pull contributes.
+    const { adapter, spy } = lastfmSimilarAdapter();
+    const pull = await pullAndEnrichTrending(db, fixtureEnv, {
+      adapters: [adapter],
+      limitPerSource: 10,
+      similarSeedBuckets: 5,
+    });
+
+    // (b) accounting: similar candidates reached the pool.
+    expect(pull.similarPulledCount).toBeGreaterThan(0);
+    expect(pull.pulledCount).toBe(pull.similarPulledCount);
+
+    // (d) pulledCount === sum(perSource.pulled) invariant.
+    const perSourceSum = pull.perSource.reduce((acc, p) => acc + p.pulled, 0);
+    expect(pull.pulledCount).toBe(perSourceSum);
+    // The similar pulls folded into the single lastfm per-source entry.
+    const lastfmEntries = pull.perSource.filter((p) => p.source === "lastfm");
+    expect(lastfmEntries).toHaveLength(1);
+
+    // (c) getSimilar was called with mode:"similar" + a non-empty seed
+    //     derived from the seeded bucket's centroid-nearest member.
+    const similarCalls = spy.mock.calls.filter((c) => c[0]?.mode === "similar");
+    expect(similarCalls.length).toBeGreaterThan(0);
+    for (const [params] of similarCalls) {
+      expect(params.mode).toBe("similar");
+      expect(typeof params.seedArtist).toBe("string");
+      expect(params.seedArtist.length).toBeGreaterThan(0);
+      expect(typeof params.seedTrack).toBe("string");
+      expect(params.seedTrack.length).toBeGreaterThan(0);
+    }
+    expect(
+      similarCalls.some(
+        ([p]) => p.seedArtist === expectedSeed.seedArtist && p.seedTrack === expectedSeed.seedTrack,
+      ),
+    ).toBe(true);
+
+    // (a) the similar-seeded candidate round-tripped into a track row and is
+    //     in resolvedTrackIds.
+    const [simTrack] = await db
+      .select({ id: schema.track.id })
+      .from(schema.track)
+      .where(eq(schema.track.isrc, "GBARL9900099"));
+    expect(simTrack).toBeDefined();
+    if (!simTrack) return;
+    expect(pull.resolvedTrackIds).toContain(simTrack.id);
+  });
+
+  it("is a strict no-op when no lastfm adapter is present (pulledCount stays 3)", async () => {
+    // Seed a bucket so selectBucketSeeds *would* return a seed if called.
+    const seedPull = await pullAndEnrichTrending(db, fixtureEnv, {
+      adapters: [fixtureAdapter()],
+      limitPerSource: 10,
+    });
+    await bucketAndName(db, fixtureEnv, seedPull.resolvedTrackIds);
+
+    // The spotify fixtureAdapter has id:"spotify" → similar pass skipped.
+    const pull = await pullAndEnrichTrending(db, fixtureEnv, {
+      adapters: [fixtureAdapter()],
+      limitPerSource: 10,
+    });
+    expect(pull.pulledCount).toBe(3);
+    expect(pull.similarPulledCount).toBe(0);
+    expect(pull.perSource.some((p) => p.source === "lastfm")).toBe(false);
+  });
+
+  it("selectBucketSeeds picks the centroid-nearest member of a bucket", async () => {
+    // Two tracks in one bucket at different cosine distances to the centroid.
+    // The centroid is set EXACTLY to track B's embedding so B is nearest.
+    const dim = schema.EMBEDDING_DIM;
+    const embA = Array.from({ length: dim }, (_, i) => (i === 0 ? 1 : 0));
+    const embB = Array.from({ length: dim }, (_, i) => (i === 1 ? 1 : 0));
+
+    const [trackA] = await db
+      .insert(schema.track)
+      .values({
+        title: "Far Member",
+        artist: "Artist A",
+        genres: ["idm"],
+        primaryGenre: "idm",
+        embedding: embA,
+      })
+      .returning({ id: schema.track.id });
+    const [trackB] = await db
+      .insert(schema.track)
+      .values({
+        title: "Near Member",
+        artist: "Artist B",
+        genres: ["idm"],
+        primaryGenre: "idm",
+        embedding: embB,
+      })
+      .returning({ id: schema.track.id });
+    expect(trackA).toBeDefined();
+    expect(trackB).toBeDefined();
+    if (!trackA || !trackB) return;
+
+    const emptyStats = {
+      count: 0,
+      mean: {
+        tempo: 0,
+        energy: 0,
+        valence: 0,
+        danceability: 0,
+        acousticness: 0,
+        instrumentalness: 0,
+      },
+      m2: {
+        tempo: 0,
+        energy: 0,
+        valence: 0,
+        danceability: 0,
+        acousticness: 0,
+        instrumentalness: 0,
+      },
+    };
+    const [b] = await db
+      .insert(schema.bucket)
+      .values({
+        name: "idm (auto)",
+        centroid: embB, // centroid == track B's embedding → B is nearest
+        featureStats: emptyStats,
+        memberCount: 2,
+        primaryGenre: "idm",
+      })
+      .returning({ id: schema.bucket.id });
+    expect(b).toBeDefined();
+    if (!b) return;
+    await db.insert(schema.bucketMember).values([
+      { bucketId: b.id, trackId: trackA.id, similarityAtJoin: 0 },
+      { bucketId: b.id, trackId: trackB.id, similarityAtJoin: 1 },
+    ]);
+
+    const seeds = await selectBucketSeeds(db, { maxBuckets: 5 });
+    const seed = seeds.find((s) => s.bucketId === b.id);
+    expect(seed).toBeDefined();
+    expect(seed?.seedArtist).toBe("Artist B");
+    expect(seed?.seedTrack).toBe("Near Member");
+  });
+
+  it("selectBucketSeeds breaks equal-cosine ties on the lower track.id", async () => {
+    // Two members with the SAME embedding → identical cosine to the centroid
+    // by construction. The selection documents a `track.id ASC` tiebreak; this
+    // pins it. The members are inserted high-id-first so a naive "last wins"
+    // bug would pick the wrong row.
+    const dim = schema.EMBEDDING_DIM;
+    const emb = Array.from({ length: dim }, (_, i) => (i === 0 ? 1 : 0));
+
+    // Insert the would-be-higher-id row first; both share `emb`.
+    const [trackHigh] = await db
+      .insert(schema.track)
+      .values({
+        title: "Tie Member High",
+        artist: "Artist High",
+        genres: ["idm"],
+        primaryGenre: "idm",
+        embedding: emb,
+      })
+      .returning({ id: schema.track.id });
+    const [trackLow] = await db
+      .insert(schema.track)
+      .values({
+        title: "Tie Member Low",
+        artist: "Artist Low",
+        genres: ["idm"],
+        primaryGenre: "idm",
+        embedding: emb,
+      })
+      .returning({ id: schema.track.id });
+    expect(trackHigh).toBeDefined();
+    expect(trackLow).toBeDefined();
+    if (!trackHigh || !trackLow) return;
+    // Serial ids are monotonic → the first insert has the LOWER id. Guard the
+    // assumption so the tiebreak assertion below is meaningful.
+    expect(trackHigh.id).toBeLessThan(trackLow.id);
+
+    const emptyStats = {
+      count: 0,
+      mean: {
+        tempo: 0,
+        energy: 0,
+        valence: 0,
+        danceability: 0,
+        acousticness: 0,
+        instrumentalness: 0,
+      },
+      m2: {
+        tempo: 0,
+        energy: 0,
+        valence: 0,
+        danceability: 0,
+        acousticness: 0,
+        instrumentalness: 0,
+      },
+    };
+    const [b] = await db
+      .insert(schema.bucket)
+      .values({
+        name: "idm (auto)",
+        centroid: emb, // centroid == both members' embedding → equal cosine
+        featureStats: emptyStats,
+        memberCount: 2,
+        primaryGenre: "idm",
+      })
+      .returning({ id: schema.bucket.id });
+    expect(b).toBeDefined();
+    if (!b) return;
+    await db.insert(schema.bucketMember).values([
+      { bucketId: b.id, trackId: trackLow.id, similarityAtJoin: 1 },
+      { bucketId: b.id, trackId: trackHigh.id, similarityAtJoin: 1 },
+    ]);
+
+    const seeds = await selectBucketSeeds(db, { maxBuckets: 5 });
+    const seed = seeds.find((s) => s.bucketId === b.id);
+    expect(seed).toBeDefined();
+    // The lower track.id (`trackHigh`, inserted first) wins the equal-cosine tie.
+    expect(seed?.seedArtist).toBe("Artist High");
+    expect(seed?.seedTrack).toBe("Tie Member High");
+  });
+});
+
 describe("daily-pipeline (Mastra orchestration)", () => {
   it("runs end-to-end via the workflow runner with requestContext-injected db/env", async () => {
     // Pre-pull candidates manually, since the workflow's pull step uses the
@@ -298,6 +581,9 @@ describe("daily-pipeline (Mastra orchestration)", () => {
     // Output schema is fully populated even when upstream steps produced
     // nothing (no available adapters in fixtureEnv → 0 candidates).
     expect(result.result.pulledCount).toBe(0);
+    // LAB-39 observability: the taste-seeded pull count is now surfaced
+    // separately at the orchestrated level (0 with no adapters available).
+    expect(result.result.similarPulledCount).toBe(0);
     expect(result.result.resolvedTrackIds).toEqual([]);
     expect(result.result.spawnedBucketIds).toEqual([]);
     expect(result.result.surfacedCount).toBe(0);

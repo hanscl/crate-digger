@@ -23,6 +23,8 @@ import {
 
 const PullEnrichResult = z.object({
   pulledCount: z.number().int().nonnegative(),
+  /** Subset of `pulledCount` pulled by the taste-seeded Last.fm similar pass (LAB-39). */
+  similarPulledCount: z.number().int().nonnegative(),
   resolvedTrackIds: z.array(z.number().int()),
   audioFeaturesUpdated: z.number().int().nonnegative(),
   genresUpdated: z.number().int().nonnegative(),
@@ -99,6 +101,7 @@ const pullStep = createStep({
     return {
       ...inputData,
       pulledCount: result.pulledCount,
+      similarPulledCount: result.similarPulledCount,
       resolvedTrackIds: result.resolvedTrackIds,
       audioFeaturesUpdated: result.audioFeaturesUpdated,
       genresUpdated: result.genresUpdated,
@@ -192,6 +195,7 @@ const surfaceWorkflowStep = createStep({
     return {
       limitPerSource: inputData.limitPerSource,
       pulledCount: inputData.pulledCount ?? 0,
+      similarPulledCount: inputData.similarPulledCount ?? 0,
       resolvedTrackIds: inputData.resolvedTrackIds ?? [],
       audioFeaturesUpdated: inputData.audioFeaturesUpdated ?? 0,
       genresUpdated: inputData.genresUpdated ?? 0,
