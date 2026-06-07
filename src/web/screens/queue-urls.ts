@@ -5,7 +5,7 @@
  */
 
 export function spotifyEmbedUrl(spotifyId: string): string {
-  return `https://open.spotify.com/embed/track/${spotifyId}`;
+  return `https://open.spotify.com/embed/track/${encodeURIComponent(spotifyId)}`;
 }
 
 export function spotifySearchUrl(artist: string, title: string): string {

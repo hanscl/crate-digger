@@ -186,7 +186,7 @@ function CurrentTrack({
               width="100%"
               height={80}
               loading="lazy"
-              allow="encrypted-media"
+              allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
               className="mb-6 rounded"
               style={{ border: 0 }}
             />
