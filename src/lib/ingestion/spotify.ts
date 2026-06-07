@@ -180,9 +180,10 @@ export async function searchSpotifyTrack(
   // Strip quotes (and collapse the resulting whitespace) before interpolation.
   const clean = (s: string): string => s.replace(/"/g, " ").replace(/\s+/g, " ").trim();
   const q = `artist:"${clean(artist)}" track:"${clean(title)}"`;
+  // Only the top hit is ever inspected, so cap the payload at one result.
   const data = await spotifyGet<{ tracks: { items: SpotifyTrack[] } }>(
     "/search",
-    { q, type: "track", limit: SEARCH_PAGE_SIZE },
+    { q, type: "track", limit: 1 },
     env,
   );
   return data?.tracks?.items?.[0] ?? null;
