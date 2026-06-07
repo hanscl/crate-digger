@@ -8,7 +8,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import * as schema from "@/db/schema";
 import type { AudioFeatures, CandidatePoolEntry } from "@/db/schema";
 import { assignTrack } from "@/lib/bucketing/assign";
-import { buildEmbedding } from "@/lib/embedding";
+import { buildEmbedding, derivePrimaryGenre } from "@/lib/embedding";
 import { scoreBroad } from "@/lib/ranking/broad";
 import { scoreRefill } from "@/lib/ranking/refill";
 import type { Candidate } from "@/lib/ranking/types";
@@ -81,7 +81,7 @@ async function insertTrack(opts: {
   title: string;
   audioFeatures: AudioFeatures | null;
   genres: string[];
-}): Promise<{ id: number; embedding: number[]; audio: AudioFeatures | null }> {
+}): Promise<{ id: number; embedding: number[]; audio: AudioFeatures | null; genres: string[] }> {
   const embedding = buildEmbedding({
     audioFeatures: opts.audioFeatures,
     genres: opts.genres,
@@ -94,21 +94,28 @@ async function insertTrack(opts: {
       audioFeatures: opts.audioFeatures,
       genres: opts.genres,
       embedding,
+      // assignTrack derives + persists this on first assignment, but seeding it
+      // here keeps candidates and bucket genres in lockstep for refill tests.
+      primaryGenre: derivePrimaryGenre(opts.genres),
     })
     .returning({ id: schema.track.id });
   if (!row) throw new Error("track insert returned no rows");
-  return { id: row.id, embedding, audio: opts.audioFeatures };
+  return { id: row.id, embedding, audio: opts.audioFeatures, genres: opts.genres };
 }
 
 async function asCandidate(t: {
   id: number;
   embedding: number[];
   audio: AudioFeatures | null;
+  genres: string[];
 }): Promise<Candidate> {
   return {
     trackId: t.id,
     embedding: t.embedding,
     audioFeatures: t.audio,
+    // Mirror the derived primary genre so the refill winner-eligibility gate
+    // (same primary genre as the target bucket) matches in-genre candidates.
+    primaryGenre: derivePrimaryGenre(t.genres),
     source: "spotify",
   };
 }
@@ -512,6 +519,133 @@ describe("runSurfacingBatch — soft penalties only (Constraint #4)", () => {
     // closer to keeps and far from dislikes; the disliked-shape is the
     // mirror. `score(disliked) < score(happy)`.
     expect(dislikedEntry?.score ?? 0).toBeLessThan(happyEntry?.score ?? 0);
+  });
+});
+
+describe("runSurfacingBatch — refill primary-genre winner-eligibility gate (LAB-45)", () => {
+  it("an off-genre candidate that tops keep-cosine still cannot WIN a refill slot, but stays in candidate_pool", async () => {
+    // Mirror of the JOIN gate (assign.ts): an indie-primary track ("the cure")
+    // can score the highest raw keep-cosine against a metal bucket yet must
+    // never win a refill slot for it — it could never JOIN or MERGE into that
+    // bucket. The in-genre metal candidate wins instead. Constraint #2 is
+    // preserved: the indie candidate is still scored into the pool.
+    const metalSeed = await insertTrack({
+      title: "Heavy Metal Thunder (seed)",
+      audioFeatures: audio({
+        tempo: 160,
+        energy: 0.98,
+        valence: 0.3,
+        danceability: 0.4,
+        acousticness: 0.02,
+        instrumentalness: 0.2,
+      }),
+      genres: ["heavy metal"],
+    });
+    // Spawns a metal-primary bucket with the seed as its sole keep anchor.
+    const seedAssign = await assignTrack(db, metalSeed.id, { spawnThreshold: 0.7 });
+    expect(seedAssign.spawned).toBe(true);
+    expect(seedAssign.primaryGenre).toBe("metal");
+
+    // In-genre metal candidate: same primary genre, audio deliberately the
+    // OPPOSITE shape so its raw keep-cosine is LOWER than the indie's.
+    const metalCand = await insertTrack({
+      title: "Slow Acoustic Metal",
+      audioFeatures: audio({
+        tempo: 70,
+        energy: 0.05,
+        valence: 0.9,
+        danceability: 0.95,
+        acousticness: 0.98,
+        instrumentalness: 0.95,
+      }),
+      genres: ["heavy metal"],
+    });
+    // The Cure: indie primary genre, audio nearly identical to the metal seed
+    // so its RAW keep-cosine OTHERWISE tops the in-genre metal candidate.
+    const indieCand = await insertTrack({
+      title: "The Cure",
+      audioFeatures: audio({
+        tempo: 160,
+        energy: 0.98,
+        valence: 0.3,
+        danceability: 0.4,
+        acousticness: 0.02,
+        instrumentalness: 0.2,
+      }),
+      genres: ["indie"],
+    });
+    const candidates = await Promise.all([metalCand, indieCand].map(asCandidate));
+
+    const result = await runSurfacingBatch(db, {
+      candidates,
+      noveltyOverride: 0, // pure refill
+      dailyCapOverride: 1,
+    });
+
+    expect(result.events).toHaveLength(1);
+    const event = (await db.select().from(schema.surfaceEvent))[0]!;
+    expect(event.rankerKind).toBe("refill");
+    // (3) The refill happened against the metal bucket.
+    expect(event.bucketId).toBe(seedAssign.bucketId);
+
+    // (1) The surfaced winner is the in-genre metal candidate, NEVER the indie.
+    expect(event.trackId).toBe(metalCand.id);
+    expect(event.trackId).not.toBe(indieCand.id);
+    expect(result.surfaced).toHaveLength(1);
+    expect(result.surfaced[0]?.candidate.trackId).toBe(metalCand.id);
+
+    // Sanity: prove it was the GATE, not cosine, that excluded the indie —
+    // the indie's raw keep-sim must OTHERWISE top the metal candidate's.
+    const indiePoolEntry = event.candidatePool.find(
+      (p: CandidatePoolEntry) => p.trackId === indieCand.id,
+    );
+    const metalPoolEntry = event.candidatePool.find(
+      (p: CandidatePoolEntry) => p.trackId === metalCand.id,
+    );
+    expect(indiePoolEntry?.subScores?.keepSim ?? 0).toBeGreaterThan(
+      metalPoolEntry?.subScores?.keepSim ?? 0,
+    );
+
+    // (2) Constraint #2: the off-genre indie candidate STILL appears in the
+    // logged candidate_pool, flagged surfaced=false — never trimmed.
+    const ids = event.candidatePool.map((p: CandidatePoolEntry) => p.trackId);
+    expect(ids).toContain(indieCand.id);
+    expect(ids).toContain(metalCand.id);
+    expect(indiePoolEntry?.surfaced).toBe(false);
+    expect(metalPoolEntry?.surfaced).toBe(true);
+  });
+
+  it("the null===null rule: a null-genre candidate can win a refill slot for a null-genre bucket", async () => {
+    // Sanity for the null-handling branch of sameGenreScope. A bucket spawned
+    // from a genre-less seed has primaryGenre=null; a genre-less candidate
+    // (primaryGenre derived to null) matches it and is eligible to win.
+    const nullSeed = await insertTrack({
+      title: "Genreless seed",
+      audioFeatures: audio({ tempo: 125, energy: 0.6 }),
+      genres: [],
+    });
+    const seedAssign = await assignTrack(db, nullSeed.id, { spawnThreshold: 0.7 });
+    expect(seedAssign.primaryGenre).toBeNull();
+
+    const nullCand = await insertTrack({
+      title: "Genreless candidate",
+      audioFeatures: audio({ tempo: 124, energy: 0.59 }),
+      genres: [],
+    });
+    const candidates = await Promise.all([nullCand].map(asCandidate));
+    expect(candidates[0]?.primaryGenre).toBeNull();
+
+    const result = await runSurfacingBatch(db, {
+      candidates,
+      noveltyOverride: 0,
+      dailyCapOverride: 1,
+    });
+
+    expect(result.events).toHaveLength(1);
+    const event = (await db.select().from(schema.surfaceEvent))[0]!;
+    expect(event.rankerKind).toBe("refill");
+    expect(event.bucketId).toBe(seedAssign.bucketId);
+    expect(event.trackId).toBe(nullCand.id);
   });
 });
 
