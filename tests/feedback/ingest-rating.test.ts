@@ -1,12 +1,12 @@
 import path from "node:path";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import * as schema from "@/db/schema";
-import { assignTrack } from "@/lib/bucketing/assign";
+import { assignTrack, flagCandidateBucket } from "@/lib/bucketing/assign";
 import { buildEmbedding } from "@/lib/embedding";
 import { ingestRating } from "@/lib/feedback/ingest-rating";
 import { bumpModelVersion, ensureActiveModelVersion } from "@/lib/ranking/version";
@@ -226,5 +226,134 @@ describe("ingestRating — bucket dislike counter side effect", () => {
       .from(schema.bucket)
       .where(sql`${schema.bucket.id} = ${assignment.bucketId}`);
     expect(bucketRow?.dislikeCount).toBe(0);
+  });
+});
+
+describe("ingestRating — LAB-52 candidate flag + join-on-keep", () => {
+  it("flagging a discovery track creates no bucket or member (would-spawn)", async () => {
+    // No same-genre bucket exists → would-spawn; nothing is created at ingest.
+    const disc = await insertTrack({
+      title: "Discovery",
+      audioFeatures: audio(),
+      genres: ["jazz"],
+    });
+    const flag = await flagCandidateBucket(db, disc.id, { spawnThreshold: 0.7 });
+    expect(flag.wouldSpawn).toBe(true);
+    expect(flag.candidateBucketId).toBeNull();
+    expect(flag.alreadyAssigned).toBe(false);
+
+    const buckets = await db.select().from(schema.bucket);
+    expect(buckets).toHaveLength(0);
+    const members = await db.select().from(schema.bucketMember);
+    expect(members).toHaveLength(0);
+  });
+
+  it("flags the candidate bucket a discovery track would join, without joining it", async () => {
+    const seed = await insertTrack({
+      title: "Seed",
+      audioFeatures: audio({ tempo: 130 }),
+      genres: ["rock"],
+    });
+    const seedAssign = await assignTrack(db, seed.id, { spawnThreshold: 0.7, coldStartSeed: true });
+    expect(seedAssign.spawned).toBe(true);
+
+    const disc = await insertTrack({
+      title: "Disc",
+      audioFeatures: audio({ tempo: 131 }),
+      genres: ["rock"],
+    });
+    const flag = await flagCandidateBucket(db, disc.id, { spawnThreshold: 0.7 });
+    expect(flag.candidateBucketId).toBe(seedAssign.bucketId);
+    expect(flag.wouldSpawn).toBe(false);
+    expect(flag.candidateScore).not.toBeNull();
+
+    // Persisted on the track, but NOT a member; bucket member_count untouched.
+    const [t] = await db
+      .select({ cb: schema.track.candidateBucketId, cs: schema.track.candidateScore })
+      .from(schema.track)
+      .where(eq(schema.track.id, disc.id));
+    expect(t?.cb).toBe(seedAssign.bucketId);
+    expect(t?.cs).not.toBeNull();
+    const members = await db
+      .select()
+      .from(schema.bucketMember)
+      .where(eq(schema.bucketMember.trackId, disc.id));
+    expect(members).toHaveLength(0);
+    const [b] = await db
+      .select({ memberCount: schema.bucket.memberCount })
+      .from(schema.bucket)
+      .where(eq(schema.bucket.id, seedAssign.bucketId));
+    expect(b?.memberCount).toBe(1);
+  });
+
+  it("a keep commits a flagged candidate into its bucket and clears the flag", async () => {
+    const seed = await insertTrack({
+      title: "Seed",
+      audioFeatures: audio({ tempo: 130 }),
+      genres: ["rock"],
+    });
+    const seedAssign = await assignTrack(db, seed.id, { spawnThreshold: 0.7, coldStartSeed: true });
+    const disc = await insertTrack({
+      title: "Disc",
+      audioFeatures: audio({ tempo: 131 }),
+      genres: ["rock"],
+    });
+    await flagCandidateBucket(db, disc.id, { spawnThreshold: 0.7 });
+
+    const res = await ingestRating(db, { trackId: disc.id, decision: "keep" });
+    expect(res.committedBucketId).toBe(seedAssign.bucketId);
+
+    // Now a real member; centroid member_count advanced; flag cleared.
+    const members = await db
+      .select()
+      .from(schema.bucketMember)
+      .where(eq(schema.bucketMember.trackId, disc.id));
+    expect(members).toHaveLength(1);
+    const [b] = await db
+      .select({ memberCount: schema.bucket.memberCount })
+      .from(schema.bucket)
+      .where(eq(schema.bucket.id, seedAssign.bucketId));
+    expect(b?.memberCount).toBe(2);
+    const [t] = await db
+      .select({ cb: schema.track.candidateBucketId, cs: schema.track.candidateScore })
+      .from(schema.track)
+      .where(eq(schema.track.id, disc.id));
+    expect(t?.cb).toBeNull();
+    expect(t?.cs).toBeNull();
+  });
+
+  it("a defer does NOT commit a flagged candidate (still pending)", async () => {
+    const seed = await insertTrack({
+      title: "Seed",
+      audioFeatures: audio({ tempo: 130 }),
+      genres: ["rock"],
+    });
+    const seedAssign = await assignTrack(db, seed.id, { spawnThreshold: 0.7, coldStartSeed: true });
+    const disc = await insertTrack({
+      title: "Disc",
+      audioFeatures: audio({ tempo: 131 }),
+      genres: ["rock"],
+    });
+    await flagCandidateBucket(db, disc.id, { spawnThreshold: 0.7 });
+
+    const res = await ingestRating(db, { trackId: disc.id, decision: "defer" });
+    expect(res.committedBucketId).toBeNull();
+
+    const members = await db
+      .select()
+      .from(schema.bucketMember)
+      .where(eq(schema.bucketMember.trackId, disc.id));
+    expect(members).toHaveLength(0);
+    // Flag still pending; bucket untouched.
+    const [t] = await db
+      .select({ cb: schema.track.candidateBucketId })
+      .from(schema.track)
+      .where(eq(schema.track.id, disc.id));
+    expect(t?.cb).toBe(seedAssign.bucketId);
+    const [b] = await db
+      .select({ memberCount: schema.bucket.memberCount })
+      .from(schema.bucket)
+      .where(eq(schema.bucket.id, seedAssign.bucketId));
+    expect(b?.memberCount).toBe(1);
   });
 });
