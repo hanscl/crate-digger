@@ -1,6 +1,7 @@
 import { and, desc, eq, gte, inArray, lte } from "drizzle-orm";
 import type { Database } from "@/db/client";
 import {
+  bucket,
   bucketMember,
   type CandidatePoolEntry,
   rating,
@@ -8,6 +9,7 @@ import {
   type SurfaceEvent,
   track,
 } from "@/db/schema";
+import { sameGenreScope } from "@/lib/bucketing/genre-scope";
 import { scoreBroad } from "@/lib/ranking/broad";
 import { scoreRefill } from "@/lib/ranking/refill";
 import type { Candidate, RatedTrack, ScoredCandidate } from "@/lib/ranking/types";
@@ -29,7 +31,11 @@ import { configFromVersion, getModelVersion } from "@/lib/ranking/version";
  * the keep set from the bucket's CURRENT members (not the original ones —
  * we don't snapshot bucket membership at surface time, since it's a moving
  * target by design). This is fine for "would v6 have done better" questions
- * and matches what the live ranker would have seen at replay time.
+ * and matches what the live ranker would have seen at replay time. Refill
+ * events whose bucket was deleted/merged before replay (their `bucketId`
+ * nulled by the FK) are SKIPPED — a bucket-scoped event with no bucket can't
+ * be faithfully re-ranked, and replaying it under a null scope would corrupt
+ * `agreementRate` with a deletion artifact.
  *
  * Broad semantics: broad events have no bucket scope; replay rescores each
  * pool entry under the target broad config. Embeddings come from the pool
@@ -156,6 +162,10 @@ export async function counterfactualReplay(
     }
   }
   const keepsByBucket = await loadKeepsByBucket(db, [...refillBucketIds]);
+  // Sibling lookup: the bucket's primary genre keyed by id, so the refill
+  // winner pick can apply the same same-genre eligibility gate the live
+  // surfacing pipeline uses (assign.ts is the canonical JOIN gate).
+  const genreByBucket = await loadGenreByBucket(db, [...refillBucketIds]);
 
   // Dislikes for refill scoring use whatever the user has currently rated
   // 'dislike'. The original surface time may have seen a different dislike
@@ -186,6 +196,22 @@ export async function counterfactualReplay(
       continue;
     }
 
+    // A refill event whose bucket was deleted/merged between surface and replay
+    // has its `bucketId` nulled by the FK (surface_event.bucket_id ON DELETE SET
+    // NULL); refill events are always written with a non-null bucketId, so a
+    // null one is exclusively a deletion artifact. With the bucket gone, the
+    // genre gate and keep-set can't be faithfully reconstructed: replaying under
+    // a null scope would let a null-genre candidate win a slot the original
+    // genre bucket required (or skip only genre-having pools) — contaminating
+    // agreementRate with a data-deletion artifact rather than a ranker
+    // comparison. Skip uniformly, same honesty as the empty-pool short-circuit.
+    // (A live bucket whose primaryGenre is null keeps a non-null id and replays
+    // normally under the valid null===null scope.)
+    if (targetKind === "refill" && event.bucketId === null) {
+      skippedEventIds.push(event.id);
+      continue;
+    }
+
     const candidates = poolToCandidates(event.candidatePool, trackById);
     if (candidates.length === 0) {
       skippedEventIds.push(event.id);
@@ -207,7 +233,21 @@ export async function counterfactualReplay(
     // Tie-break by trackId (matches surfacing pipeline) so replay is
     // deterministic given identical scores.
     scored.sort((a, b) => b.score - a.score || a.candidate.trackId - b.candidate.trackId);
-    const winner = scored[0];
+    // Refill winner selection mirrors the live pipeline's primary-genre
+    // eligibility gate (assign.ts is the canonical JOIN gate): only a
+    // same-genre candidate can win the slot. Off-genre candidates stay in
+    // `scored`/`replayedPool` (Constraint #2) but are never the replay winner.
+    // Broad events have no bucket scope, so every candidate is eligible.
+    const eligible =
+      targetKind === "refill"
+        ? scored.filter((s) =>
+            sameGenreScope(
+              s.candidate.primaryGenre,
+              event.bucketId !== null ? (genreByBucket.get(event.bucketId) ?? null) : null,
+            ),
+          )
+        : scored;
+    const winner = eligible[0];
     if (!winner) {
       skippedEventIds.push(event.id);
       continue;
@@ -303,6 +343,28 @@ async function loadKeepsByBucket(
     out.set(r.bucketId, list);
   }
   return out;
+}
+
+/**
+ * Primary genre keyed by bucket id, for the refill replay eligibility gate.
+ * Every id passed here is a refill event's non-null `bucketId`. Because
+ * `surface_event.bucket_id` is an FK with ON DELETE SET NULL, a non-null
+ * bucketId always references a still-live bucket — so this query returns a
+ * row for every id, and a `.get()` miss never happens. (A bucket deleted or
+ * merged away nulls the event's bucketId instead; the caller skips those
+ * events upstream before the gate.) A live bucket whose primaryGenre is null
+ * maps to null — the valid null===null scope.
+ */
+async function loadGenreByBucket(
+  db: Database,
+  bucketIds: readonly number[],
+): Promise<Map<number, string | null>> {
+  if (bucketIds.length === 0) return new Map();
+  const rows = await db
+    .select({ id: bucket.id, primaryGenre: bucket.primaryGenre })
+    .from(bucket)
+    .where(inArray(bucket.id, [...bucketIds]));
+  return new Map(rows.map((r) => [r.id, r.primaryGenre]));
 }
 
 async function loadGlobalDislikes(db: Database): Promise<RatedTrack[]> {
