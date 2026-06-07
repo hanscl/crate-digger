@@ -2,10 +2,21 @@ import { and, eq, ilike, isNull, or, sql } from "drizzle-orm";
 import { fuzzy } from "fast-fuzzy";
 import type { Database } from "@/db/client";
 import { track, trackSource } from "@/db/schema";
+import { searchSpotifyTrack } from "@/lib/ingestion/spotify";
+import type { Env } from "@/server/env";
 import type { RawCandidate } from "../ingestion/types";
 
 /** Combined artist+title similarity (fast-fuzzy 0..1) above which we merge. */
 export const FUZZY_THRESHOLD = 0.88;
+
+/**
+ * Stricter than {@link FUZZY_THRESHOLD}: a `/search` returns top-N by Spotify's
+ * own relevance, so the top hit for "artist X track Y" can be a cover, karaoke,
+ * live, or remix version that shares the words but isn't the track. We only
+ * stamp a `spotifyId` when the hit's artist+title fuzzy-matches at or above this
+ * — graceful null over a mis-resolve (LAB-46 acceptance criterion).
+ */
+const RESOLVE_SEARCH_THRESHOLD = 0.9;
 
 export type MatchedBy = "isrc" | "spotifyId" | "fuzzy" | "inserted";
 
@@ -26,6 +37,53 @@ function normalize(s: string): string {
 
 function fuzzyKey(c: { artist: string; title: string }): string {
   return `${normalize(c.artist)} :: ${normalize(c.title)}`;
+}
+
+/**
+ * Pre-resolution pass (LAB-46): for a candidate WITHOUT a `spotifyId` (chiefly
+ * Last.fm-sourced sightings), search Spotify by artist+title and, on a CONFIDENT
+ * fuzzy match, stamp `spotifyId` (and widen `isrc` only when currently null).
+ * Run this BEFORE {@link resolveCandidate} so the row is written with a Spotify
+ * id — that lifts ReccoBeats audio coverage (it only targets `spotify_id IS NOT
+ * NULL`), gives the player a playable id, and lets spotify-id dedup fire.
+ *
+ * This does NETWORK IO and must stay OUTSIDE `resolveCandidate`'s
+ * `db.transaction` (no HTTP inside a held DB transaction). Conservative by
+ * design: any miss/low-confidence/error path returns the candidate unchanged
+ * (graceful null over mis-resolve). No-op when Spotify creds are absent
+ * (Constraint #1).
+ */
+export async function resolveSpotifyId(candidate: RawCandidate, env: Env): Promise<RawCandidate> {
+  // Already resolved, or itself a Spotify-sourced candidate → nothing to do.
+  if (candidate.spotifyId || candidate.source === "spotify") return candidate;
+  // Mirror `spotifyAdapter.isAvailable`: no creds → no-op (Constraint #1).
+  if (!env.SPOTIFY_CLIENT_ID || !env.SPOTIFY_CLIENT_SECRET) return candidate;
+  try {
+    const hit = await searchSpotifyTrack(candidate.artist, candidate.title, env);
+    if (!hit) return candidate;
+    const hitArtist = hit.artists.map((a) => a.name).join(", ");
+    // `useSellers: false` forces full-string Damerau-Levenshtein instead of
+    // fast-fuzzy's default Sellers substring scoring. With substring scoring a
+    // suffix-form cover/karaoke/tribute whose artist CONTAINS the original
+    // (e.g. "...originally performed by coldplay :: yellow" vs "coldplay ::
+    // yellow") scores a perfect 1.0 and clears the gate — a mis-resolve. Scoring
+    // the whole string instead makes that pair score far below threshold while
+    // legitimate accent-fold variants (e.g. "Sigur Rós"/"Sigur Ros" ≈ 0.90)
+    // still pass, so `RESOLVE_SEARCH_THRESHOLD` stays at 0.9.
+    const score = fuzzy(
+      fuzzyKey({ artist: candidate.artist, title: candidate.title }),
+      fuzzyKey({ artist: hitArtist, title: hit.name }),
+      { useSellers: false },
+    );
+    if (score < RESOLVE_SEARCH_THRESHOLD) return candidate; // low confidence → leave null
+    return {
+      ...candidate,
+      spotifyId: hit.id,
+      isrc: candidate.isrc ?? hit.external_ids?.isrc?.trim().toUpperCase() ?? null,
+    };
+  } catch {
+    return candidate; // never crash ingest (Constraint #1)
+  }
 }
 
 /**
