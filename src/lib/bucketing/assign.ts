@@ -133,10 +133,11 @@ export async function flagCandidateBucket(
       .limit(1);
     if (existing) {
       // Already a committed member (e.g. a cold-start seed re-seen in
-      // discovery) — nothing to flag.
+      // discovery) — nothing to flag. candidateBucketId stays null: per its
+      // contract it holds a *pending* candidate, not a live membership.
       return {
         trackId,
-        candidateBucketId: existing.bucketId,
+        candidateBucketId: null,
         candidateScore: null,
         alreadyAssigned: true,
         wouldSpawn: false,
@@ -308,7 +309,7 @@ export async function commitAssignmentInTx(
   // LAB-52: now a committed member — clear any pending candidate flag.
   await tx
     .update(track)
-    .set({ candidateBucketId: null, candidateScore: null })
+    .set({ candidateBucketId: null, candidateScore: null, updatedAt: sql`NOW()` })
     .where(eq(track.id, trackId));
 
   return result;
