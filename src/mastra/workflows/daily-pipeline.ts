@@ -65,7 +65,12 @@ const SurfaceResult = z.object({
 });
 
 export const DailyPipelineInput = z.object({
-  /** Per-source pull cap; respected by adapters that have it. Default 25. */
+  /**
+   * Manual per-source trending override for ad-hoc/test runs. Normally omitted:
+   * production reads the pull throttle (trending / similar / seed buckets) from
+   * app_config inside `pullAndEnrichTrending` (LAB-51), because the cron and
+   * Console "Run now" trigger sites both start the workflow with empty input.
+   */
   limitPerSource: z.number().int().positive().optional(),
 });
 export type DailyPipelineInputT = z.infer<typeof DailyPipelineInput>;

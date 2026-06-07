@@ -1,6 +1,6 @@
 import { eq, inArray, sql } from "drizzle-orm";
 import type { Database } from "@/db/client";
-import { type AudioFeatures, bucket, bucketMember, track } from "@/db/schema";
+import { type AudioFeatures, appConfig, bucket, bucketMember, track } from "@/db/schema";
 import { assignTrack } from "@/lib/bucketing/assign";
 import { evaluateBucketRecommendations } from "@/lib/bucketing/recommendations";
 import { cosine } from "@/lib/embedding";
@@ -46,9 +46,15 @@ export type PullEnrichSummary = {
   similarPulledCount: number;
 };
 
-const DEFAULT_PER_SOURCE_LIMIT = 25;
+// LAB-51 — fallback per-run pull throttle, used only when app_config has no
+// row (tests) and no explicit option is passed. Production reads these from
+// app_config (trending_limit_per_source / similar_limit_per_source /
+// similar_seed_buckets). The old single hardcoded 25 multiplied by the LAB-39
+// 5-seed fan-out into the ~125-track flood.
+const DEFAULT_TRENDING_LIMIT_PER_SOURCE = 3;
+const DEFAULT_SIMILAR_LIMIT_PER_SOURCE = 3;
 /** Top-N buckets seeded for the Last.fm similar pull (LAB-39). */
-const SIMILAR_SEED_BUCKETS = 5;
+const DEFAULT_SIMILAR_SEED_BUCKETS = 5;
 
 /**
  * Step 1: pull `mode: "trending"` from every available adapter, resolve each
@@ -80,12 +86,32 @@ export async function pullAndEnrichTrending(
   db: Database,
   env: Env,
   options: {
+    /** Legacy single knob — overrides BOTH per-source caps when set. */
     limitPerSource?: number;
+    trendingLimitPerSource?: number;
+    similarLimitPerSource?: number;
     adapters?: readonly SourceAdapter[];
     similarSeedBuckets?: number;
   } = {},
 ): Promise<PullEnrichSummary> {
-  const limit = options.limitPerSource ?? DEFAULT_PER_SOURCE_LIMIT;
+  // LAB-51 — per-run throttle. Precedence: explicit option > app_config > the
+  // DEFAULT_* fallback. Config is read HERE (not threaded via the workflow
+  // input) on purpose: both live trigger sites — cron and the Console "Run
+  // now" button — start the workflow with empty inputData, so a knob threaded
+  // through the input would never take effect.
+  const cfg = await loadPullThrottle(db);
+  const trendingLimit =
+    options.trendingLimitPerSource ??
+    options.limitPerSource ??
+    cfg.trendingLimitPerSource ??
+    DEFAULT_TRENDING_LIMIT_PER_SOURCE;
+  const similarLimit =
+    options.similarLimitPerSource ??
+    options.limitPerSource ??
+    cfg.similarLimitPerSource ??
+    DEFAULT_SIMILAR_LIMIT_PER_SOURCE;
+  const seedBuckets =
+    options.similarSeedBuckets ?? cfg.similarSeedBuckets ?? DEFAULT_SIMILAR_SEED_BUCKETS;
   const adapters = options.adapters ?? createDefaultRegistry().available(env);
 
   const perSource: { source: SourceId; pulled: number }[] = [];
@@ -106,7 +132,10 @@ export async function pullAndEnrichTrending(
   };
 
   for (const adapter of adapters) {
-    const candidates = await adapter.pullCandidates({ mode: "trending", limit }, env);
+    const candidates = await adapter.pullCandidates(
+      { mode: "trending", limit: trendingLimit },
+      env,
+    );
     perSource.push({ source: adapter.id, pulled: candidates.length });
     pulledCount += candidates.length;
     for (const c of candidates) {
@@ -121,12 +150,15 @@ export async function pullAndEnrichTrending(
   let similarPulled = 0;
   const lastfm = adapters.find((a) => a.id === "lastfm");
   if (lastfm) {
-    const seeds = await selectBucketSeeds(db, {
-      maxBuckets: options.similarSeedBuckets ?? SIMILAR_SEED_BUCKETS,
-    });
+    const seeds = await selectBucketSeeds(db, { maxBuckets: seedBuckets });
     for (const seed of seeds) {
       const cands = await lastfm.pullCandidates(
-        { mode: "similar", seedArtist: seed.seedArtist, seedTrack: seed.seedTrack, limit },
+        {
+          mode: "similar",
+          seedArtist: seed.seedArtist,
+          seedTrack: seed.seedTrack,
+          limit: similarLimit,
+        },
         env,
       );
       similarPulled += cands.length;
@@ -164,6 +196,27 @@ export async function pullAndEnrichTrending(
     discogsGenresUpdated: discogsResult.updated,
     similarPulledCount: similarPulled,
   };
+}
+
+/**
+ * LAB-51 — read the per-run pull throttle from `app_config`. Returns an empty
+ * object when the singleton row is absent (tests) so callers fall back to the
+ * DEFAULT_* constants. Mirrors the `loadSpawnThreshold` read idiom in assign.ts.
+ */
+async function loadPullThrottle(db: Database): Promise<{
+  trendingLimitPerSource?: number;
+  similarLimitPerSource?: number;
+  similarSeedBuckets?: number;
+}> {
+  const [row] = await db
+    .select({
+      trendingLimitPerSource: appConfig.trendingLimitPerSource,
+      similarLimitPerSource: appConfig.similarLimitPerSource,
+      similarSeedBuckets: appConfig.similarSeedBuckets,
+    })
+    .from(appConfig)
+    .limit(1);
+  return row ?? {};
 }
 
 export type BucketSummary = {

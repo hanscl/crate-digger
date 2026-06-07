@@ -43,6 +43,13 @@
       "when": 1780138851766,
       "tag": "0005_illegal_lizard",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1780850530828,
+      "tag": "0006_tiny_maestro",
+      "breakpoints": true
     }
   ]
 }

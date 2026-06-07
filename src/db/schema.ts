@@ -266,6 +266,14 @@ export const appConfig = pgTable(
     sourceMix: doublePrecision("source_mix").notNull().default(0.5),
     dailySurfaceCap: integer("daily_surface_cap").notNull().default(15),
     queueCeiling: integer("queue_ceiling").notNull().default(50),
+    // LAB-51 — per-run ingestion throttle. The trending sweep and the LAB-39
+    // taste-seeded similar pass each get their own per-source cap, and
+    // similarSeedBuckets caps the similar fan-out (worst case ≈
+    // trending×adapters + similarSeedBuckets×similar). Lowered from the old
+    // hardcoded 25 that produced the ~125-track flood.
+    trendingLimitPerSource: integer("trending_limit_per_source").notNull().default(3),
+    similarLimitPerSource: integer("similar_limit_per_source").notNull().default(3),
+    similarSeedBuckets: integer("similar_seed_buckets").notNull().default(5),
     retrainCadence: text("retrain_cadence").notNull().default("daily"),
     spawnThreshold: doublePrecision("spawn_threshold").notNull().default(0.7),
     refillLambda: doublePrecision("refill_lambda").notNull().default(0.3),
