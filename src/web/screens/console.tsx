@@ -34,6 +34,9 @@ export function ConsoleScreen() {
     refillLambda: number;
     mergeThreshold: number;
     splitDislikeRate: number;
+    trendingLimitPerSource: number;
+    similarLimitPerSource: number;
+    similarSeedBuckets: number;
   } | null>(null);
 
   useEffect(() => {
@@ -47,6 +50,9 @@ export function ConsoleScreen() {
         refillLambda: params.data.refillLambda,
         mergeThreshold: params.data.mergeThreshold,
         splitDislikeRate: params.data.splitDislikeRate,
+        trendingLimitPerSource: params.data.trendingLimitPerSource,
+        similarLimitPerSource: params.data.similarLimitPerSource,
+        similarSeedBuckets: params.data.similarSeedBuckets,
       });
     }
   }, [params.data, draft]);
@@ -142,6 +148,39 @@ export function ConsoleScreen() {
                 step={0.05}
                 onChange={(v) => setDraft({ ...draft, splitDislikeRate: v })}
                 onCommit={(v) => update.mutate({ splitDislikeRate: v })}
+              />
+            </div>
+            <div className="cap text-ink-3 mb-4 mt-6">ingestion</div>
+            <div className="flex gap-8 items-end">
+              <Knob
+                label="trending pull"
+                value={draft.trendingLimitPerSource}
+                min={0}
+                max={25}
+                step={1}
+                format={(v) => v.toFixed(0)}
+                onChange={(v) => setDraft({ ...draft, trendingLimitPerSource: Math.round(v) })}
+                onCommit={(v) => update.mutate({ trendingLimitPerSource: Math.round(v) })}
+              />
+              <Knob
+                label="similar pull"
+                value={draft.similarLimitPerSource}
+                min={0}
+                max={25}
+                step={1}
+                format={(v) => v.toFixed(0)}
+                onChange={(v) => setDraft({ ...draft, similarLimitPerSource: Math.round(v) })}
+                onCommit={(v) => update.mutate({ similarLimitPerSource: Math.round(v) })}
+              />
+              <Knob
+                label="seed buckets"
+                value={draft.similarSeedBuckets}
+                min={0}
+                max={15}
+                step={1}
+                format={(v) => v.toFixed(0)}
+                onChange={(v) => setDraft({ ...draft, similarSeedBuckets: Math.round(v) })}
+                onCommit={(v) => update.mutate({ similarSeedBuckets: Math.round(v) })}
               />
             </div>
             {update.data?.bumped ? (

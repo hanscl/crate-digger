@@ -54,6 +54,10 @@ export const TASTE_CONFIG_SCHEMA = z.object({
   refillLambda: z.number().min(0),
   mergeThreshold: z.number().min(0).max(1),
   splitDislikeRate: z.number().min(0).max(1),
+  // LAB-51 — pull throttle travels with the taste profile (Constraint #8).
+  trendingLimitPerSource: z.number().int().nonnegative(),
+  similarLimitPerSource: z.number().int().nonnegative(),
+  similarSeedBuckets: z.number().int().nonnegative(),
 });
 
 export const TASTE_EXPORT_SCHEMA = z.object({

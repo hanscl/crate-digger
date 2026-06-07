@@ -21,6 +21,11 @@ const PARAMS_INPUT = z.object({
   refillLambda: z.number().min(0).max(5).optional(),
   mergeThreshold: z.number().min(0).max(1).optional(),
   splitDislikeRate: z.number().min(0).max(1).optional(),
+  // LAB-51 — per-run pull throttle. min(0) allows disabling a pull mode
+  // (0 trending = similar-only; 0 seed buckets = trending-only).
+  trendingLimitPerSource: z.number().int().min(0).max(25).optional(),
+  similarLimitPerSource: z.number().int().min(0).max(25).optional(),
+  similarSeedBuckets: z.number().int().min(0).max(15).optional(),
 });
 
 export const paramsRouter = router({
@@ -45,6 +50,12 @@ export const paramsRouter = router({
     if (input.refillLambda !== undefined) update.refillLambda = input.refillLambda;
     if (input.mergeThreshold !== undefined) update.mergeThreshold = input.mergeThreshold;
     if (input.splitDislikeRate !== undefined) update.splitDislikeRate = input.splitDislikeRate;
+    if (input.trendingLimitPerSource !== undefined)
+      update.trendingLimitPerSource = input.trendingLimitPerSource;
+    if (input.similarLimitPerSource !== undefined)
+      update.similarLimitPerSource = input.similarLimitPerSource;
+    if (input.similarSeedBuckets !== undefined)
+      update.similarSeedBuckets = input.similarSeedBuckets;
     if (Object.keys(update).length === 0) {
       return { ok: true, bumped: false, refillVersionId: null };
     }

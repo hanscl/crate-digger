@@ -8,6 +8,8 @@ dist
 # Editor
 .idea
 .vscode/settings.json
+*.sw?
+*~
 
 # OS
 .DS_Store
