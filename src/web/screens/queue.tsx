@@ -144,6 +144,15 @@ function CurrentTrack({
                 {ranker.bucketName}
               </span>
             ) : null}
+            {data.pending ? (
+              <span
+                className="chip mono text-ink-3"
+                title="joins this bucket if you keep it — not a member yet"
+              >
+                → {data.pending.bucketName ?? "bucket"}
+                {data.pending.score !== null ? ` ${data.pending.score.toFixed(2)}` : ""}
+              </span>
+            ) : null}
             {track.primaryGenre ? <span className="chip">{track.primaryGenre}</span> : null}
             <span className="ml-auto cap text-ink-3 mono tnum">v{ranker.modelVersionId}</span>
           </div>

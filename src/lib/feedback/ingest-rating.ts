@@ -9,6 +9,7 @@ import {
   type RatingDecision,
   surfaceEvent,
 } from "@/db/schema";
+import { commitAssignmentInTx, loadSpawnThreshold } from "@/lib/bucketing/assign";
 import { ensureActiveModelVersionInTx } from "@/lib/ranking/version";
 
 /**
@@ -29,8 +30,13 @@ import { ensureActiveModelVersionInTx } from "@/lib/ranking/version";
  *   - Dislike: if the track is a bucket member, bump that bucket's
  *     `dislike_count`. The Phase 5 split heuristic reads this to surface
  *     "this bucket is mixing keeps with dislikes" recommendations.
- *   - Keep / defer / neutral: no bucket-side effect. Bucket centroid + feature
- *     stats are already updated at assignment time (Phase 3).
+ *   - Keep (LAB-52): commit the track into its bucket — join the nearest
+ *     same-genre bucket above threshold or spawn a new one, updating the
+ *     centroid + member_count and clearing the candidate flag. This is the
+ *     approval gate: discovery only FLAGS a candidate bucket (no membership,
+ *     centroid untouched); the keep is what actually joins. Re-derived fresh,
+ *     and idempotent for tracks that are already members.
+ *   - Defer / neutral: no bucket-side effect.
  */
 
 export type IngestRatingInput = {
@@ -45,6 +51,8 @@ export type IngestRatingInput = {
 export type IngestRatingResult = {
   rating: Rating;
   bucketDislikeIncremented: boolean;
+  /** LAB-52: bucket a keep committed the track into (join or spawn); null otherwise. */
+  committedBucketId: number | null;
 };
 
 export async function ingestRating(
@@ -121,6 +129,17 @@ export async function ingestRating(
       }
     }
 
-    return { rating: row, bucketDislikeIncremented };
+    let committedBucketId: number | null = null;
+    if (input.decision === "keep") {
+      // LAB-52 — approval commits the track into a bucket. Re-derive fresh
+      // (not the stored candidate id) so it handles the would-spawn case and
+      // any same-genre bucket created since the flag. Idempotent for tracks
+      // that are already members (e.g. cold-start seeds).
+      const threshold = await loadSpawnThreshold(tx);
+      const assigned = await commitAssignmentInTx(tx, input.trackId, threshold, false);
+      committedBucketId = assigned.alreadyAssigned ? null : assigned.bucketId;
+    }
+
+    return { rating: row, bucketDislikeIncremented, committedBucketId };
   });
 }

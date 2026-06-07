@@ -31,8 +31,11 @@ const PullEnrichResult = z.object({
 });
 
 const BucketResult = z.object({
-  spawnedBucketIds: z.array(z.number().int()),
-  joinedBucketIds: z.array(z.number().int()),
+  // LAB-52 — discovery flags candidate buckets; it no longer joins or spawns at
+  // ingest (a keep does that), so the bucket step reports flag counts.
+  candidateFlaggedCount: z.number().int().nonnegative(),
+  wouldSpawnCount: z.number().int().nonnegative(),
+  alreadyAssignedCount: z.number().int().nonnegative(),
 });
 
 const RenameResult = z.object({
@@ -124,8 +127,9 @@ const bucketStep = createStep({
     const result = await bucketAndName(db, env, inputData.resolvedTrackIds ?? []);
     return {
       ...inputData,
-      spawnedBucketIds: result.spawnedBucketIds,
-      joinedBucketIds: result.joinedBucketIds,
+      candidateFlaggedCount: result.candidateFlaggedCount,
+      wouldSpawnCount: result.wouldSpawnCount,
+      alreadyAssignedCount: result.alreadyAssignedCount,
     };
   },
 });
@@ -133,9 +137,9 @@ const bucketStep = createStep({
 /**
  * LAB-25: lazy + drift-triggered rename pass. Walks every bucket, applies
  * the eligibility rule (first-time at N≥3, doubled member count, or centroid
- * drift), and names eligible buckets via the `bucket-namer` agent. Runs
- * after assignment so any joins from the bucket step contribute to the
- * decision.
+ * drift), and names eligible buckets via the `bucket-namer` agent. With LAB-52
+ * discovery only flags candidates, so new members arrive from keeps
+ * (`ingestRating`) rather than this run — the pass still walks every bucket.
  */
 const renameWorkflowStep = createStep({
   id: "rename-eligible",
@@ -204,8 +208,9 @@ const surfaceWorkflowStep = createStep({
       resolvedTrackIds: inputData.resolvedTrackIds ?? [],
       audioFeaturesUpdated: inputData.audioFeaturesUpdated ?? 0,
       genresUpdated: inputData.genresUpdated ?? 0,
-      spawnedBucketIds: inputData.spawnedBucketIds ?? [],
-      joinedBucketIds: inputData.joinedBucketIds ?? [],
+      candidateFlaggedCount: inputData.candidateFlaggedCount ?? 0,
+      wouldSpawnCount: inputData.wouldSpawnCount ?? 0,
+      alreadyAssignedCount: inputData.alreadyAssignedCount ?? 0,
       eligibleBucketCount: inputData.eligibleBucketCount ?? 0,
       renamedBucketCount: inputData.renamedBucketCount ?? 0,
       renameErrorCount: inputData.renameErrorCount ?? 0,

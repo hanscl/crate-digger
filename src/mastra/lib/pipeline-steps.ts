@@ -1,7 +1,7 @@
 import { eq, inArray, sql } from "drizzle-orm";
 import type { Database } from "@/db/client";
 import { type AudioFeatures, appConfig, bucket, bucketMember, track } from "@/db/schema";
-import { assignTrack } from "@/lib/bucketing/assign";
+import { flagCandidateBucket } from "@/lib/bucketing/assign";
 import { evaluateBucketRecommendations } from "@/lib/bucketing/recommendations";
 import { cosine } from "@/lib/embedding";
 import { enrichGenresFromDiscogs } from "@/lib/enrichment/discogs";
@@ -220,45 +220,47 @@ async function loadPullThrottle(db: Database): Promise<{
 }
 
 export type BucketSummary = {
-  spawnedBucketIds: number[];
-  joinedBucketIds: number[];
+  /** Tracks flagged with a candidate bucket they'd join on approval (LAB-52). */
+  candidateFlaggedCount: number;
+  /** Tracks with no same-genre bucket above threshold — a keep spawns a new one. */
+  wouldSpawnCount: number;
+  /** Tracks already committed members (re-seen in discovery). */
   alreadyAssignedCount: number;
 };
 
 /**
- * Step 2: bucket each resolved track. LAB-25: spawn-time naming is gone —
- * new buckets ship with the deterministic `<primary> (auto)` placeholder
- * from `defaultBucketName` and the rename step (below) names them once
- * they reach N ≥ 3 members. Naming a bucket from a single founding track
- * was the founding LAB-25 bug.
+ * Step 2: compute each discovery track's CANDIDATE bucket WITHOUT joining it
+ * (LAB-52). At ingest we flag the bucket a track would join (or mark it
+ * would-spawn) and persist its embedding/primary_genre, but we do NOT insert a
+ * `bucket_member` or move any centroid — unreviewed discovery tracks must not
+ * pollute buckets. A track actually joins (and updates the centroid) only when
+ * the user keeps it, via `ingestRating`. Cold-start seeding still buckets
+ * eagerly: it goes through `assignTrack`, not this step.
+ *
+ * (Name kept as `bucketAndName` for the workflow step id; LAB-25 already moved
+ * naming out to the separate `renameEligibleBuckets` pass.)
  */
 export async function bucketAndName(
   db: Database,
   _env: Env,
   trackIds: readonly number[],
 ): Promise<BucketSummary> {
-  const spawned = new Set<number>();
-  const joined = new Set<number>();
+  let candidateFlaggedCount = 0;
+  let wouldSpawnCount = 0;
   let alreadyAssignedCount = 0;
 
   for (const id of trackIds) {
-    const result = await assignTrack(db, id);
+    const result = await flagCandidateBucket(db, id);
     if (result.alreadyAssigned) {
       alreadyAssignedCount += 1;
-      continue;
-    }
-    if (result.spawned) {
-      spawned.add(result.bucketId);
+    } else if (result.wouldSpawn) {
+      wouldSpawnCount += 1;
     } else {
-      joined.add(result.bucketId);
+      candidateFlaggedCount += 1;
     }
   }
 
-  return {
-    spawnedBucketIds: [...spawned],
-    joinedBucketIds: [...joined],
-    alreadyAssignedCount,
-  };
+  return { candidateFlaggedCount, wouldSpawnCount, alreadyAssignedCount };
 }
 
 export type RenameSummary = {

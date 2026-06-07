@@ -57,6 +57,17 @@ export const track = pgTable(
       .default(sql`ARRAY[]::text[]`),
     primaryGenre: text("primary_genre"),
     embedding: vector("embedding", { dimensions: EMBEDDING_DIM }),
+    // LAB-52 — candidate bucket assignment, computed at discovery-ingest time
+    // WITHOUT joining. `candidate_bucket_id` is the bucket this track would
+    // join on approval (a keep rating) and `candidate_score` its cosine; a
+    // NULL `candidate_bucket_id` means "no same-genre bucket cleared the
+    // threshold — a keep spawns a new bucket." Both are cleared when the track
+    // actually joins a bucket. Discovery never inserts a bucket_member or moves
+    // a centroid; only an approval (ingestRating keep) does.
+    candidateBucketId: integer("candidate_bucket_id").references(() => bucket.id, {
+      onDelete: "set null",
+    }),
+    candidateScore: doublePrecision("candidate_score"),
     // MusicBrainz recording MBID. Populated lazily by the MusicBrainz
     // enricher (via Last.fm `track.getInfo` lookup) so subsequent runs can
     // skip resolution.

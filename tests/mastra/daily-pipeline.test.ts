@@ -6,6 +6,7 @@ import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/db/schema";
+import { assignTrack } from "@/lib/bucketing/assign";
 import { selectBucketSeeds } from "@/lib/ingestion/exemplar";
 import type { SourceAdapter, RawCandidate } from "@/lib/ingestion";
 import {
@@ -187,6 +188,18 @@ function fixtureAdapter(): SourceAdapter {
   };
 }
 
+/**
+ * Eagerly commit tracks to buckets the cold-start way (assignTrack). LAB-52
+ * moved the daily `bucketAndName` step to candidate-flag-only, so tests that
+ * need *real* buckets/members to exist (e.g. to give selectBucketSeeds a seed)
+ * seed them via the eager path instead.
+ */
+async function seedBucketsEager(trackIds: readonly number[]): Promise<void> {
+  for (const id of trackIds) {
+    await assignTrack(db, id, { spawnThreshold: 0.7 });
+  }
+}
+
 describe("daily-pipeline (step-by-step)", () => {
   it("pulls → enriches → buckets → retrains → recommends → surfaces a fixture pool", async () => {
     // 1. Pull + enrich. Adapter is injected so no network IO.
@@ -206,21 +219,24 @@ describe("daily-pipeline (step-by-step)", () => {
     expect(pull.mbGenresUpdated).toBe(0);
     expect(pull.discogsGenresUpdated).toBe(0);
 
-    // 2. Bucket — 3 distinct primary genres should each spawn a separate
-    //    bucket; with only one track per bucket, every assignment is a spawn.
+    // 2. Bucket — LAB-52: discovery only FLAGS candidates; it does not create
+    //    buckets or members. The 3 fixture tracks have distinct genres and no
+    //    buckets exist yet, so all 3 are would-spawn candidates.
     const bucketed = await bucketAndName(db, fixtureEnv, pull.resolvedTrackIds);
-    expect(bucketed.spawnedBucketIds.length).toBe(3);
-    expect(bucketed.joinedBucketIds.length).toBe(0);
-    // LAB-25: spawn-time naming is gone. Every new bucket gets the
-    // deterministic `<primary> (auto)` placeholder; the rename pass fires
-    // once member_count ≥ 3. With one member per bucket here, the rename
-    // step sees no eligible buckets.
+    expect(bucketed.wouldSpawnCount).toBe(3);
+    expect(bucketed.candidateFlaggedCount).toBe(0);
+    expect(bucketed.alreadyAssignedCount).toBe(0);
+    // No buckets and no members were created at ingest — centroids untouched.
     const buckets = await db.select().from(schema.bucket);
-    expect(buckets).toHaveLength(3);
-    for (const b of buckets) {
-      expect(b.name.endsWith(" (auto)")).toBe(true);
-      expect(b.lastNamedAtCount).toBeNull();
-    }
+    expect(buckets).toHaveLength(0);
+    const members = await db.select().from(schema.bucketMember);
+    expect(members).toHaveLength(0);
+    // would-spawn tracks carry a NULL candidate bucket (no same-genre match).
+    const flagged = await db
+      .select({ id: schema.track.id, cb: schema.track.candidateBucketId })
+      .from(schema.track);
+    expect(flagged).toHaveLength(3);
+    expect(flagged.every((t) => t.cb === null)).toBe(true);
 
     // 3. Retrain — no ratings yet, so this short-circuits with `no_samples`
     //    and does NOT pollute the broad version chain.
@@ -320,7 +336,7 @@ describe("daily-pipeline (LAB-39 taste-seeded similar pull)", () => {
       adapters: [fixtureAdapter()],
       limitPerSource: 10,
     });
-    await bucketAndName(db, fixtureEnv, seedPull.resolvedTrackIds);
+    await seedBucketsEager(seedPull.resolvedTrackIds);
 
     const seededBuckets = await db.select().from(schema.bucket);
     expect(seededBuckets.length).toBeGreaterThan(0);
@@ -387,7 +403,7 @@ describe("daily-pipeline (LAB-39 taste-seeded similar pull)", () => {
       adapters: [fixtureAdapter()],
       limitPerSource: 10,
     });
-    await bucketAndName(db, fixtureEnv, seedPull.resolvedTrackIds);
+    await seedBucketsEager(seedPull.resolvedTrackIds);
 
     // The spotify fixtureAdapter has id:"spotify" → similar pass skipped.
     const pull = await pullAndEnrichTrending(db, fixtureEnv, {
@@ -427,7 +443,7 @@ describe("daily-pipeline (LAB-39 taste-seeded similar pull)", () => {
       adapters: [fixtureAdapter()],
       limitPerSource: 10,
     });
-    await bucketAndName(db, fixtureEnv, seedPull.resolvedTrackIds);
+    await seedBucketsEager(seedPull.resolvedTrackIds);
     const allBuckets = await db.select().from(schema.bucket);
     expect(allBuckets.length).toBeGreaterThanOrEqual(2);
 
@@ -648,7 +664,7 @@ describe("daily-pipeline (Mastra orchestration)", () => {
     // separately at the orchestrated level (0 with no adapters available).
     expect(result.result.similarPulledCount).toBe(0);
     expect(result.result.resolvedTrackIds).toEqual([]);
-    expect(result.result.spawnedBucketIds).toEqual([]);
+    expect(result.result.candidateFlaggedCount).toBe(0);
     expect(result.result.surfacedCount).toBe(0);
     expect(result.result.retrainSkipped).toBe(true);
     expect(result.result.pendingRecommendationCount).toBe(0);
