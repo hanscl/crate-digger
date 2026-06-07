@@ -138,7 +138,7 @@ describe("runSurfacingBatch — Constraint #2 (full candidate pool persistence)"
 
     const result = await runSurfacingBatch(db, {
       candidates,
-      noveltyOverride: 1, // pure broad, deterministic
+      noveltyOverride: 1,
       queueCeilingOverride: 2,
     });
 
@@ -511,7 +511,7 @@ describe("runSurfacingBatch — soft penalties only (Constraint #4)", () => {
 
     const result = await runSurfacingBatch(db, {
       candidates,
-      noveltyOverride: 0, // pure refill, deterministic
+      noveltyOverride: 0,
       refillBarOverride: 0,
       queueCeilingOverride: 1,
     });
@@ -593,7 +593,7 @@ describe("runSurfacingBatch — refill primary-genre winner-eligibility gate (LA
 
     const result = await runSurfacingBatch(db, {
       candidates,
-      noveltyOverride: 0, // pure refill
+      noveltyOverride: 0,
       refillBarOverride: 0,
       queueCeilingOverride: 1,
     });

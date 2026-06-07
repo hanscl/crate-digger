@@ -49,9 +49,11 @@ export const TASTE_CONFIG_SCHEMA = z.object({
   novelty: z.number().min(0).max(1),
   sourceMix: z.number().min(0).max(1),
   queueCeiling: z.number().int().nonnegative(),
-  // LAB-53 — per-ranker quality bars travel with the taste profile.
-  refillQualityBar: z.number().min(0).max(1),
-  broadQualityBar: z.number().min(0).max(1),
+  // LAB-53 — per-ranker quality bars travel with the taste profile. Optional so
+  // pre-LAB-53 exports (which lack them) still import: importTaste's upsert
+  // falls back to the app_config column defaults (0.7 / 0.5) for absent fields.
+  refillQualityBar: z.number().min(0).max(1).optional(),
+  broadQualityBar: z.number().min(0).max(1).optional(),
   spawnThreshold: z.number().min(0).max(1),
   refillLambda: z.number().min(0),
   mergeThreshold: z.number().min(0).max(1),
