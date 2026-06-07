@@ -28,12 +28,13 @@ export function ConsoleScreen() {
   const [draft, setDraft] = useState<{
     novelty: number;
     sourceMix: number;
-    dailySurfaceCap: number;
     queueCeiling: number;
     spawnThreshold: number;
     refillLambda: number;
     mergeThreshold: number;
     splitDislikeRate: number;
+    refillQualityBar: number;
+    broadQualityBar: number;
     trendingLimitPerSource: number;
     similarLimitPerSource: number;
     similarSeedBuckets: number;
@@ -44,12 +45,13 @@ export function ConsoleScreen() {
       setDraft({
         novelty: params.data.novelty,
         sourceMix: params.data.sourceMix,
-        dailySurfaceCap: params.data.dailySurfaceCap,
         queueCeiling: params.data.queueCeiling,
         spawnThreshold: params.data.spawnThreshold,
         refillLambda: params.data.refillLambda,
         mergeThreshold: params.data.mergeThreshold,
         splitDislikeRate: params.data.splitDislikeRate,
+        refillQualityBar: params.data.refillQualityBar,
+        broadQualityBar: params.data.broadQualityBar,
         trendingLimitPerSource: params.data.trendingLimitPerSource,
         similarLimitPerSource: params.data.similarLimitPerSource,
         similarSeedBuckets: params.data.similarSeedBuckets,
@@ -89,16 +91,6 @@ export function ConsoleScreen() {
                 format={(v) => `${Math.round(v * 100)}/${Math.round((1 - v) * 100)}`}
                 onChange={(v) => setDraft({ ...draft, sourceMix: v })}
                 onCommit={(v) => update.mutate({ sourceMix: v })}
-              />
-              <Knob
-                label="daily cap"
-                value={draft.dailySurfaceCap}
-                min={1}
-                max={100}
-                step={1}
-                format={(v) => v.toFixed(0)}
-                onChange={(v) => setDraft({ ...draft, dailySurfaceCap: Math.round(v) })}
-                onCommit={(v) => update.mutate({ dailySurfaceCap: Math.round(v) })}
               />
               <Knob
                 label="queue ceiling"
@@ -148,6 +140,24 @@ export function ConsoleScreen() {
                 step={0.05}
                 onChange={(v) => setDraft({ ...draft, splitDislikeRate: v })}
                 onCommit={(v) => update.mutate({ splitDislikeRate: v })}
+              />
+              <Knob
+                label="refill bar"
+                value={draft.refillQualityBar}
+                min={0.3}
+                max={0.99}
+                step={0.01}
+                onChange={(v) => setDraft({ ...draft, refillQualityBar: v })}
+                onCommit={(v) => update.mutate({ refillQualityBar: v })}
+              />
+              <Knob
+                label="broad bar"
+                value={draft.broadQualityBar}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(v) => setDraft({ ...draft, broadQualityBar: v })}
+                onCommit={(v) => update.mutate({ broadQualityBar: v })}
               />
             </div>
             <div className="cap text-ink-3 mb-4 mt-6">ingestion</div>

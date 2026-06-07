@@ -119,7 +119,7 @@ describe("keepRate", () => {
     await runSurfacingBatch(db, {
       candidates: cands,
       noveltyOverride: 1,
-      dailyCapOverride: 3,
+      queueCeilingOverride: 3,
     });
     const events = await db.select().from(schema.surfaceEvent);
     const byTrack = new Map(events.map((e) => [e.trackId, e.id]));
@@ -154,7 +154,7 @@ describe("precisionAtN", () => {
     await runSurfacingBatch(db, {
       candidates: await Promise.all([t1, t2, t3].map(asCand)),
       noveltyOverride: 1,
-      dailyCapOverride: 3,
+      queueCeilingOverride: 3,
     });
     const events = await db.select().from(schema.surfaceEvent);
     expect(events).toHaveLength(3);
@@ -268,7 +268,7 @@ describe("genreEntropy", () => {
     await runSurfacingBatch(db, {
       candidates: await Promise.all([r1, r2].map(asCand)),
       noveltyOverride: 1,
-      dailyCapOverride: 2,
+      queueCeilingOverride: 2,
     });
     const single = await genreEntropy(db);
     expect(single.entropy).toBe(0);
@@ -276,13 +276,12 @@ describe("genreEntropy", () => {
 
     // Mix in a pop track and a jazz track — three genres, three surfaced.
     // Uniform → normalized entropy = 1.
-    await db.execute(sql`UPDATE ${schema.appConfig} SET daily_surface_cap = 5`);
     const p = await seed({ title: "p", genres: ["pop"], primaryGenre: "pop" });
     const j = await seed({ title: "j", genres: ["jazz"], primaryGenre: "jazz" });
     await runSurfacingBatch(db, {
       candidates: await Promise.all([p, j].map(asCand)),
       noveltyOverride: 1,
-      dailyCapOverride: 5,
+      queueCeilingOverride: 5,
     });
     const mixed = await genreEntropy(db);
     expect(mixed.distinctGenres).toBe(3);

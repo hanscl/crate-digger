@@ -1,0 +1,1 @@
+ALTER TABLE "app_config" DROP COLUMN "daily_surface_cap";

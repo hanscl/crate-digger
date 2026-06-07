@@ -86,8 +86,9 @@ export async function exportTaste(db: Database): Promise<TasteExport> {
       ? {
           novelty: cfg.novelty,
           sourceMix: cfg.sourceMix,
-          dailySurfaceCap: cfg.dailySurfaceCap,
           queueCeiling: cfg.queueCeiling,
+          refillQualityBar: cfg.refillQualityBar,
+          broadQualityBar: cfg.broadQualityBar,
           spawnThreshold: cfg.spawnThreshold,
           refillLambda: cfg.refillLambda,
           mergeThreshold: cfg.mergeThreshold,

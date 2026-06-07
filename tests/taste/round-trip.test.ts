@@ -224,4 +224,35 @@ describe("taste profile export/import (Constraint #8)", () => {
     expect(allTracks).toHaveLength(1);
     expect(allTracks[0]!.title).toBe("Existing");
   });
+
+  it("imports a pre-LAB-53 config block that lacks the quality bars (defaults applied)", async () => {
+    // Backward-compat (LAB-53): a taste export produced before the quality bars
+    // existed carries a config block without them. It must still import; the
+    // bars fall back to the app_config column defaults (0.7 / 0.5).
+    const payload = {
+      version: 1 as const,
+      exportedAt: new Date().toISOString(),
+      config: {
+        novelty: 0.4,
+        sourceMix: 0.6,
+        queueCeiling: 42,
+        spawnThreshold: 0.7,
+        refillLambda: 0.3,
+        mergeThreshold: 0.92,
+        splitDislikeRate: 0.5,
+        trendingLimitPerSource: 3,
+        similarLimitPerSource: 3,
+        similarSeedBuckets: 5,
+        // no refillQualityBar / broadQualityBar — simulating a pre-LAB-53 export
+      },
+      buckets: [],
+      ratings: [],
+    };
+    await importTaste(db, payload); // must not throw on the missing bars
+
+    const [cfg] = await db.select().from(schema.appConfig).limit(1);
+    expect(cfg?.queueCeiling).toBe(42); // provided field applied
+    expect(cfg?.refillQualityBar).toBe(0.7); // DB default
+    expect(cfg?.broadQualityBar).toBe(0.5); // DB default
+  });
 });

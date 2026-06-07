@@ -81,7 +81,7 @@ crate-digger/
 │   │   │   ├── broad.ts            # logistic regression P(keep|features,genre,source)
 │   │   │   └── version.ts          # bump model_version on config change
 │   │   ├── surfacing/
-│   │   │   ├── pipeline.ts         # caps, queue ceiling, novelty, source-mix
+│   │   │   ├── pipeline.ts         # quality bars, queue ceiling, source-mix
 │   │   │   └── log.ts              # writes surface_event w/ FULL candidate pool
 │   │   ├── feedback/
 │   │   │   ├── ingest-rating.ts    # incremental bucket stat updates
@@ -131,7 +131,7 @@ buckets, fixed taxonomy in `src/lib/embedding.ts`). Revisit dim only if eval bre
 | `search_run`            | `id`, `source`, `params jsonb`, `started_at`, `count_pulled`, `count_surfaced`                                                                                                                                                                                        |
 | `model_version`         | `id`, `kind enum(refill,broad)`, `config jsonb`, `training_window_start/end`, `trained_at`, `parent_id`                                                                                                                                                               |
 | `bucket_recommendation` | `id`, `kind enum(merge,split)`, `bucket_ids int[]`, `reason jsonb`, `status enum(pending,accepted,dismissed)`                                                                                                                                                         |
-| `app_config`            | Singleton row: novelty knob, source mix, daily cap, queue ceiling, retrain cadence, source toggles                                                                                                                                                                    |
+| `app_config`            | Singleton row: novelty knob, source mix, refill/broad quality bars, queue ceiling, pull throttle, retrain cadence, source toggles                                                                                                                                     |
 
 Drizzle migrations via `drizzle-kit`. `pgvector` extension created in an idempotent
 `migrations/0000_init.sql`.
@@ -209,8 +209,9 @@ the same pass on demand from the Buckets screen.
   (or hand-rolled gradient descent — small dataset). Trained model serialized to
   `model_version.config`. Genre dislikes = additive negative coefficient on genre features (soft
   penalty, never hard exclusion — enforced by tests).
-- **Surfacing** (`surfacing/pipeline.ts`): given today's candidate pool, applies novelty knob
-  (mixes broad-vs-refill weight), source-mix ratio, daily cap, queue ceiling. Writes
+- **Surfacing** (`surfacing/pipeline.ts`): given today's candidate pool, applies per-ranker
+  quality bars (refill keep-similarity + broad P(keep)) and the source-mix ratio, bounded by the
+  queue ceiling (LAB-53). Writes
   `surface_event` with `candidate_pool` = ENTIRE scored pool (winners + losers). This is
   non-negotiable per Constraint #2 — there's a unit test asserting `candidate_pool.length ≥
 surfaced_count`.
@@ -440,8 +441,10 @@ guard catches refactors that accidentally violate documented constraints.
 - **Soft penalties, not hard filters** (Constraint #4 — Phase 4): given a user has disliked
   genre X, candidates of genre X still appear in the candidate pool with reduced scores. They
   are not excluded.
-- **Daily cap and queue ceiling enforced at surfacing, not ingestion** (Constraint #5 —
-  Phase 4): ingestion captures all candidates regardless of cap; surfacing trims to the cap.
+- **Pull throttle + quality bar + queue ceiling enforced at surfacing, not ingestion**
+  (Constraint #5, amended LAB-53): ingestion captures all candidates; surfacing emits every
+  candidate that clears its ranker's quality bar, bounded only by the queue ceiling
+  (`max(0, queueCeiling − unrated)`). The per-run pull size (LAB-51) is the throttle.
 - **Enrichment idempotency** (Phase 2): running enrichment twice on the same input produces
   identical `Track` records and does not duplicate.
 - **Ratings tag the surface-time `model_version`** (Constraint #3 — Phase 5): not the version
