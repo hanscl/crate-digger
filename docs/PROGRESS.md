@@ -2,6 +2,48 @@
 
 Phase tracker. Update at the end of every phase. Newest at the top.
 
+## LAB-51 — Config-driven pull throttle (cut the ~125-track flood)
+
+- **Status:** review
+- **Branch:** `lab-51-limitpersource-floods-ingestion-125-tracksrun-lower-default`
+- **PR:** _pending_ (stacked: base `main`; LAB-52 stacks on this)
+- **Scope landed:** The daily pipeline ingested ~125 tracks/run — a single
+  hardcoded per-source limit of 25 (`DEFAULT_PER_SOURCE_LIMIT`) reused for both
+  the trending sweep and the LAB-39 taste-seeded similar fan-out
+  (`SIMILAR_SEED_BUCKETS` = 5 → 5×25). Per Constraint #5 every pulled track is
+  enriched + bucketed even though surfacing only shows a handful, so the DB
+  ballooned with enriched-but-invisible rows.
+  Three knobs added to `app_config` (migration `0006_tiny_maestro`):
+  `trending_limit_per_source` (3), `similar_limit_per_source` (3),
+  `similar_seed_buckets` (5) — worst case ≈ 3×adapters + 5×3 ≈ low tens.
+  `pullAndEnrichTrending` now reads them from `app_config` with precedence
+  `explicit option > config > DEFAULT_*`, splitting the single `limit` into
+  independent trending vs similar per-source caps plus a configurable seed
+  fan-out. Read **inside** the step (`loadPullThrottle`, mirroring
+  `loadSpawnThreshold`) because both live trigger sites — cron and the Console
+  "Run now" button — start the workflow with empty `inputData`, so a knob
+  threaded through the workflow input would never take effect.
+  `params` router + a new Console "ingestion" knob group expose all three; they
+  travel with the taste profile (Constraint #8: `TASTE_CONFIG_SCHEMA` +
+  export). `DailyPipelineInput.limitPerSource` demoted to a manual override.
+  Tests (2 new, 210 total green): config drives the trending limit when no
+  option is passed; the similar limit + seed-bucket cap are honoured
+  independently of trending.
+- **Decisions locked:**
+  - **Split similar vs trending limits** (not one shared knob), so the operator
+    pulls mostly on-taste + a little exploratory — this also lands LAB-53's
+    "knob #1" (pull-size split) ahead of time.
+  - **Config-read-inside** `pullAndEnrichTrending`, not threaded through the
+    workflow input — the empty-`inputData` trigger sites made threading a no-op.
+  - **No `model_version` bump** — pull throttle is ingestion volume, not ranker
+    config (Constraint #3 governs scoring config; only `refillLambda` bumps).
+- **Notes for future phases:**
+  - LAB-53 stacks on this: reuses the similar/trending split as knob #1 and
+    adds the per-ranker quality bar + queue-ceiling-only bound.
+  - `min(0)` on the knobs lets the operator disable a pull mode (0 trending =
+    similar-only; 0 seed buckets = trending-only); `selectBucketSeeds` already
+    treats `maxBuckets <= 0` as a clean no-op.
+
 ## LAB-25 — Centroid-descriptive bucket naming + `(auto)` backfill
 
 - **Status:** review

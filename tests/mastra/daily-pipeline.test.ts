@@ -399,6 +399,69 @@ describe("daily-pipeline (LAB-39 taste-seeded similar pull)", () => {
     expect(pull.perSource.some((p) => p.source === "lastfm")).toBe(false);
   });
 
+  it("reads the trending per-source limit from app_config when no option is passed (LAB-51)", async () => {
+    await db
+      .insert(schema.appConfig)
+      .values({ id: 1, trendingLimitPerSource: 7 })
+      .onConflictDoUpdate({ target: schema.appConfig.id, set: { trendingLimitPerSource: 7 } });
+
+    const seenLimits: number[] = [];
+    const recordingSpotify: SourceAdapter = {
+      id: "spotify",
+      isPaid: false,
+      isAvailable: () => true,
+      pullCandidates: (async (params: { mode: string; limit: number }) => {
+        seenLimits.push(params.limit);
+        return [] as RawCandidate[];
+      }) as unknown as SourceAdapter["pullCandidates"],
+    };
+
+    await pullAndEnrichTrending(db, fixtureEnv, { adapters: [recordingSpotify] });
+    // Trending pull used the configured value, not the DEFAULT_* fallback.
+    expect(seenLimits).toEqual([7]);
+  });
+
+  it("reads the similar limit + seed-bucket cap from app_config (LAB-51)", async () => {
+    // Seed ≥2 buckets so the seed-bucket cap is observable.
+    const seedPull = await pullAndEnrichTrending(db, fixtureEnv, {
+      adapters: [fixtureAdapter()],
+      limitPerSource: 10,
+    });
+    await bucketAndName(db, fixtureEnv, seedPull.resolvedTrackIds);
+    const allBuckets = await db.select().from(schema.bucket);
+    expect(allBuckets.length).toBeGreaterThanOrEqual(2);
+
+    // Cap the fan-out to 1 seed bucket and the similar pull to 4 per source.
+    await db
+      .insert(schema.appConfig)
+      .values({ id: 1, similarSeedBuckets: 1, similarLimitPerSource: 4 })
+      .onConflictDoUpdate({
+        target: schema.appConfig.id,
+        set: { similarSeedBuckets: 1, similarLimitPerSource: 4 },
+      });
+
+    const similarCalls: { limit: number }[] = [];
+    const recordingLastfm: SourceAdapter = {
+      id: "lastfm",
+      isPaid: false,
+      isAvailable: () => true,
+      pullCandidates: (async (params: { mode: string; limit: number }) => {
+        if (params.mode === "similar") {
+          similarCalls.push({ limit: params.limit });
+          return [similarCandidate()];
+        }
+        return [] as RawCandidate[];
+      }) as unknown as SourceAdapter["pullCandidates"],
+    };
+
+    await pullAndEnrichTrending(db, fixtureEnv, { adapters: [recordingLastfm] });
+
+    // seed-bucket cap honoured: exactly one similar call despite ≥2 buckets.
+    expect(similarCalls).toHaveLength(1);
+    // similar pull used the configured per-source limit, independent of trending.
+    expect(similarCalls[0]?.limit).toBe(4);
+  });
+
   it("selectBucketSeeds picks the centroid-nearest member of a bucket", async () => {
     // Two tracks in one bucket at different cosine distances to the centroid.
     // The centroid is set EXACTLY to track B's embedding so B is nearest.

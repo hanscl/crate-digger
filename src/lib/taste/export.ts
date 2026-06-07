@@ -92,6 +92,9 @@ export async function exportTaste(db: Database): Promise<TasteExport> {
           refillLambda: cfg.refillLambda,
           mergeThreshold: cfg.mergeThreshold,
           splitDislikeRate: cfg.splitDislikeRate,
+          trendingLimitPerSource: cfg.trendingLimitPerSource,
+          similarLimitPerSource: cfg.similarLimitPerSource,
+          similarSeedBuckets: cfg.similarSeedBuckets,
         }
       : undefined,
     buckets: exportedBuckets,
