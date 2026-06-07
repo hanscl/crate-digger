@@ -27,8 +27,14 @@ Required for the local Postgres+pgvector container and the
 testcontainers suites.
 
 ```sh
-docker info     # daemon up?
+docker info -f '{{.ServerVersion}}'     # daemon up? prints version or errors
 ```
+
+`docker info` alone always prints the Client section and exits 0 even
+when the daemon is down — the `-f '{{.ServerVersion}}'` filter forces
+it to actually talk to the daemon and errors out if it can't. If you
+see `Cannot connect to the Docker daemon`, start Docker Desktop
+(`open -a Docker` on macOS) and re-run.
 
 If Docker Desktop is installed but `docker` is not on PATH, add its
 `bin/` to your shell rc (Docker Desktop ships an unlinked CLI).
@@ -241,14 +247,18 @@ carry the shared placeholder until each independently reaches N ≥ 3 and
 gets a centroid-descriptive name (likely distinct, since their centroids
 disagreed enough to spawn separately in the first place).
 
-### 3.7 Console — novelty knob bumps `model_version`
+### 3.7 Console — `refill λ` bumps `model_version`
 
-Console → drag novelty knob → release.
+Console → drag the **`refill λ` knob** (ranking row) → release.
 
-**Pass:** the **novelty knob** (a.k.a. `refill λ`) commits and bumps
-`refill v{N+1}` via the chip below the ranking row. Other controls
-(sourceMix / dailyCap / queueCeiling / spawn / merge / split) commit
-silently — no version bump. Active versions panel reflects the new id.
+**Pass:** `refill λ` commits and bumps `refill v{N+1}` via the chip
+below the ranking row. All other controls (novelty / sourceMix /
+dailyCap / queueCeiling / spawn / merge / split) commit silently — no
+version bump. Active versions panel reflects the new id.
+
+> Note: the novelty knob is in the _surfacing_ row, not the _ranking_
+> row. Only `refill λ` is wired to the version bump
+> (`params.ts:69-82`) — the surfacing knobs are config-only.
 
 ### 3.8 Analyzer KPIs
 
