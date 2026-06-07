@@ -34,8 +34,11 @@ current state.** Then proceed.
 3. **Ranker versions are first-class.** Every ranker/config change bumps `model_version`;
    ratings tag the version under which they were collected.
 4. **Soft penalties on dislikes, not hard filters.** Genre dislikes downweight; never exclude.
-5. **Daily cap + queue ceiling enforced at surfacing layer**, not at ingestion. Ingest captures
-   everything; surfacing decides what reaches the user.
+5. **Pull throttle + quality bar + queue ceiling enforced at surfacing layer** (amended LAB-53),
+   not at ingestion. Ingest captures everything; surfacing emits every candidate that clears its
+   ranker's quality bar (refill = keep-similarity; broad = classifier P(keep)), bounded only by the
+   queue ceiling (`max(0, queueCeiling − unrated)`). Below-bar tracks stay enriched but unsurfaced.
+   The per-run pull size (LAB-51) is the throttle.
 6. **Novelty knob = ranking parameter.** Affects explore/exploit weight (broad) and bucket-spawn
    aggressiveness (refill).
 7. **Admin dashboard is read-mostly + parameter tweaks.** Writes limited to config, manual

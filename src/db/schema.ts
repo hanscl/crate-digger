@@ -275,8 +275,14 @@ export const appConfig = pgTable(
     id: integer("id").primaryKey().default(1),
     novelty: doublePrecision("novelty").notNull().default(0.5),
     sourceMix: doublePrecision("source_mix").notNull().default(0.5),
-    dailySurfaceCap: integer("daily_surface_cap").notNull().default(15),
     queueCeiling: integer("queue_ceiling").notNull().default(50),
+    // LAB-53 — per-ranker quality bars (replace the per-day daily_surface_cap).
+    // Surfacing emits every candidate that clears its ranker's bar (refill =
+    // keep-similarity vs the spawn_threshold family; broad = classifier
+    // P(keep)); below-bar tracks are dropped (no surface_event, candidate-
+    // flagged only per LAB-52). The queue ceiling is the only count bound.
+    refillQualityBar: doublePrecision("refill_quality_bar").notNull().default(0.7),
+    broadQualityBar: doublePrecision("broad_quality_bar").notNull().default(0.5),
     // LAB-51 — per-run ingestion throttle. The trending sweep and the LAB-39
     // taste-seeded similar pass each get their own per-source cap, and
     // similarSeedBuckets caps the similar fan-out (worst case ≈

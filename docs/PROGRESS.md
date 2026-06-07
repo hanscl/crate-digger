@@ -2,6 +2,62 @@
 
 Phase tracker. Update at the end of every phase. Newest at the top.
 
+## LAB-53 — Quality-gated surfacing (drop the daily cap)
+
+- **Status:** review
+- **Branch:** `lab-53-replace-the-daily-cap-with-quality-gated-surfacing-pull`
+- **PR:** _pending_ (stacked on LAB-52; top of the LAB-51→52→53 stack)
+- **Scope landed:** Replaced the per-calendar-day `daily_surface_cap` with the
+  three-knob model — **pull throttle** (LAB-51) + **per-ranker quality bar** +
+  **queue ceiling** (the only hard count bound). Amends spec Constraint #5
+  (CLAUDE.md + docs/PLAN.md).
+  `runSurfacingBatch` (`src/lib/surfacing/pipeline.ts`) rewritten:
+  `effectiveCap = max(0, queueCeiling − unrated)` — the daily-cap term and
+  `todaysSurfacedCount` are gone. Refill now surfaces EVERY on-genre candidate
+  whose keep-similarity clears the refill bar (default = spawn_threshold 0.7),
+  dynamic count, can be >1/bucket (was round-robin top-1), highest refill score
+  first, bounded by the ceiling; a candidate eligible for several buckets is
+  assigned to its best-scoring one. Broad surfaces every candidate whose P(keep)
+  clears the broad bar (default 0.5) that isn't already a refill winner, filling
+  the remaining headroom (source-mix biased). Below-bar tracks get NO
+  `surface_event` — they stay enriched + candidate-flagged (LAB-52 Option A);
+  re-pulls dedupe to the existing row. Constraint #2 preserved: every
+  `surface_event` still logs the FULL candidate pool, so counterfactual replay
+  can re-derive above/below for any bar.
+  Schema (migration `0008_cooing_gabe_jones` adds bars, `0009_true_ultimates`
+  drops the cap): `daily_surface_cap` removed; `refill_quality_bar` (0.7) +
+  `broad_quality_bar` (0.5) added. Wired through the params router, a Console
+  "refill bar" / "broad bar" knob pair (daily-cap knob removed; queue-ceiling
+  knob kept), and the taste profile (Constraint #8). Novelty loses its quota job
+  (kept as a knob for LAB-42 to repurpose).
+  Tests (surfacing suite rewritten; ~20 `dailyCapOverride` call sites across
+  surfacing / evals / feedback migrated to `queueCeilingOverride` + bar
+  overrides; 215 total green): queue-ceiling-bounds, ceiling-shrinks-with-
+  unrated, below-bar-dropped (no event), surface-all-above-bar (dynamic count),
+  and the headline refill->1/bucket.
+- **Decisions locked:**
+  - **Quality bars are live config, NOT version-pinned** (decided with Hans):
+    Constraint #3 governs ranker _scoring_ config; bars gate which already-scored
+    candidates surface, and `candidate_pool` keeps every score so replay is
+    unaffected. No `model_version` bump on bar changes.
+  - **Refill bar = a separate `refill_quality_bar` column defaulting to
+    spawn_threshold's 0.7**, so surface strictness is tunable independently of
+    bucket-spawn aggressiveness.
+  - **Refill priority, broad fills the remainder** under the ceiling (refill =
+    exploit, broad = explore); ordering only matters when the ceiling binds.
+- **Notes for future phases:**
+  - The drizzle drop+add tripped an interactive rename prompt (no TTY in this
+    env) — generated as two migrations (add bars `0008`, then drop cap `0009`)
+    to stay non-interactive. Watch for this whenever a column is replaced.
+  - **LAB-42**: novelty needs a new job — bias the pull mix (explore→trending,
+    exploit→similar) and/or the relative bars; it no longer splits quotas.
+  - The "optional pre-enrichment genre gate" was NOT built — below-bar tracks
+    are still fully enriched. Add a Last.fm-tag genre pre-filter before
+    ReccoBeats/MB/Discogs if enrichment cost on dropped tracks bites.
+  - With LAB-52 + LAB-53, refill anchors only on kept members, so a fresh
+    install with no cold-start seed has nothing to refill until the user keeps —
+    broad carries day one.
+
 ## LAB-52 — Candidate-flag bucketing (join only on approval)
 
 - **Status:** review

@@ -1,4 +1,4 @@
-import { count, eq, inArray, isNull, sql } from "drizzle-orm";
+import { count, eq, inArray, isNull } from "drizzle-orm";
 import type { Database } from "@/db/client";
 import {
   appConfig,
@@ -19,27 +19,32 @@ import { logSurfaceEvents } from "./log";
 /**
  * Surfacing pipeline.
  *
+ * LAB-53 — quality-gated surfacing. Constraint #5 changed from "daily cap +
+ * queue ceiling" to "pull throttle + quality bar + queue ceiling": the per-run
+ * pull size (LAB-51) decides how much to ingest, a per-ranker quality bar
+ * decides what clears, and the queue ceiling is the only hard count bound.
+ *
  * Composition (applied in order):
  *
- *   1. Resolve effective caps. `effectiveCap = min(dailyCap, queueCeiling −
- *      queueDepth)`. Constraint #5: caps live HERE, not in ingestion. The
- *      candidate pool always carries everything ingest pulled.
- *   2. Resolve novelty mix. `novelty ∈ [0,1]` — 1 = pure broad (explore), 0 =
- *      pure refill (exploit). Refill quota = `round(cap · (1 − novelty))`,
- *      broad quota fills the rest. Quotas degrade automatically: if there
- *      are no refillable buckets (no keeps, no buckets) the refill quota
- *      reverts to broad.
- *   3. Refill phase. For each refill slot, pick a target bucket (round-robin
- *      across buckets with members), score every candidate against that
- *      bucket's keeps + global dislikes, surface the top unsurfaced
- *      candidate. Each surfaced winner is logged with the FULL candidate
- *      pool — Constraint #2.
- *   4. Broad phase. Score remaining candidates with the broad classifier.
- *      Take top-N. Same pool-logging contract.
- *   5. Source mix bookkeeping. The `app_config.source_mix` knob biases the
- *      broad-phase winner selection toward a target source ratio. Currently
- *      a soft preference (used as a tie-break and quota nudge); never a
- *      hard filter.
+ *   1. Resolve the queue-ceiling headroom. `effectiveCap = max(0, queueCeiling
+ *      − unratedQueueDepth)`. This is the ONLY count bound — there is no
+ *      per-day budget. The candidate pool always carries everything ingest
+ *      pulled (Constraint #2).
+ *   2. Refill phase. Score every candidate against each refillable bucket's
+ *      keeps + global dislikes. Every on-genre candidate whose keep-similarity
+ *      clears the refill bar (the spawn_threshold family) is a refill winner —
+ *      dynamic count, possibly >1/bucket. Highest refill score first; bounded
+ *      by `effectiveCap` when the ceiling binds. Each winner is logged with the
+ *      FULL candidate pool — Constraint #2.
+ *   3. Broad phase. Score remaining candidates with the broad classifier;
+ *      every candidate whose P(keep) clears the broad bar (default 0.5) and
+ *      isn't already a refill winner fills the remaining ceiling headroom,
+ *      source-mix biased. Same pool-logging contract.
+ *
+ * Below-bar candidates are simply NOT surfaced (no `surface_event`). They stay
+ * enriched + candidate-flagged (LAB-52); a re-pull dedupes to the existing row
+ * and can surface in a future run if it clears the bar then. Novelty no longer
+ * splits quotas (LAB-42 will repurpose it to bias the pull mix / bars).
  *
  * Inputs are explicit: a candidate pool the caller produced (typically by
  * running ingestion). The pipeline does not reach back into ingestion.
@@ -53,8 +58,11 @@ export type SurfacingParams = {
    * and inherit `app_config`.
    */
   noveltyOverride?: number;
-  dailyCapOverride?: number;
   queueCeilingOverride?: number;
+  /** Refill keep-similarity bar (LAB-53). Falls back to app_config.refill_quality_bar. */
+  refillBarOverride?: number;
+  /** Broad classifier-probability bar (LAB-53). Falls back to app_config.broad_quality_bar. */
+  broadBarOverride?: number;
   /** When true, skip writing surface_event rows — useful for previews. Default false. */
   dryRun?: boolean;
 };
@@ -67,10 +75,15 @@ export type SurfacingResult = {
   refillModelVersionId: number;
   broadModelVersionId: number;
   appliedNovelty: number;
+  /** Queue-ceiling headroom = max(0, queueCeiling − unrated). The only count bound. */
   effectiveCap: number;
-  refillQuota: number;
-  broadQuota: number;
-  /** Bucket scopes that were refilled (one entry per refill event). */
+  /** How many above-bar candidates each ranker actually surfaced this run. */
+  refillSurfacedCount: number;
+  broadSurfacedCount: number;
+  /** The applied quality bars (observability). */
+  refillBar: number;
+  broadBar: number;
+  /** Bucket scopes that were refilled (one entry per refilled bucket). */
   refilledBucketIds: number[];
 };
 
@@ -94,36 +107,27 @@ export async function runSurfacingBatch(
 
   const cfg = await loadAppConfig(db);
   const novelty = clamp01(params.noveltyOverride ?? cfg.novelty);
-  const dailyCap = params.dailyCapOverride ?? cfg.dailyCap;
   const queueCeiling = params.queueCeilingOverride ?? cfg.queueCeiling;
+  const refillBar = clamp01(params.refillBarOverride ?? cfg.refillBar);
+  const broadBar = clamp01(params.broadBarOverride ?? cfg.broadBar);
 
+  // LAB-53: the queue ceiling is the ONLY count bound — surfacing fills the
+  // unrated queue up to the ceiling and stops. No per-day budget (that
+  // abstraction was removed); cron/over-runs are bounded by the ceiling alone.
   const queueDepth = await unratedSurfacedCount(db);
-  // dailyCap is a per-day budget, not per-batch — count what's already gone
-  // out today and shrink the remaining cap. Without this, repeated
-  // surfacing runs (cron + manual triggers) compound past `dailyCap`.
-  const todaysCount = await todaysSurfacedCount(db);
-  const remainingDailyCap = Math.max(0, dailyCap - todaysCount);
-  const ceilingSlots = Math.max(0, queueCeiling - queueDepth);
-  const effectiveCap = Math.max(0, Math.min(remainingDailyCap, ceilingSlots));
-
-  // Quota split. Refill ratio = (1 − novelty); rounded so quotas sum to cap.
-  const refillQuotaRaw = Math.round(effectiveCap * (1 - novelty));
-  let refillQuota = Math.min(refillQuotaRaw, effectiveCap);
-  let broadQuota = effectiveCap - refillQuota;
+  const effectiveCap = Math.max(0, queueCeiling - queueDepth);
 
   // Load bucketing context. Buckets with at least one member are refillable.
   const refillableBuckets = await loadRefillableBuckets(db);
   const dislikes = await loadGlobalDislikes(db);
 
-  if (refillableBuckets.length === 0 || candidates.length === 0) {
-    // No refill possible → broad takes all available capacity.
-    broadQuota += refillQuota;
-    refillQuota = 0;
-  }
-
+  // Refill phase: every on-genre candidate whose keep-similarity clears the
+  // refill bar surfaces (dynamic count, possibly >1/bucket), highest refill
+  // score first, bounded by the ceiling headroom.
   const refillResults = await runRefillPhase(db, {
     candidates,
-    quota: refillQuota,
+    refillBar,
+    cap: effectiveCap,
     buckets: refillableBuckets,
     dislikes,
     refillConfig,
@@ -131,22 +135,18 @@ export async function runSurfacingBatch(
     dryRun,
   });
 
-  // Refill can underdeliver — e.g., a target bucket has no embeddable members,
-  // or the round-robin runs out of unique candidates. Roll any unfilled slots
-  // forward into the broad quota so we still surface up to `effectiveCap`.
-  const refillShortfall = Math.max(0, refillQuota - refillResults.surfaced.length);
-  const effectiveBroadQuota = broadQuota + refillShortfall;
-
-  // Broad phase scores ALL candidates (not just leftovers): Constraint #4 —
-  // candidates rejected by refill stay in the broader pool with their broad
-  // score. Soft penalties only.
+  // Broad phase scores ALL candidates (Constraint #4 — refill-rejected
+  // candidates stay in the pool with their broad score). Every candidate that
+  // clears the broad bar and isn't already a refill winner fills the remaining
+  // ceiling headroom, source-mix biased.
+  const remainingHeadroom = Math.max(0, effectiveCap - refillResults.surfaced.length);
   const broadPool = scoreBroadBatch(candidates, broadConfig);
   const alreadySurfacedIds = new Set(refillResults.surfaced.map((s) => s.candidate.trackId));
   const broadEligible = broadPool
-    .filter((s) => !alreadySurfacedIds.has(s.candidate.trackId))
+    .filter((s) => !alreadySurfacedIds.has(s.candidate.trackId) && s.score >= broadBar)
     .sort((a, b) => b.score - a.score || a.candidate.trackId - b.candidate.trackId);
 
-  const broadWinners = pickWithSourceMix(broadEligible, effectiveBroadQuota, cfg.sourceMix);
+  const broadWinners = pickWithSourceMix(broadEligible, remainingHeadroom, cfg.sourceMix);
 
   let broadEvents: SurfaceEvent[] = [];
   if (broadWinners.length > 0 && !dryRun) {
@@ -167,11 +167,10 @@ export async function runSurfacingBatch(
     broadModelVersionId: broadVersion.id,
     appliedNovelty: novelty,
     effectiveCap,
-    refillQuota,
-    // Post-shortfall: matches what broad actually had to fill. The
-    // pre-shortfall planned split is internal — observability + replay
-    // tests want the effective value.
-    broadQuota: effectiveBroadQuota,
+    refillSurfacedCount: refillResults.surfaced.length,
+    broadSurfacedCount: broadWinners.length,
+    refillBar,
+    broadBar,
     refilledBucketIds: refillResults.refilledBucketIds,
   };
 }
@@ -183,7 +182,8 @@ type RefillPhaseInput = {
   // therefore excluded from every genre-having bucket. Satisfied today by
   // `loadCandidates`, which projects `track.primary_genre` onto each Candidate.
   candidates: readonly Candidate[];
-  quota: number;
+  refillBar: number;
+  cap: number;
   buckets: { id: number; primaryGenre: string | null; memberTrackIds: readonly number[] }[];
   dislikes: readonly RatedTrack[];
   refillConfig: RefillConfig;
@@ -200,58 +200,74 @@ type RefillPhaseResult = {
 };
 
 async function runRefillPhase(db: Database, input: RefillPhaseInput): Promise<RefillPhaseResult> {
-  const { candidates, quota, buckets, dislikes, refillConfig, refillVersionId, dryRun } = input;
+  const { candidates, refillBar, cap, buckets, dislikes, refillConfig, refillVersionId, dryRun } =
+    input;
   const surfaced: ScoredCandidate[] = [];
   const events: SurfaceEvent[] = [];
   const refilledBucketIds: number[] = [];
   let lastPool: ScoredCandidate[] = [];
 
-  if (quota === 0 || buckets.length === 0 || candidates.length === 0) {
+  if (cap <= 0 || buckets.length === 0 || candidates.length === 0) {
     return { surfaced, events, refilledBucketIds, lastPool };
   }
 
-  const surfacedIds = new Set<number>();
-  // Round-robin across buckets, one slot per pass; exhausts after `quota` slots.
-  for (let i = 0; i < quota; i++) {
-    const targetBucket = buckets[i % buckets.length];
-    if (!targetBucket) break;
+  // Score every candidate against every refillable bucket. A candidate is a
+  // refill winner for a bucket when its keep-similarity clears the refill bar
+  // (the spawn_threshold family) AND it passes the primary-genre gate (the
+  // LAB-45 JOIN/MERGE rule, null===null matches). Off-genre / below-bar
+  // candidates stay scored in the pool (Constraint #2) but never win. A
+  // candidate eligible for several buckets is assigned to the bucket where its
+  // refill score (keep_sim − λ·dislike_sim) is highest.
+  const bestByTrack = new Map<number, { scored: ScoredCandidate; bucketId: number }>();
+  const poolByBucket = new Map<number, ScoredCandidate[]>();
+
+  for (const targetBucket of buckets) {
     const keepEmbeddings = await loadKeepEmbeddingsForBucket(db, targetBucket.memberTrackIds);
-    if (keepEmbeddings.length === 0) {
-      // Nothing to anchor against — skip; broader caller fills the slot via broad.
-      continue;
-    }
+    if (keepEmbeddings.length === 0) continue;
     const pool = scoreRefillBatch(candidates, keepEmbeddings, dislikes, refillConfig);
+    poolByBucket.set(targetBucket.id, pool);
     lastPool = pool;
-    // HARD primary-genre eligibility gate on the refill WINNER only. Mirrors
-    // the bucket JOIN gate (assign.ts is the canonical rule: same primary
-    // genre, null===null matches) and the MERGE gate. Off-genre candidates
-    // stay scored in `pool` (Constraint #2) but can never win a slot for a
-    // bucket they could never JOIN/MERGE into.
-    const eligible = pool
-      .filter(
-        (s) =>
-          !surfacedIds.has(s.candidate.trackId) &&
-          sameGenreScope(s.candidate.primaryGenre, targetBucket.primaryGenre),
-      )
-      .sort((a, b) => b.score - a.score || a.candidate.trackId - b.candidate.trackId);
-    const winner = eligible[0];
-    // No same-genre candidate for this bucket — advance the round-robin rather
-    // than abandoning the remaining slots/buckets. The refill-shortfall path
-    // rolls any unfilled slots forward into broad.
-    if (!winner) continue;
+    for (const s of pool) {
+      const keepSim = s.subScores.keepSim ?? 0;
+      if (keepSim < refillBar) continue;
+      if (!sameGenreScope(s.candidate.primaryGenre, targetBucket.primaryGenre)) continue;
+      const existing = bestByTrack.get(s.candidate.trackId);
+      if (!existing || s.score > existing.scored.score) {
+        bestByTrack.set(s.candidate.trackId, { scored: s, bucketId: targetBucket.id });
+      }
+    }
+  }
 
-    surfaced.push(winner);
-    surfacedIds.add(winner.candidate.trackId);
-    refilledBucketIds.push(targetBucket.id);
+  // Highest refill score first; the queue ceiling is the only count bound, so
+  // ordering only matters when `cap` binds.
+  const ranked = [...bestByTrack.values()].sort(
+    (a, b) =>
+      b.scored.score - a.scored.score || a.scored.candidate.trackId - b.scored.candidate.trackId,
+  );
+  const chosen = ranked.slice(0, cap);
 
+  // Group winners by bucket so each surface_event carries that bucket's FULL
+  // candidate pool (Constraint #2). `logSurfaceEvents` writes one row per
+  // winner with only that winner flagged surfaced.
+  const winnersByBucket = new Map<number, ScoredCandidate[]>();
+  for (const hit of chosen) {
+    surfaced.push(hit.scored);
+    const list = winnersByBucket.get(hit.bucketId) ?? [];
+    list.push(hit.scored);
+    winnersByBucket.set(hit.bucketId, list);
+  }
+
+  for (const [bucketId, winners] of winnersByBucket) {
+    refilledBucketIds.push(bucketId);
     if (!dryRun) {
+      const pool = poolByBucket.get(bucketId) ?? winners;
       const written = await logSurfaceEvents(db, {
         pool,
-        winners: [winner],
+        winners,
         modelVersionId: refillVersionId,
-        bucketId: targetBucket.id,
+        bucketId,
         surfacedReason: (w) =>
-          `refill bucket ${targetBucket.id}: keep_sim=${w.subScores.keepSim?.toFixed(3) ?? "0.000"}`,
+          `refill bucket ${bucketId}: keep_sim=${w.subScores.keepSim?.toFixed(3) ?? "0.000"}`,
       });
       events.push(...written);
     }
@@ -317,8 +333,9 @@ function pickWithSourceMix(
 type AppConfigSnapshot = {
   novelty: number;
   sourceMix: number;
-  dailyCap: number;
   queueCeiling: number;
+  refillBar: number;
+  broadBar: number;
 };
 
 async function loadAppConfig(db: Database): Promise<AppConfigSnapshot> {
@@ -326,16 +343,18 @@ async function loadAppConfig(db: Database): Promise<AppConfigSnapshot> {
     .select({
       novelty: appConfig.novelty,
       sourceMix: appConfig.sourceMix,
-      dailyCap: appConfig.dailySurfaceCap,
       queueCeiling: appConfig.queueCeiling,
+      refillBar: appConfig.refillQualityBar,
+      broadBar: appConfig.broadQualityBar,
     })
     .from(appConfig)
     .limit(1);
   return {
     novelty: row?.novelty ?? 0.5,
     sourceMix: row?.sourceMix ?? 0.5,
-    dailyCap: row?.dailyCap ?? 15,
     queueCeiling: row?.queueCeiling ?? 50,
+    refillBar: row?.refillBar ?? 0.7,
+    broadBar: row?.broadBar ?? 0.5,
   };
 }
 
@@ -349,20 +368,6 @@ async function unratedSurfacedCount(db: Database): Promise<number> {
     .from(surfaceEvent)
     .leftJoin(rating, eq(rating.surfaceEventId, surfaceEvent.id))
     .where(isNull(rating.id));
-  return Number(row?.n ?? 0);
-}
-
-/**
- * Count of surface_event rows since the start of today (server timezone).
- * Drives `remainingDailyCap` so the per-day budget holds across multiple
- * runs in a single day. Uses the `surface_event_surfaced_at_idx` for a
- * range scan.
- */
-async function todaysSurfacedCount(db: Database): Promise<number> {
-  const [row] = await db
-    .select({ n: count() })
-    .from(surfaceEvent)
-    .where(sql`${surfaceEvent.surfacedAt} >= DATE_TRUNC('day', NOW())`);
   return Number(row?.n ?? 0);
 }
 

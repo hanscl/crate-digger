@@ -139,13 +139,12 @@ describe("runSurfacingBatch — Constraint #2 (full candidate pool persistence)"
     const result = await runSurfacingBatch(db, {
       candidates,
       noveltyOverride: 1, // pure broad, deterministic
-      dailyCapOverride: 2,
-      queueCeilingOverride: 50,
+      queueCeilingOverride: 2,
     });
 
     expect(result.events).toHaveLength(2);
-    expect(result.refillQuota).toBe(0);
-    expect(result.broadQuota).toBe(2);
+    expect(result.refillSurfacedCount).toBe(0);
+    expect(result.broadSurfacedCount).toBe(2);
 
     const persisted = await db.select().from(schema.surfaceEvent);
     expect(persisted).toHaveLength(2);
@@ -185,7 +184,7 @@ describe("runSurfacingBatch — Constraint #2 (full candidate pool persistence)"
     await runSurfacingBatch(db, {
       candidates,
       noveltyOverride: 1,
-      dailyCapOverride: 2,
+      queueCeilingOverride: 2,
     });
 
     const events = await db.select().from(schema.surfaceEvent);
@@ -241,10 +240,11 @@ describe("runSurfacingBatch — Constraint #2 (full candidate pool persistence)"
     const result = await runSurfacingBatch(db, {
       candidates,
       noveltyOverride: 0,
-      dailyCapOverride: 1,
+      refillBarOverride: 0,
+      queueCeilingOverride: 1,
     });
-    expect(result.refillQuota).toBe(1);
-    expect(result.broadQuota).toBe(0);
+    expect(result.refillSurfacedCount).toBe(1);
+    expect(result.broadSurfacedCount).toBe(0);
     expect(result.events).toHaveLength(1);
 
     const events = await db.select().from(schema.surfaceEvent);
@@ -270,7 +270,7 @@ describe("runSurfacingBatch — Constraint #2 (full candidate pool persistence)"
     const result = await runSurfacingBatch(db, {
       candidates,
       noveltyOverride: 1,
-      dailyCapOverride: 2,
+      queueCeilingOverride: 2,
     });
 
     const events = await db.select().from(schema.surfaceEvent);
@@ -286,11 +286,11 @@ describe("runSurfacingBatch — Constraint #2 (full candidate pool persistence)"
   });
 });
 
-describe("runSurfacingBatch — caps live in surfacing, not ingestion (Constraint #5)", () => {
-  it("daily cap trims surfaced count even when the candidate pool is huge", async () => {
-    // 30 candidates, dailyCap=3. Surfacing must surface only 3 events; the
-    // candidate_pool in each must still hold all 30 entries (ingestion is
-    // not the cap layer).
+describe("runSurfacingBatch — quality-gated surfacing (LAB-53: quality bar + queue ceiling)", () => {
+  it("the queue ceiling bounds surfaced count even when the candidate pool is huge", async () => {
+    // 30 candidates, queueCeiling=3. Surfacing emits only 3 events; each
+    // candidate_pool must still hold all 30 entries (ingestion is not the cap
+    // layer — Constraint #2).
     const tracks = [];
     for (let i = 0; i < 30; i++) {
       tracks.push(
@@ -305,9 +305,8 @@ describe("runSurfacingBatch — caps live in surfacing, not ingestion (Constrain
 
     const result = await runSurfacingBatch(db, {
       candidates,
-      noveltyOverride: 1,
-      dailyCapOverride: 3,
-      queueCeilingOverride: 50,
+      noveltyOverride: 1, // pure broad; cold-start prior 0.5 clears the 0.5 broad bar
+      queueCeilingOverride: 3,
     });
 
     expect(result.events).toHaveLength(3);
@@ -318,9 +317,9 @@ describe("runSurfacingBatch — caps live in surfacing, not ingestion (Constrain
     }
   });
 
-  it("queue ceiling further trims when the unrated queue is already deep", async () => {
-    // Pre-populate 4 unrated surface events; queue ceiling = 5, daily cap = 10.
-    // Effective cap = min(10, 5 − 4) = 1. So a fresh batch surfaces only 1.
+  it("queue ceiling is the only count bound — effectiveCap shrinks as the unrated queue deepens", async () => {
+    // Pre-populate 4 unrated surface events; queue ceiling = 5.
+    // effectiveCap = queueCeiling − unrated = 5 − 4 = 1 → a fresh batch surfaces 1.
     const seed = await insertTrack({
       title: "Already-surfaced anchor",
       audioFeatures: audio(),
@@ -330,7 +329,7 @@ describe("runSurfacingBatch — caps live in surfacing, not ingestion (Constrain
     await runSurfacingBatch(db, {
       candidates: [seedCandidate],
       noveltyOverride: 1,
-      dailyCapOverride: 1,
+      queueCeilingOverride: 1,
     });
     // Manually pad the queue to 4 unrated surface_events with the same model
     // version, by inserting bare rows referencing the bootstrapped version.
@@ -367,7 +366,6 @@ describe("runSurfacingBatch — caps live in surfacing, not ingestion (Constrain
     const result = await runSurfacingBatch(db, {
       candidates,
       noveltyOverride: 1,
-      dailyCapOverride: 10,
       queueCeilingOverride: 5,
     });
     expect(result.effectiveCap).toBe(1);
@@ -378,79 +376,95 @@ describe("runSurfacingBatch — caps live in surfacing, not ingestion (Constrain
     const result = await runSurfacingBatch(db, {
       candidates: [],
       noveltyOverride: 1,
-      dailyCapOverride: 5,
+      queueCeilingOverride: 5,
     });
     expect(result.events).toHaveLength(0);
     expect(result.surfaced).toHaveLength(0);
   });
 
-  it("daily cap is per-day, not per-batch — second run in the same day sees a shrunken remaining cap", async () => {
-    // Two batches in one day, each with dailyCap=2. Without per-day
-    // accounting, this would surface 4. With it, the second batch sees
-    // remainingDailyCap=0 and emits nothing, even though queueCeiling has
-    // headroom.
+  it("drops below-bar candidates entirely — a bar above the cold-start prior surfaces nothing", async () => {
+    // LAB-53 quality bar: a broad score must clear broadBar to surface. The
+    // cold-start broad prior is 0.5; a bar of 0.9 drops everything. Dropped
+    // tracks get NO surface_event (they stay enriched + candidate-flagged).
     const tracks = [];
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 3; i++) {
+      tracks.push(await insertTrack({ title: `T${i}`, audioFeatures: audio(), genres: ["rock"] }));
+    }
+    const candidates = await Promise.all(tracks.map(asCandidate));
+
+    const result = await runSurfacingBatch(db, {
+      candidates,
+      noveltyOverride: 1,
+      broadBarOverride: 0.9,
+      queueCeilingOverride: 50,
+    });
+    expect(result.surfaced).toHaveLength(0);
+    expect(result.events).toHaveLength(0);
+    expect(await db.select().from(schema.surfaceEvent)).toHaveLength(0);
+  });
+
+  it("surfaces every above-bar candidate up to the ceiling (dynamic count, not a fixed quota)", async () => {
+    // 4 candidates all clear a 0.5 broad bar (the cold-start prior); the ceiling
+    // (50) doesn't bind → all 4 surface. The count is driven by the bar, not a
+    // pre-allocated quota.
+    const tracks = [];
+    for (let i = 0; i < 4; i++) {
       tracks.push(
         await insertTrack({
           title: `T${i}`,
-          audioFeatures: audio({ energy: (i % 6) / 6 }),
+          audioFeatures: audio({ energy: 0.2 + i * 0.1 }),
           genres: ["rock"],
         }),
       );
     }
     const candidates = await Promise.all(tracks.map(asCandidate));
 
-    const first = await runSurfacingBatch(db, {
-      candidates: candidates.slice(0, 3),
+    const result = await runSurfacingBatch(db, {
+      candidates,
       noveltyOverride: 1,
-      dailyCapOverride: 2,
+      broadBarOverride: 0.5,
       queueCeilingOverride: 50,
     });
-    expect(first.events).toHaveLength(2);
-
-    const second = await runSurfacingBatch(db, {
-      candidates: candidates.slice(3),
-      noveltyOverride: 1,
-      dailyCapOverride: 2,
-      queueCeilingOverride: 50,
-    });
-    expect(second.effectiveCap).toBe(0);
-    expect(second.events).toHaveLength(0);
+    expect(result.surfaced).toHaveLength(4);
+    expect(result.events).toHaveLength(4);
+    expect(result.broadSurfacedCount).toBe(4);
   });
 
-  it("broadQuota in the result reflects the post-shortfall effective quota, not the pre-shortfall plan", async () => {
-    // Pure-refill (novelty=0) with effectiveCap=3 but only one unique
-    // candidate against one bucket: refill exhausts after 1 surfaced and
-    // reclaims the remaining 2 slots into broad. The returned `broadQuota`
-    // must be the effective post-shortfall value (2), not the pre-shortfall
-    // plan (0). Observability + replay tooling reads this field.
+  it("refill surfaces EVERY above-bar candidate for a bucket (>1/bucket), not a round-robin top-1", async () => {
+    // LAB-53 headline: refill is no longer top-1-per-bucket. Three on-genre
+    // candidates that clear the refill bar all surface against the one bucket.
     const seed = await insertTrack({
       title: "Anchor",
-      audioFeatures: audio({ tempo: 125, energy: 0.6 }),
+      audioFeatures: audio({ tempo: 130, energy: 0.7 }),
       genres: ["rock"],
     });
-    await assignTrack(db, seed.id, { spawnThreshold: 0.7 });
+    const seedAssign = await assignTrack(db, seed.id, { spawnThreshold: 0.7 });
 
-    const c = await insertTrack({
-      title: "Solo-cand",
-      audioFeatures: audio({ tempo: 124, energy: 0.59 }),
-      genres: ["rock"],
-    });
-    const candidates = await Promise.all([c].map(asCandidate));
+    const candTracks = [];
+    for (let i = 0; i < 3; i++) {
+      candTracks.push(
+        await insertTrack({
+          title: `Cand-${i}`,
+          audioFeatures: audio({ tempo: 129 + i, energy: 0.68 }),
+          genres: ["rock"],
+        }),
+      );
+    }
+    const candidates = await Promise.all(candTracks.map(asCandidate));
 
     const result = await runSurfacingBatch(db, {
       candidates,
       noveltyOverride: 0,
-      dailyCapOverride: 3,
+      refillBarOverride: 0, // every on-genre candidate clears the bar
+      broadBarOverride: 1, // broad never fills
       queueCeilingOverride: 50,
     });
-    expect(result.refillQuota).toBe(3);
-    // Refill could only fill 1; the remaining 2 slots roll into broad.
-    expect(result.broadQuota).toBe(2);
-    // No more candidates remain for broad, so total surfaced stays at 1 —
-    // but the quota field still reports the rolled-forward capacity.
-    expect(result.surfaced).toHaveLength(1);
+    expect(result.surfaced).toHaveLength(3);
+    for (const s of result.surfaced) expect(s.rankerKind).toBe("refill");
+    expect(result.refillSurfacedCount).toBe(3);
+    const events = await db.select().from(schema.surfaceEvent);
+    expect(events).toHaveLength(3);
+    for (const e of events) expect(e.bucketId).toBe(seedAssign.bucketId);
   });
 });
 
@@ -498,7 +512,8 @@ describe("runSurfacingBatch — soft penalties only (Constraint #4)", () => {
     const result = await runSurfacingBatch(db, {
       candidates,
       noveltyOverride: 0, // pure refill, deterministic
-      dailyCapOverride: 1,
+      refillBarOverride: 0,
+      queueCeilingOverride: 1,
     });
     expect(result.events).toHaveLength(1);
     const event = (await db.select().from(schema.surfaceEvent))[0]!;
@@ -579,7 +594,8 @@ describe("runSurfacingBatch — refill primary-genre winner-eligibility gate (LA
     const result = await runSurfacingBatch(db, {
       candidates,
       noveltyOverride: 0, // pure refill
-      dailyCapOverride: 1,
+      refillBarOverride: 0,
+      queueCeilingOverride: 1,
     });
 
     expect(result.events).toHaveLength(1);
@@ -638,7 +654,8 @@ describe("runSurfacingBatch — refill primary-genre winner-eligibility gate (LA
     const result = await runSurfacingBatch(db, {
       candidates,
       noveltyOverride: 0,
-      dailyCapOverride: 1,
+      refillBarOverride: 0,
+      queueCeilingOverride: 1,
     });
 
     expect(result.events).toHaveLength(1);
@@ -702,7 +719,7 @@ describe("ensureActiveModelVersion + bumpModelVersion", () => {
     await runSurfacingBatch(db, {
       candidates,
       noveltyOverride: 1,
-      dailyCapOverride: 1,
+      queueCeilingOverride: 1,
     });
     const eventV1 = (await db.select().from(schema.surfaceEvent))[0]!;
 
@@ -763,7 +780,8 @@ describe("counterfactual replay determinism", () => {
     await runSurfacingBatch(db, {
       candidates,
       noveltyOverride: 0,
-      dailyCapOverride: 1,
+      refillBarOverride: 0,
+      queueCeilingOverride: 1,
     });
 
     const event = (await db.select().from(schema.surfaceEvent))[0]!;

@@ -48,8 +48,10 @@ export const TASTE_RATING_SCHEMA = z.object({
 export const TASTE_CONFIG_SCHEMA = z.object({
   novelty: z.number().min(0).max(1),
   sourceMix: z.number().min(0).max(1),
-  dailySurfaceCap: z.number().int().nonnegative(),
   queueCeiling: z.number().int().nonnegative(),
+  // LAB-53 — per-ranker quality bars travel with the taste profile.
+  refillQualityBar: z.number().min(0).max(1),
+  broadQualityBar: z.number().min(0).max(1),
   spawnThreshold: z.number().min(0).max(1),
   refillLambda: z.number().min(0),
   mergeThreshold: z.number().min(0).max(1),
