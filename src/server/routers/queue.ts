@@ -31,6 +31,7 @@ export const queueRouter = router({
         primaryGenre: track.primaryGenre,
         audioFeatures: track.audioFeatures,
         durationMs: track.durationMs,
+        spotifyId: track.spotifyId,
         rankerKind: surfaceEvent.rankerKind,
         winnerScore: surfaceEvent.winnerScore,
         bucketId: surfaceEvent.bucketId,
@@ -70,6 +71,7 @@ export const queueRouter = router({
         primaryGenre: row.primaryGenre,
         audioFeatures: row.audioFeatures,
         durationMs: row.durationMs,
+        spotifyId: row.spotifyId,
       },
       ranker: {
         kind: row.rankerKind,

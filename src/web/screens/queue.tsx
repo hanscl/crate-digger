@@ -6,6 +6,7 @@ import { AlbumArt } from "../components/primitives/album-art";
 import { FeatureBar } from "../components/primitives/feature-bar";
 import { Radar } from "../components/primitives/radar";
 import { Scope } from "../components/primitives/scope";
+import { spotifyEmbedUrl, spotifySearchUrl } from "./queue-urls";
 
 type QueueNext = NonNullable<RouterOutputs["queue"]["next"]>;
 type QueueRecent = RouterOutputs["queue"]["recent"];
@@ -177,6 +178,28 @@ function CurrentTrack({
           <div className="text-ink-2 text-sm italic mb-6">
             {why ?? ranker.surfacedReason ?? "explaining…"}
           </div>
+
+          {track.spotifyId ? (
+            <iframe
+              title="Spotify preview"
+              src={spotifyEmbedUrl(track.spotifyId)}
+              width="100%"
+              height={80}
+              loading="lazy"
+              allow="encrypted-media"
+              className="mb-6 rounded"
+              style={{ border: 0 }}
+            />
+          ) : (
+            <a
+              href={spotifySearchUrl(track.artist, track.title)}
+              target="_blank"
+              rel="noreferrer"
+              className="text-accent underline text-sm inline-block mb-6"
+            >
+              search on Spotify ↗
+            </a>
+          )}
 
           <div className="flex gap-3">
             <button
