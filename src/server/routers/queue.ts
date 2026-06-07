@@ -39,6 +39,8 @@ export const queueRouter = router({
         surfacedAt: surfaceEvent.surfacedAt,
         modelVersionId: surfaceEvent.modelVersionId,
         candidatePool: surfaceEvent.candidatePool,
+        candidateBucketId: track.candidateBucketId,
+        candidateScore: track.candidateScore,
       })
       .from(surfaceEvent)
       .innerJoin(track, eq(track.id, surfaceEvent.trackId))
@@ -58,6 +60,23 @@ export const queueRouter = router({
         .limit(1);
       bucketName = b?.name ?? null;
       bucketColor = b?.color ?? null;
+    }
+
+    // LAB-52 — the candidate bucket this track would JOIN on a keep (it is not
+    // a member yet). Shown in the Queue so the user sees where a keep lands it.
+    let pending: { bucketId: number; bucketName: string | null; score: number | null } | null =
+      null;
+    if (row.candidateBucketId !== null) {
+      const [cb] = await ctx.db
+        .select({ name: bucket.name })
+        .from(bucket)
+        .where(eq(bucket.id, row.candidateBucketId))
+        .limit(1);
+      pending = {
+        bucketId: row.candidateBucketId,
+        bucketName: cb?.name ?? null,
+        score: row.candidateScore,
+      };
     }
 
     const winner = row.candidatePool.find((entry) => entry.surfaced);
@@ -85,6 +104,7 @@ export const queueRouter = router({
         poolSize: row.candidatePool.length,
         surfacedAt: row.surfacedAt,
       },
+      pending,
     };
   }),
 
@@ -153,6 +173,7 @@ export const queueRouter = router({
         ratingId: result.rating.id,
         decision: result.rating.decision,
         bucketDislikeIncremented: result.bucketDislikeIncremented,
+        committedBucketId: result.committedBucketId,
       };
     }),
 
@@ -182,7 +203,7 @@ export const queueRouter = router({
         trackId: input.trackId,
         decision: input.decision,
       });
-      return { ratingId: result.rating.id };
+      return { ratingId: result.rating.id, committedBucketId: result.committedBucketId };
     }),
 
   /**

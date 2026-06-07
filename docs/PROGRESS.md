@@ -2,6 +2,55 @@
 
 Phase tracker. Update at the end of every phase. Newest at the top.
 
+## LAB-52 — Candidate-flag bucketing (join only on approval)
+
+- **Status:** review
+- **Branch:** `lab-52-tracks-auto-join-buckets-before-review-flag-the-candidate`
+- **PR:** _pending_ (stacked on LAB-51; LAB-53 stacks on this)
+- **Scope landed:** The daily pipeline used to bucket every ingested track
+  immediately — `bucketAndName` → `assignTrack` added each discovery track as a
+  `bucket_member` AND moved the centroid before the user ever saw it (~120
+  unreviewed tracks/run silently joined buckets and shifted centroids).
+  Now discovery only **flags** a candidate: `bucketAndName` calls the new
+  `flagCandidateBucket`, which computes + persists the track's
+  embedding/primary_genre, runs the same LAB-45 primary-genre gate +
+  nearest-centroid decision, and writes `track.candidate_bucket_id` /
+  `candidate_score` (migration `0007_pale_whistler`) — **no `bucket_member`, no
+  centroid move**. A NULL `candidate_bucket_id` = "would spawn a new bucket on
+  keep."
+  A track actually joins on **approval**: `ingestRating` gains a `keep` branch
+  that calls `commitAssignmentInTx` (the eager spawn-or-join body, extracted and
+  re-derived fresh inside the rating tx) to add the member, update the centroid,
+  and clear the candidate flag. Re-derivation handles the would-spawn case and
+  any bucket created since the flag; idempotent for already-member tracks; defer
+  / dislike never commit. `assignTrack` (cold-start seeding) is unchanged — Setup
+  still buckets eagerly; only daily discovery goes through review.
+  The Queue surfaces the pending target: `queue.next` returns
+  `pending { bucketId, bucketName, score }` and the card renders a
+  "→ &lt;bucket&gt; &lt;score&gt;" chip ("joins this bucket if you keep it — not
+  a member yet"). `bucketAndName`'s summary reshaped (candidateFlaggedCount /
+  wouldSpawnCount / alreadyAssignedCount) through the workflow accumulator.
+  Tests (4 new, 214 total green): flagging never creates a bucket/member
+  (would-spawn) and flags the would-join target without joining; a keep commits
+  - advances member_count + clears the flag; a defer leaves it pending. Step-by-
+    step pipeline test updated to assert flag-only (zero buckets at ingest);
+    bucket-seeding helpers switched to eager `assignTrack`.
+- **Decisions locked:**
+  - **Candidate stored as two nullable columns on `track`** (candidate_bucket_id
+    - candidate_score), not a side table — matches how primaryGenre/embedding
+      already live on track; one candidate per track is all the spec needs.
+  - **Re-derive on keep**, not trust the stored candidate id — correctly handles
+    the would-spawn case and same-genre buckets created since ingest.
+  - **Approval = keep rating** (implicit); cold-start seeding stays eager.
+- **Notes for future phases:**
+  - LAB-53 (stacked next) reuses this exactly: below-bar dropped tracks stay
+    enriched + candidate-flagged but unbucketed (its Option A).
+  - Buckets screen does not yet show a per-bucket "pending candidates" list — the
+    Queue chip is the primary review affordance; a Buckets pending view is a
+    clean follow-up (needs a `buckets.detail`/`list` candidate count).
+  - `loadKeepEmbeddingsForBucket`'s "scope to explicit keeps" TODO is now moot —
+    every member is a keep.
+
 ## LAB-51 — Config-driven pull throttle (cut the ~125-track flood)
 
 - **Status:** review
