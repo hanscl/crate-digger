@@ -1,4 +1,4 @@
-import { count, eq, inArray, isNull } from "drizzle-orm";
+import { and, count, eq, inArray, isNull } from "drizzle-orm";
 import type { Database } from "@/db/client";
 import {
   appConfig,
@@ -26,17 +26,24 @@ import { logSurfaceEvents } from "./log";
  *
  * Composition (applied in order):
  *
- *   1. Resolve the queue-ceiling headroom. `effectiveCap = max(0, queueCeiling
+ *   1. Eligibility gate (LAB-60). Drop candidates the user already decided
+ *      (any keep/dislike rating, ever) and candidates already sitting unrated
+ *      in the queue (a surface_event with no rating row). Re-pulls
+ *      legitimately revisit tracks near bucket centroids; without this gate
+ *      they would re-queue settled tracks or duplicate queue cards. Decision
+ *      dedupe, not a taste penalty (Constraint #4 untouched); defer/neutral-
+ *      only tracks stay eligible.
+ *   2. Resolve the queue-ceiling headroom. `effectiveCap = max(0, queueCeiling
  *      − unratedQueueDepth)`. This is the ONLY count bound — there is no
  *      per-day budget. The candidate pool always carries everything ingest
- *      pulled (Constraint #2).
- *   2. Refill phase. Score every candidate against each refillable bucket's
+ *      pulled that is still undecided (Constraint #2, amended LAB-60).
+ *   3. Refill phase. Score every candidate against each refillable bucket's
  *      keeps + global dislikes. Every on-genre candidate whose keep-similarity
  *      clears the refill bar (the spawn_threshold family) is a refill winner —
  *      dynamic count, possibly >1/bucket. Highest refill score first; bounded
  *      by `effectiveCap` when the ceiling binds. Each winner is logged with the
  *      FULL candidate pool — Constraint #2.
- *   3. Broad phase. Score remaining candidates with the broad classifier;
+ *   4. Broad phase. Score remaining candidates with the broad classifier;
  *      every candidate whose P(keep) clears the broad bar (default 0.5) and
  *      isn't already a refill winner fills the remaining ceiling headroom,
  *      source-mix biased. Same pool-logging contract.
@@ -85,13 +92,33 @@ export type SurfacingResult = {
   broadBar: number;
   /** Bucket scopes that were refilled (one entry per refilled bucket). */
   refilledBucketIds: number[];
+  /** LAB-60 — candidates dropped at entry: the user already keep/dislike-decided them. */
+  excludedDecidedCount: number;
+  /** LAB-60 — candidates dropped at entry: an unrated surface_event already queues them. */
+  excludedPendingCount: number;
 };
 
 export async function runSurfacingBatch(
   db: Database,
   params: SurfacingParams,
 ): Promise<SurfacingResult> {
-  const { candidates, dryRun = false } = params;
+  const { dryRun = false } = params;
+
+  // LAB-60 — eligibility gate, applied before ANY scoring so the refill pool,
+  // broad pool, candidate_pool logging, quality bars, and dryRun previews all
+  // see only the eligible set.
+  const ineligible = await loadIneligibleTrackIds(
+    db,
+    params.candidates.map((c) => c.trackId),
+  );
+  const candidates: Candidate[] = [];
+  let excludedDecidedCount = 0;
+  let excludedPendingCount = 0;
+  for (const c of params.candidates) {
+    if (ineligible.decided.has(c.trackId)) excludedDecidedCount += 1;
+    else if (ineligible.pending.has(c.trackId)) excludedPendingCount += 1;
+    else candidates.push(c);
+  }
 
   // Bootstrap: every surfacing run guarantees both rankers have an active
   // model_version row, so ratings collected against this run can attribute
@@ -172,6 +199,8 @@ export async function runSurfacingBatch(
     refillBar,
     broadBar,
     refilledBucketIds: refillResults.refilledBucketIds,
+    excludedDecidedCount,
+    excludedPendingCount,
   };
 }
 
@@ -391,6 +420,44 @@ async function loadRefillableBuckets(
   return [...grouped.entries()]
     .map(([id, v]) => ({ id, primaryGenre: v.primaryGenre, memberTrackIds: v.memberTrackIds }))
     .sort((a, b) => a.id - b.id);
+}
+
+/**
+ * LAB-60 — surfacing-entry eligibility gate. A candidate is ineligible when:
+ *
+ *   - `decided`: it carries ANY keep/dislike rating, ever — regardless of the
+ *     rating's model_version or a later defer. The user already decided this
+ *     track; re-surfacing would re-queue it as a fresh card.
+ *   - `pending`: it already has an unrated surface_event — it IS a queue card
+ *     right now; surfacing it again would duplicate the card.
+ *
+ * This is an eligibility gate (a decision dedupe), NOT a taste penalty —
+ * Constraint #4 is untouched: dislikes keep downweighting OTHER candidates
+ * via the refill dislike term, never excluding them. Tracks whose only
+ * ratings are defer/neutral stay eligible — defer means "later", so they
+ * re-surface on subsequent runs.
+ */
+async function loadIneligibleTrackIds(
+  db: Database,
+  candidateTrackIds: readonly number[],
+): Promise<{ decided: Set<number>; pending: Set<number> }> {
+  if (candidateTrackIds.length === 0) {
+    return { decided: new Set(), pending: new Set() };
+  }
+  const ids = candidateTrackIds as number[];
+  const decidedRows = await db
+    .selectDistinct({ trackId: rating.trackId })
+    .from(rating)
+    .where(and(inArray(rating.trackId, ids), inArray(rating.decision, ["keep", "dislike"])));
+  const pendingRows = await db
+    .selectDistinct({ trackId: surfaceEvent.trackId })
+    .from(surfaceEvent)
+    .leftJoin(rating, eq(rating.surfaceEventId, surfaceEvent.id))
+    .where(and(inArray(surfaceEvent.trackId, ids), isNull(rating.id)));
+  return {
+    decided: new Set(decidedRows.map((r) => r.trackId)),
+    pending: new Set(pendingRows.map((r) => r.trackId)),
+  };
 }
 
 async function loadGlobalDislikes(db: Database): Promise<RatedTrack[]> {

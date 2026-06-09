@@ -2,6 +2,52 @@
 
 Phase tracker. Update at the end of every phase. Newest at the top.
 
+## LAB-60 — Surfacing eligibility gate (no re-queue of decided tracks)
+
+- **Status:** review
+- **Branch:** `lab-60-surfacing-re-queues-already-rated-tracks-no-rated-track`
+- **PR:** _pending_
+- **Scope landed:** A track rated on a prior run could reappear in the Rating
+  Queue as a fresh unrated card — LAB-39's similar pull legitimately re-pulls
+  tracks near bucket centroids, and nothing excluded already-rated ones.
+  `runSurfacingBatch` (`src/lib/surfacing/pipeline.ts`) now applies an
+  **eligibility gate at entry**, before ANY scoring, so every caller is covered
+  and the refill pool, broad pool, `candidate_pool` logging, quality bars, and
+  dryRun previews all see only the eligible set. Defer/neutral-only tracks stay
+  eligible — defer means "later", and re-surfaces (pinned by test). The gate is
+  a decision dedupe, NOT a taste penalty — Constraint #4 untouched (dislikes
+  still only downweight other candidates). Constraint #2's pool definition
+  amended: the candidate pool carries everything ingest pulled **that is still
+  undecided** (one-line LAB-60 amendments to the Constraint #5 prose in
+  CLAUDE.md + docs/PLAN.md). Observability: `excludedDecidedCount` +
+  `excludedPendingCount` on `SurfacingResult` → `SurfaceSummary` →
+  daily-pipeline workflow output, so the Console payload carries them.
+  Tests: new LAB-60 describe block in `tests/surfacing/pipeline.test.ts`
+  (disliked not re-surfaced + absent from pool; kept bucket member doesn't
+  re-surface into its own bucket under pure refill via the LAB-52 ingestRating
+  commit path; deferred re-surfaces with a second event; pending-unrated dedupe
+  keeps queue depth at 1; mixed-pool integrity; defer+dislike rule pin) plus a
+  rate-then-re-surface integration assertion in the daily-pipeline smoke.
+  Two exclusion categories (new `loadIneligibleTrackIds`, two index-backed
+  queries):
+  - **decided** — any keep/dislike rating, ever, regardless of model_version or
+    a later defer. Ratings without a surface event (manual/import paths) count
+    too: they are decisions.
+  - **pending** — an unrated `surface_event` already queues the track; surfacing
+    it again would create a duplicate queue card (verified unguarded gap, fixed
+    alongside the ticket's decided-track case).
+- **Decisions locked:**
+  - **No `model_version` bump** — the gate changes pool _eligibility_, not
+    scoring config; follows the LAB-53 ("bars are live config, no bump") and
+    LAB-51 precedent. Replay is unaffected: every logged pool entry still
+    carries its score.
+  - **Exclude on keep/dislike only** (ticket text): neutral-only tracks remain
+    eligible to re-surface — flagged as an open product question.
+- **Notes for future phases:**
+  - The dedupe is per-track, not per-(track, bucket): a track kept into bucket A
+    never re-surfaces for bucket B either. Revisit only if cross-bucket
+    re-surfacing ever becomes a feature.
+
 ## LAB-53 — Quality-gated surfacing (drop the daily cap)
 
 - **Status:** review

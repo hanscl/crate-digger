@@ -445,6 +445,8 @@ guard catches refactors that accidentally violate documented constraints.
   (Constraint #5, amended LAB-53): ingestion captures all candidates; surfacing emits every
   candidate that clears its ranker's quality bar, bounded only by the queue ceiling
   (`max(0, queueCeiling − unrated)`). The per-run pull size (LAB-51) is the throttle.
+  Keep/dislike-decided and pending-unrated tracks are excluded at surfacing entry (amended
+  LAB-60); defer re-surfaces.
 - **Enrichment idempotency** (Phase 2): running enrichment twice on the same input produces
   identical `Track` records and does not duplicate.
 - **Ratings tag the surface-time `model_version`** (Constraint #3 — Phase 5): not the version
