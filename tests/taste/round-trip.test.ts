@@ -115,9 +115,9 @@ describe("taste profile export/import (Constraint #8)", () => {
       genres: ["jazz"],
     });
 
-    await assignTrack(db, a, { spawnThreshold: 0.7 });
-    await assignTrack(db, b, { spawnThreshold: 0.7 });
-    await assignTrack(db, c, { spawnThreshold: 0.7 });
+    await assignTrack(db, a, { origin: "seed_track", spawnThreshold: 0.7 });
+    await assignTrack(db, b, { origin: "seed_track", spawnThreshold: 0.7 });
+    await assignTrack(db, c, { origin: "seed_track", spawnThreshold: 0.7 });
 
     // Rename the indie-rock bucket so the export carries non-default name/color.
     const bucketsBefore = await db.select().from(schema.bucket).orderBy(schema.bucket.id);
@@ -254,5 +254,96 @@ describe("taste profile export/import (Constraint #8)", () => {
     expect(cfg?.queueCeiling).toBe(42); // provided field applied
     expect(cfg?.refillQualityBar).toBe(0.7); // DB default
     expect(cfg?.broadQualityBar).toBe(0.5); // DB default
+  });
+});
+
+describe("taste profile — LAB-61 membership origin round-trip", () => {
+  it("origin survives export → wipe → import", async () => {
+    // One playlist-seeded member plus one discovery keep (the keep joins the
+    // seed's bucket through the ingestRating approval path).
+    const seed = await insertTrack({
+      title: "Playlist seed",
+      artist: "Artist A",
+      isrc: "USABC0000001",
+      audioFeatures: audio({ tempo: 130 }),
+      genres: ["rock"],
+    });
+    await assignTrack(db, seed, {
+      origin: "seed_playlist",
+      spawnThreshold: 0.7,
+      coldStartSeed: true,
+    });
+    const found = await insertTrack({
+      title: "Discovery keep",
+      artist: "Artist B",
+      isrc: "USABC0000002",
+      audioFeatures: audio({ tempo: 131 }),
+      genres: ["rock"],
+    });
+    await ingestRating(db, { trackId: found, decision: "keep" });
+
+    const exportPayload = await exportTaste(db);
+    const members = exportPayload.buckets.flatMap((b) => b.members);
+    expect(members.find((m) => m.isrc === "USABC0000001")?.origin).toBe("seed_playlist");
+    expect(members.find((m) => m.isrc === "USABC0000002")?.origin).toBe("discovery_keep");
+
+    const wire = JSON.parse(JSON.stringify(exportPayload));
+    await wipe();
+    await importTaste(db, wire);
+
+    const reMembers = await db
+      .select({ isrc: schema.track.isrc, origin: schema.bucketMember.origin })
+      .from(schema.bucketMember)
+      .innerJoin(schema.track, sql`${schema.track.id} = ${schema.bucketMember.trackId}`);
+    expect(reMembers).toHaveLength(2);
+    const byIsrc = new Map(reMembers.map((m) => [m.isrc, m.origin]));
+    expect(byIsrc.get("USABC0000001")).toBe("seed_playlist");
+    expect(byIsrc.get("USABC0000002")).toBe("discovery_keep");
+  });
+
+  it("imports a pre-LAB-61 export without member origins via the keep-inference fallback", async () => {
+    // Backward-compat (LAB-61): members lacking `origin` import as
+    // 'discovery_keep' when the SAME export carries a keep rating for the
+    // track, else as the generic 'seed_track' — the 0010 backfill mapping.
+    const kept = {
+      isrc: "USABC2222222",
+      spotifyId: null,
+      title: "Kept legacy member",
+      artist: "Artist",
+      album: null,
+      genres: ["rock"],
+    };
+    const unrated = {
+      isrc: "USABC3333333",
+      spotifyId: null,
+      title: "Unrated legacy member",
+      artist: "Artist",
+      album: null,
+      genres: ["rock"],
+    };
+    const payload = {
+      version: 1 as const,
+      exportedAt: new Date().toISOString(),
+      buckets: [
+        {
+          name: "Legacy bucket",
+          color: null,
+          primaryGenre: "rock",
+          isColdStartSeed: false,
+          members: [kept, unrated], // no `origin` on either — pre-LAB-61 shape
+        },
+      ],
+      ratings: [{ decision: "keep" as const, ratedAt: new Date().toISOString(), track: kept }],
+    };
+    await importTaste(db, payload);
+
+    const reMembers = await db
+      .select({ isrc: schema.track.isrc, origin: schema.bucketMember.origin })
+      .from(schema.bucketMember)
+      .innerJoin(schema.track, sql`${schema.track.id} = ${schema.bucketMember.trackId}`);
+    expect(reMembers).toHaveLength(2);
+    const byIsrc = new Map(reMembers.map((m) => [m.isrc, m.origin]));
+    expect(byIsrc.get("USABC2222222")).toBe("discovery_keep");
+    expect(byIsrc.get("USABC3333333")).toBe("seed_track");
   });
 });

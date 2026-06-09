@@ -9,6 +9,7 @@ import {
   type RecommendationStatus,
 } from "@/db/schema";
 import { cosine } from "@/lib/embedding";
+import type { Tx } from "./assign";
 
 /**
  * Merge / split recommendation heuristics. NEVER auto-applies — the admin
@@ -57,7 +58,7 @@ export type EvaluateRecommendationsResult = {
 };
 
 export async function evaluateBucketRecommendations(
-  db: Database,
+  db: Database | Tx,
   options: RecommendationOptions = {},
 ): Promise<EvaluateRecommendationsResult> {
   const [cfg] = await db
@@ -82,7 +83,7 @@ export async function evaluateBucketRecommendations(
 }
 
 async function emitMergeRecommendations(
-  db: Database,
+  db: Database | Tx,
   buckets: readonly Bucket[],
   mergeThreshold: number,
 ): Promise<BucketRecommendation[]> {
@@ -113,7 +114,7 @@ async function emitMergeRecommendations(
 }
 
 async function emitSplitRecommendations(
-  db: Database,
+  db: Database | Tx,
   buckets: readonly Bucket[],
   splitRate: number,
 ): Promise<BucketRecommendation[]> {
@@ -157,7 +158,7 @@ type UpsertInput = {
  * user has decided.
  */
 async function upsertRecommendation(
-  db: Database,
+  db: Database | Tx,
   input: UpsertInput,
 ): Promise<BucketRecommendation | null> {
   const inserted = await db

@@ -134,9 +134,13 @@ export async function ingestRating(
       // LAB-52 — approval commits the track into a bucket. Re-derive fresh
       // (not the stored candidate id) so it handles the would-spawn case and
       // any same-genre bucket created since the flag. Idempotent for tracks
-      // that are already members (e.g. cold-start seeds).
+      // that are already members (e.g. cold-start seeds — their origin stays
+      // whatever the seeding flow stamped; LAB-61).
       const threshold = await loadSpawnThreshold(tx);
-      const assigned = await commitAssignmentInTx(tx, input.trackId, threshold, false);
+      const assigned = await commitAssignmentInTx(tx, input.trackId, threshold, {
+        origin: "discovery_keep",
+        coldStartSeed: false,
+      });
       committedBucketId = assigned.alreadyAssigned ? null : assigned.bucketId;
     }
 

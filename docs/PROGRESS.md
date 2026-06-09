@@ -2,6 +2,73 @@
 
 Phase tracker. Update at the end of every phase. Newest at the top.
 
+## LAB-61 — Bucket-member provenance (origin) + legacy eager-join cleanup
+
+- **Status:** review
+- **Branch:** `lab-61-bucket-member-provenance-origin-backfillcleanup-of-legacy`
+- **PR:** _pending_ (stacks on LAB-60)
+- **Scope landed:** `bucket_member.origin` enum
+  (`seed_playlist | seed_track | seed_manual | discovery_keep`; `seed_manual`
+  reserved — no live path yet) records membership provenance. Pre-LAB-52 the
+  schema couldn't distinguish a deliberate cold-start seed from eager-join
+  cruft (both = member with no rating), and a disliked legacy member
+  self-anchored refill at keepSim=1.000. The column is NOT NULL with **no
+  default**, so `$inferInsert` forces every insert site to stamp explicitly:
+  `commitAssignmentInTx` takes `{origin, coldStartSeed}` and threads it into
+  both join + spawn inserts; `AssignOptions.origin` is required;
+  `seedBucketsFromTrackIds(db, ids, origin)` gets `'seed_playlist'` /
+  `'seed_track'` from the two Setup flows; the `ingestRating` keep branch
+  stamps `'discovery_keep'`; taste import stamps the exported origin (or
+  keep-infers for legacy exports). The alreadyAssigned short-circuit never
+  rewrites an existing origin.
+  **Migration 0011 hand-edit pattern:** `pnpm db:generate` produced the pure
+  ADD (no rename-prompt hazard), then the SQL was hand-edited into: CREATE
+  TYPE → ADD COLUMN (nullable) → DELETE members rated-but-never-kept
+  (dislike-no-keep + defer-only memberships go, **rating rows untouched** —
+  no synthesized keeps, the eval substrate stays honest per Constraints
+  #2/#3) → UPDATE keep-rated members to `discovery_keep` → UPDATE the rest to
+  `seed_track` (generic: the schema has no record of which seed flow added
+  them) → SET NOT NULL. A follow-up `db:generate` confirms zero snapshot
+  drift; journal-tracked = exactly-once on every install. Two-phase
+  migration-replay test (`tests/db/lab61-backfill.test.ts`) pins the mapping.
+  **Reconcile sweep chained into db:migrate:** new
+  `src/lib/bucketing/reconcile.ts` (+ `src/db/reconcile-buckets.ts` CLI;
+  `db:migrate` = `drizzle-kit migrate && tsx … reconcile-buckets.ts`, so the
+  Fly release_command repairs derived state on the same deploy). One
+  transaction, idempotent, drift-gated: recompute every bucket whose
+  member_count disagrees with reality (`recomputeBucketStats` extracted from
+  the buckets router into `src/lib/bucketing/recompute.ts`; 0-member buckets
+  deleted), delete pending recommendations referencing pruned buckets
+  (`bucket_ids` is a plain int[], no FK), and — only when membership actually
+  changed — re-derive all pending recommendations and bump the refill
+  `model_version` exactly once (membership-gated, dynamic note naming the
+  repaired buckets; parent chained, lambda carried forward under the
+  app_config lock). **Drift-gated bump rationale:** the cleanup changes the
+  refill keep-anchor set, so post-cleanup ratings must not attribute to the
+  pre-cleanup version (Constraint #3) — but a clean install that repairs
+  nothing keeps its version chain untouched, and re-runs are complete
+  no-ops (no second bump, no recommendation churn; dismissed rows are never
+  resurrected thanks to the (kind, bucket_ids) unique index).
+  Refill anchors narrowed: `loadRefillableBuckets` + counterfactual
+  `loadKeepsByBucket` filter on `KEEP_ANCHOR_ORIGINS` (all four today —
+  defense-in-depth so a future origin doesn't silently anchor); the
+  `loadKeepEmbeddingsForBucket` "narrow the SQL once Phase 5 lands" TODO is
+  resolved — post-backfill, every member is a seed or a keep.
+  Buckets screen: list/detail expose per-bucket origin tallies + per-member
+  origin; the detail chips row renders "seeded N (playlist|tracks|manual) ·
+  found M". Taste export/import (Constraint #8) round-trips origin
+  (optional in the wire schema, version stays 1 — LAB-53 back-compat
+  precedent).
+- **Notes for future phases:**
+  - **Residual gap (deliberate):** a seed member disliked AFTER LAB-61 still
+    anchors refill — the cleanup only targets legacy eager-joins;
+    differential weighting of dislike-rated seeds is out of scope here.
+  - Generic backfill is lossy on purpose: playlist-seeded pre-LAB-52 installs
+    get `seed_track` labels (cosmetic — no schema signal exists to recover
+    the method; every seed origin anchors identically).
+  - The recommendations panel on the Buckets screen is global-by-design;
+    whether it should scope to the selected bucket is a follow-up UX call.
+
 ## LAB-60 — Surfacing eligibility gate (no re-queue of decided tracks)
 
 - **Status:** review

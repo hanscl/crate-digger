@@ -138,6 +138,23 @@ export async function bumpModelVersion(
 }
 
 /**
+ * Same as `bumpModelVersion`, but reuses an existing transaction — for
+ * callers whose bump must commit/roll back atomically with surrounding
+ * writes (e.g. the LAB-61 bucket-reconcile sweep, where the version bump
+ * accompanies the membership repair it annotates). Takes the same
+ * app_config lock as the standalone variant.
+ */
+export async function bumpModelVersionInTx(
+  tx: Tx,
+  kind: RankerKind,
+  config: RefillConfig | BroadConfig,
+  options: BumpOptions = {},
+): Promise<ModelVersion> {
+  await lockAppConfig(tx);
+  return bumpInTx(tx, kind, config, options);
+}
+
+/**
  * Idempotent bootstrap: ensures both rankers have an active model_version
  * row at first surfacing time. Called by the surfacing pipeline so a fresh
  * install can rank without the user having to manually retrain.

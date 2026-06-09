@@ -2,12 +2,13 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import path from "node:path";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import postgres from "postgres";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import * as schema from "@/db/schema";
 import type { AudioFeatures } from "@/db/schema";
 import { assignTrack } from "@/lib/bucketing/assign";
+import { seedBucketsFromTrackIds } from "@/lib/bucketing/cold-start";
 import { buildEmbedding } from "@/lib/embedding";
 
 let container: StartedPostgreSqlContainer;
@@ -84,7 +85,10 @@ describe("assignTrack — spawn-or-join contract", () => {
     // second rock track — cosine ≈ 1, well above threshold, must join.
     const seedAudio = audio({ tempo: 130, energy: 0.7, valence: 0.6 });
     const seedId = await insertTrack({ title: "Seed", audioFeatures: seedAudio, genres: ["rock"] });
-    const seedResult = await assignTrack(db, seedId, { spawnThreshold: SPAWN_THRESHOLD });
+    const seedResult = await assignTrack(db, seedId, {
+      origin: "seed_track",
+      spawnThreshold: SPAWN_THRESHOLD,
+    });
     expect(seedResult.spawned).toBe(true);
 
     const secondId = await insertTrack({
@@ -92,7 +96,10 @@ describe("assignTrack — spawn-or-join contract", () => {
       audioFeatures: seedAudio,
       genres: ["rock"],
     });
-    const joinResult = await assignTrack(db, secondId, { spawnThreshold: SPAWN_THRESHOLD });
+    const joinResult = await assignTrack(db, secondId, {
+      origin: "seed_track",
+      spawnThreshold: SPAWN_THRESHOLD,
+    });
     expect(joinResult.spawned).toBe(false);
     expect(joinResult.alreadyAssigned).toBe(false);
     expect(joinResult.bucketId).toBe(seedResult.bucketId);
@@ -121,7 +128,7 @@ describe("assignTrack — spawn-or-join contract", () => {
       }),
       genres: ["rock"],
     });
-    await assignTrack(db, seedId, { spawnThreshold: SPAWN_THRESHOLD });
+    await assignTrack(db, seedId, { origin: "seed_track", spawnThreshold: SPAWN_THRESHOLD });
 
     const farId = await insertTrack({
       title: "Quiet rock",
@@ -135,7 +142,10 @@ describe("assignTrack — spawn-or-join contract", () => {
       }),
       genres: ["rock"],
     });
-    const result = await assignTrack(db, farId, { spawnThreshold: SPAWN_THRESHOLD });
+    const result = await assignTrack(db, farId, {
+      origin: "seed_track",
+      spawnThreshold: SPAWN_THRESHOLD,
+    });
 
     expect(result.spawned).toBe(true);
     const buckets = await db.select().from(schema.bucket);
@@ -154,7 +164,10 @@ describe("assignTrack — spawn-or-join contract", () => {
       audioFeatures: sharedAudio,
       genres: ["jazz"],
     });
-    const jazzResult = await assignTrack(db, jazzId, { spawnThreshold: SPAWN_THRESHOLD });
+    const jazzResult = await assignTrack(db, jazzId, {
+      origin: "seed_track",
+      spawnThreshold: SPAWN_THRESHOLD,
+    });
     expect(jazzResult.primaryGenre).toBe("jazz");
 
     const classicalId = await insertTrack({
@@ -163,6 +176,7 @@ describe("assignTrack — spawn-or-join contract", () => {
       genres: ["classical"],
     });
     const classicalResult = await assignTrack(db, classicalId, {
+      origin: "seed_track",
       spawnThreshold: SPAWN_THRESHOLD,
     });
     expect(classicalResult.primaryGenre).toBe("classical");
@@ -194,7 +208,10 @@ describe("assignTrack — spawn-or-join contract", () => {
         audioFeatures: samples[i] ?? null,
         genres: ["rock"],
       });
-      const r = await assignTrack(db, id, { spawnThreshold: SPAWN_THRESHOLD });
+      const r = await assignTrack(db, id, {
+        origin: "seed_track",
+        spawnThreshold: SPAWN_THRESHOLD,
+      });
       bucketId ??= r.bucketId;
       expect(r.bucketId).toBe(bucketId);
     }
@@ -231,8 +248,14 @@ describe("assignTrack — spawn-or-join contract", () => {
       audioFeatures: audio(),
       genres: ["rock"],
     });
-    const first = await assignTrack(db, id, { spawnThreshold: SPAWN_THRESHOLD });
-    const second = await assignTrack(db, id, { spawnThreshold: SPAWN_THRESHOLD });
+    const first = await assignTrack(db, id, {
+      origin: "seed_track",
+      spawnThreshold: SPAWN_THRESHOLD,
+    });
+    const second = await assignTrack(db, id, {
+      origin: "seed_track",
+      spawnThreshold: SPAWN_THRESHOLD,
+    });
     expect(second.alreadyAssigned).toBe(true);
     expect(second.bucketId).toBe(first.bucketId);
 
@@ -257,8 +280,8 @@ describe("assignTrack — concurrency", () => {
     });
 
     const [a, b] = await Promise.all([
-      assignTrack(db, id, { spawnThreshold: SPAWN_THRESHOLD }),
-      assignTrack(db, id, { spawnThreshold: SPAWN_THRESHOLD }),
+      assignTrack(db, id, { origin: "seed_track", spawnThreshold: SPAWN_THRESHOLD }),
+      assignTrack(db, id, { origin: "seed_track", spawnThreshold: SPAWN_THRESHOLD }),
     ]);
 
     expect(a.bucketId).toBe(b.bucketId);
@@ -287,7 +310,7 @@ describe("assignTrack — concurrency", () => {
       audioFeatures: seedAudio,
       genres: ["rock"],
     });
-    await assignTrack(db, seedId, { spawnThreshold: SPAWN_THRESHOLD });
+    await assignTrack(db, seedId, { origin: "seed_track", spawnThreshold: SPAWN_THRESHOLD });
 
     const audioA = audio({ tempo: 122, energy: 0.55 });
     const audioB = audio({ tempo: 124, energy: 0.5, valence: 0.55 });
@@ -295,8 +318,8 @@ describe("assignTrack — concurrency", () => {
     const idB = await insertTrack({ title: "B", audioFeatures: audioB, genres: ["rock"] });
 
     const [resA, resB] = await Promise.all([
-      assignTrack(db, idA, { spawnThreshold: SPAWN_THRESHOLD }),
-      assignTrack(db, idB, { spawnThreshold: SPAWN_THRESHOLD }),
+      assignTrack(db, idA, { origin: "seed_track", spawnThreshold: SPAWN_THRESHOLD }),
+      assignTrack(db, idB, { origin: "seed_track", spawnThreshold: SPAWN_THRESHOLD }),
     ]);
     expect(resA.bucketId).toBe(resB.bucketId);
     expect(resA.alreadyAssigned).toBe(false);
@@ -322,5 +345,96 @@ describe("assignTrack — concurrency", () => {
     for (let i = 0; i < dim; i++) {
       expect(persisted[i]).toBeCloseTo(expectedCentroid[i] ?? 0, 6);
     }
+  });
+});
+
+describe("assignTrack — origin provenance (LAB-61)", () => {
+  const SEED_ORIGINS = ["seed_playlist", "seed_track", "seed_manual"] as const;
+  // Distinct real genres so each origin's pair lands in its own bucket
+  // (derivePrimaryGenre only recognizes known keywords).
+  const GENRES = ["rock", "jazz", "classical"] as const;
+
+  it("stamps the caller's origin on both the spawn and the join insert", async () => {
+    for (let i = 0; i < SEED_ORIGINS.length; i++) {
+      const origin = SEED_ORIGINS[i]!;
+      const genre = GENRES[i]!;
+      const seedAudio = audio({ tempo: 130, energy: 0.7 });
+      const seedId = await insertTrack({
+        title: `Seed ${origin}`,
+        audioFeatures: seedAudio,
+        genres: [genre],
+      });
+      const spawnResult = await assignTrack(db, seedId, {
+        origin,
+        spawnThreshold: SPAWN_THRESHOLD,
+      });
+      expect(spawnResult.spawned).toBe(true);
+
+      const twinId = await insertTrack({
+        title: `Twin ${origin}`,
+        audioFeatures: seedAudio,
+        genres: [genre],
+      });
+      const joinResult = await assignTrack(db, twinId, {
+        origin,
+        spawnThreshold: SPAWN_THRESHOLD,
+      });
+      expect(joinResult.spawned).toBe(false);
+      expect(joinResult.bucketId).toBe(spawnResult.bucketId);
+
+      const members = await db
+        .select({ trackId: schema.bucketMember.trackId, origin: schema.bucketMember.origin })
+        .from(schema.bucketMember)
+        .where(eq(schema.bucketMember.bucketId, spawnResult.bucketId));
+      expect(members).toHaveLength(2);
+      for (const m of members) expect(m.origin).toBe(origin);
+    }
+  });
+
+  it("the alreadyAssigned short-circuit never rewrites an existing origin", async () => {
+    const id = await insertTrack({
+      title: "Origin sticky",
+      audioFeatures: audio(),
+      genres: ["rock"],
+    });
+    await assignTrack(db, id, { origin: "seed_playlist", spawnThreshold: SPAWN_THRESHOLD });
+    const second = await assignTrack(db, id, {
+      origin: "seed_manual",
+      spawnThreshold: SPAWN_THRESHOLD,
+    });
+    expect(second.alreadyAssigned).toBe(true);
+
+    const [member] = await db
+      .select({ origin: schema.bucketMember.origin })
+      .from(schema.bucketMember)
+      .where(eq(schema.bucketMember.trackId, id));
+    expect(member?.origin).toBe("seed_playlist");
+  });
+
+  it("seedBucketsFromTrackIds threads the method origin to every membership", async () => {
+    const a = await insertTrack({
+      title: "Playlist seed A",
+      audioFeatures: audio({ tempo: 130 }),
+      genres: ["rock"],
+    });
+    const b = await insertTrack({
+      title: "Playlist seed B",
+      audioFeatures: audio({ tempo: 131 }),
+      genres: ["rock"],
+    });
+    const result = await seedBucketsFromTrackIds(db, [a, b], "seed_playlist");
+    expect(result.assignedCount).toBe(2);
+
+    const members = await db.select().from(schema.bucketMember);
+    expect(members).toHaveLength(2);
+    for (const m of members) expect(m.origin).toBe("seed_playlist");
+    const buckets = await db.select().from(schema.bucket);
+    for (const bk of buckets) expect(bk.isColdStartSeed).toBe(true);
+
+    // Idempotent re-seed under a different method label must not relabel.
+    const again = await seedBucketsFromTrackIds(db, [a, b], "seed_manual");
+    expect(again.alreadyAssignedCount).toBe(2);
+    const after = await db.select().from(schema.bucketMember);
+    for (const m of after) expect(m.origin).toBe("seed_playlist");
   });
 });

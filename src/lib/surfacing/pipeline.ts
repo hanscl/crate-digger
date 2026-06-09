@@ -4,6 +4,7 @@ import {
   appConfig,
   bucket,
   bucketMember,
+  KEEP_ANCHOR_ORIGINS,
   rating,
   type SurfaceEvent,
   surfaceEvent,
@@ -404,6 +405,11 @@ async function unratedSurfacedCount(db: Database): Promise<number> {
 async function loadRefillableBuckets(
   db: Database,
 ): Promise<{ id: number; primaryGenre: string | null; memberTrackIds: number[] }[]> {
+  // LAB-61 — only keep-anchor origins count as the bucket's keep-set. Today
+  // that is every origin (post-backfill, every member is a seed or a keep);
+  // the explicit filter keeps a future non-anchor origin from silently
+  // anchoring refill. Mirrored in the counterfactual replay's
+  // loadKeepsByBucket so live and replayed keep-sets stay symmetric.
   const rows = await db
     .select({
       id: bucket.id,
@@ -411,7 +417,8 @@ async function loadRefillableBuckets(
       trackId: bucketMember.trackId,
     })
     .from(bucket)
-    .innerJoin(bucketMember, eq(bucketMember.bucketId, bucket.id));
+    .innerJoin(bucketMember, eq(bucketMember.bucketId, bucket.id))
+    .where(inArray(bucketMember.origin, [...KEEP_ANCHOR_ORIGINS]));
   const grouped = new Map<number, { primaryGenre: string | null; memberTrackIds: number[] }>();
   for (const r of rows) {
     const entry = grouped.get(r.id) ?? { primaryGenre: r.primaryGenre, memberTrackIds: [] };
@@ -473,11 +480,14 @@ async function loadGlobalDislikes(db: Database): Promise<RatedTrack[]> {
 }
 
 /**
- * Bucket-anchor embeddings: bucket members are treated as the keep-set for
- * refill scoring. Cold-start seeds count as keeps (the user added them by
- * including them in the seed playlist). Once Phase 5 lands, we can scope
- * this further to "members with explicit keep ratings" without changing the
- * shape of this function — just narrow the SQL.
+ * Bucket-anchor embeddings: bucket members are the keep-set for refill
+ * scoring. LAB-61 guarantees every member is either a deliberate cold-start
+ * seed (the user chose it for the seed playlist/paste — counts as a keep) or
+ * a discovery track the user explicitly kept; legacy eager-joined members
+ * with non-keep ratings were removed by the 0010 backfill and
+ * `loadRefillableBuckets` filters on the keep-anchor origins. The caller
+ * passes member ids already scoped that way — this function only hydrates
+ * embeddings.
  */
 async function loadKeepEmbeddingsForBucket(
   db: Database,

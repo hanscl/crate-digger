@@ -5,6 +5,7 @@ import {
   appConfig,
   bucket,
   bucketMember,
+  type BucketMemberOrigin,
   type FeatureStats,
   track,
 } from "@/db/schema";
@@ -29,6 +30,13 @@ export type AssignResult = {
 };
 
 export type AssignOptions = {
+  /**
+   * LAB-61 — provenance stamped on the bucket_member row. Required (no
+   * default) so every eager-assignment caller decides what kind of membership
+   * it is creating; the discovery approval path stamps its own
+   * 'discovery_keep' via {@link commitAssignmentInTx} instead.
+   */
+  origin: BucketMemberOrigin;
   /** Cosine threshold above which a track joins the nearest bucket. Falls back to app_config. */
   spawnThreshold?: number;
   /** Mark a freshly-spawned bucket as a cold-start seed (Setup-screen playlist flow). */
@@ -86,7 +94,7 @@ function isUniqueViolation(err: unknown): boolean {
 export async function assignTrack(
   db: Database,
   trackId: number,
-  options: AssignOptions = {},
+  options: AssignOptions,
 ): Promise<AssignResult> {
   const threshold = options.spawnThreshold ?? (await loadSpawnThreshold(db));
   const coldStartSeed = options.coldStartSeed ?? false;
@@ -96,7 +104,7 @@ export async function assignTrack(
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       return await db.transaction((tx) =>
-        commitAssignmentInTx(tx, trackId, threshold, coldStartSeed),
+        commitAssignmentInTx(tx, trackId, threshold, { origin: options.origin, coldStartSeed }),
       );
     } catch (err) {
       if (attempt === 0 && isUniqueViolation(err)) continue;
@@ -242,14 +250,15 @@ async function computeBucketDecision(tx: Tx, trackId: number): Promise<BucketDec
  * `ingestRating` calls it on a keep to actually join a previously-flagged
  * candidate, re-deriving the decision fresh so it handles the would-spawn case
  * and any bucket created since the flag. Idempotent: an already-member track
- * returns `alreadyAssigned` without a second insert. Clears the track's pending
- * candidate flag on commit.
+ * returns `alreadyAssigned` without a second insert — and never rewrites the
+ * existing row's origin (a keep on a cold-start seed leaves it a seed).
+ * Clears the track's pending candidate flag on commit.
  */
 export async function commitAssignmentInTx(
   tx: Tx,
   trackId: number,
   threshold: number,
-  coldStartSeed: boolean,
+  options: { origin: BucketMemberOrigin; coldStartSeed: boolean },
 ): Promise<AssignResult> {
   // 1. Probe membership first. If already assigned, we're done.
   const [existing] = await tx
@@ -290,7 +299,11 @@ export async function commitAssignmentInTx(
       decision.embedding,
       decision.bestBucketId,
       decision.bestSimilarity,
-      { primaryGenre: decision.primaryGenre, hadAudioFeatures: decision.hadAudioFeatures },
+      {
+        origin: options.origin,
+        primaryGenre: decision.primaryGenre,
+        hadAudioFeatures: decision.hadAudioFeatures,
+      },
     );
     // joinBucketLocked returns null if the bucket vanished between read and
     // lock (admin merge/split) — fall through and spawn instead.
@@ -302,7 +315,11 @@ export async function commitAssignmentInTx(
       decision.audioFeatures,
       decision.embedding,
       decision.primaryGenre,
-      { coldStartSeed, hadAudioFeatures: decision.hadAudioFeatures },
+      {
+        origin: options.origin,
+        coldStartSeed: options.coldStartSeed,
+        hadAudioFeatures: decision.hadAudioFeatures,
+      },
     );
   }
 
@@ -322,7 +339,7 @@ async function joinBucketLocked(
   embedding: number[],
   bucketId: number,
   similarity: number,
-  ctx: { primaryGenre: string | null; hadAudioFeatures: boolean },
+  ctx: { origin: BucketMemberOrigin; primaryGenre: string | null; hadAudioFeatures: boolean },
 ): Promise<AssignResult | null> {
   // Row-level lock serializes concurrent joins to the same bucket. Without
   // this, two callers race: both read memberCount=N, both write N+1, the
@@ -359,7 +376,7 @@ async function joinBucketLocked(
   // and need to retry the outer probe (handled by assignTrack's retry loop).
   await tx
     .insert(bucketMember)
-    .values({ bucketId: locked.id, trackId, similarityAtJoin: similarity });
+    .values({ bucketId: locked.id, trackId, similarityAtJoin: similarity, origin: ctx.origin });
 
   return {
     trackId,
@@ -378,7 +395,7 @@ async function spawnBucketInTx(
   audio: AudioFeatures | null,
   embedding: number[],
   primaryGenre: string | null,
-  ctx: { coldStartSeed: boolean; hadAudioFeatures: boolean },
+  ctx: { origin: BucketMemberOrigin; coldStartSeed: boolean; hadAudioFeatures: boolean },
 ): Promise<AssignResult> {
   const seedStats = audio ? addFeatureSample(emptyFeatureStats(), audio) : emptyFeatureStats();
 
@@ -399,7 +416,9 @@ async function spawnBucketInTx(
   // concurrent caller already inserted membership for this track, this
   // insert raises 23505 and the entire transaction (including the bucket
   // row above) rolls back — no orphan bucket left behind.
-  await tx.insert(bucketMember).values({ bucketId: row.id, trackId, similarityAtJoin: 1.0 });
+  await tx
+    .insert(bucketMember)
+    .values({ bucketId: row.id, trackId, similarityAtJoin: 1.0, origin: ctx.origin });
 
   return {
     trackId,

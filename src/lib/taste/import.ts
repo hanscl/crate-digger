@@ -94,6 +94,14 @@ export async function importTaste(db: Database, raw: unknown): Promise<TasteImpo
       return result.id;
     };
 
+    // LAB-61 — keep-inference fallback for pre-LAB-61 exports whose members
+    // carry no origin: a member whose track was kept in this same export
+    // imports as 'discovery_keep'; everything else as the generic
+    // 'seed_track' (mirrors the 0010 backfill mapping for legacy rows).
+    const keptTrackKeys = new Set(
+      data.ratings.filter((r) => r.decision === "keep").map((r) => trackKey(r.track)),
+    );
+
     for (const exportedBucket of data.buckets) {
       const seedCentroid = Array.from({ length: 64 }, () => 0);
       const seed: NewBucket = {
@@ -125,8 +133,13 @@ export async function importTaste(db: Database, raw: unknown): Promise<TasteImpo
         // the whole import. Only fold the track into centroid/stats/memberCount
         // *after* the insert succeeds, otherwise a skipped row would leave a
         // phantom member counted in the bucket's stats.
+        const origin =
+          memberRef.origin ??
+          (keptTrackKeys.has(trackKey(memberRef)) ? "discovery_keep" : "seed_track");
         try {
-          await tx.insert(bucketMember).values({ bucketId: row.id, trackId, similarityAtJoin: 1 });
+          await tx
+            .insert(bucketMember)
+            .values({ bucketId: row.id, trackId, similarityAtJoin: 1, origin });
         } catch (err) {
           if (!isUniqueViolation(err)) throw err;
           continue;

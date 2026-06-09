@@ -4,6 +4,7 @@ import {
   bucket,
   bucketMember,
   type CandidatePoolEntry,
+  KEEP_ANCHOR_ORIGINS,
   rating,
   surfaceEvent,
   type SurfaceEvent,
@@ -326,6 +327,10 @@ async function loadKeepsByBucket(
   bucketIds: readonly number[],
 ): Promise<Map<number, RatedTrack[]>> {
   if (bucketIds.length === 0) return new Map();
+  // LAB-61 — same keep-anchor origin filter as the live pipeline's
+  // loadRefillableBuckets, so replay scores against the keep-set the live
+  // ranker would see (a no-op today — every origin anchors — but a future
+  // non-anchor origin must be excluded on both sides or replay diverges).
   const rows = await db
     .select({
       bucketId: bucketMember.bucketId,
@@ -334,7 +339,12 @@ async function loadKeepsByBucket(
     })
     .from(bucketMember)
     .innerJoin(track, eq(track.id, bucketMember.trackId))
-    .where(inArray(bucketMember.bucketId, [...bucketIds]));
+    .where(
+      and(
+        inArray(bucketMember.bucketId, [...bucketIds]),
+        inArray(bucketMember.origin, [...KEEP_ANCHOR_ORIGINS]),
+      ),
+    );
   const out = new Map<number, RatedTrack[]>();
   for (const r of rows) {
     if (r.embedding === null) continue;

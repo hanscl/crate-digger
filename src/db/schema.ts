@@ -39,6 +39,34 @@ export const recommendationStatusEnum = pgEnum("bucket_recommendation_status", [
 
 export const sourceKindEnum = pgEnum("source_kind", ["spotify", "lastfm", "viberate"]);
 
+// LAB-61 — provenance of a bucket membership. Pre-LAB-52, discovery tracks
+// eager-joined buckets, so "member without a rating" was ambiguous between a
+// deliberate cold-start seed and eager-join cruft. `origin` makes the intent
+// explicit: `seed_playlist` / `seed_track` come from the Setup-screen seeding
+// flows, `discovery_keep` is the LAB-52 approval path (keep rating commits the
+// join). `seed_manual` is reserved for a future manual-add flow — no live code
+// path stamps it today. Refill anchoring treats every origin as a keep-set
+// member; the value exists so future non-anchor origins can be excluded.
+export const bucketMemberOriginEnum = pgEnum("bucket_member_origin", [
+  "seed_playlist",
+  "seed_track",
+  "seed_manual",
+  "discovery_keep",
+]);
+
+/**
+ * LAB-61 — origins whose members count as keep-anchors for refill scoring and
+ * counterfactual replay. Currently all four (every member is a seed or a
+ * keep, the post-backfill invariant); listed explicitly so a future origin
+ * doesn't silently anchor refill just by existing in the enum.
+ */
+export const KEEP_ANCHOR_ORIGINS = [
+  "seed_playlist",
+  "seed_track",
+  "seed_manual",
+  "discovery_keep",
+] as const satisfies readonly BucketMemberOrigin[];
+
 export const track = pgTable(
   "track",
   {
@@ -155,6 +183,10 @@ export const bucketMember = pgTable(
       .notNull()
       .references(() => track.id, { onDelete: "cascade" }),
     similarityAtJoin: doublePrecision("similarity_at_join"),
+    // LAB-61 — membership provenance. Deliberately NO column default: every
+    // insert site must stamp an origin explicitly, so a new join path failing
+    // to decide provenance is a compile error, not silently-defaulted data.
+    origin: bucketMemberOriginEnum("origin").notNull(),
     addedAt: timestamp("added_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -336,6 +368,7 @@ export type CandidatePoolEntry = {
 };
 
 export type RatingDecision = (typeof ratingDecisionEnum.enumValues)[number];
+export type BucketMemberOrigin = (typeof bucketMemberOriginEnum.enumValues)[number];
 export type RecommendationKind = (typeof recommendationKindEnum.enumValues)[number];
 export type RecommendationStatus = (typeof recommendationStatusEnum.enumValues)[number];
 

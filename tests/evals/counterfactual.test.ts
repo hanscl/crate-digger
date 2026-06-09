@@ -225,6 +225,7 @@ describe("counterfactualReplay — broad", () => {
       bucketId: bucketRow!.id,
       trackId: t1.id,
       similarityAtJoin: 1,
+      origin: "seed_track",
     });
     const t2 = await seed({
       title: "candidate",
@@ -277,7 +278,10 @@ describe("counterfactualReplay — refill primary-genre gate (LAB-45)", () => {
       genres: ["heavy metal"],
     });
     // Spawn a metal-primary bucket with the seed as its sole keep anchor.
-    const seedAssign = await assignTrack(db, metalSeed.id, { spawnThreshold: 0.7 });
+    const seedAssign = await assignTrack(db, metalSeed.id, {
+      origin: "seed_track",
+      spawnThreshold: 0.7,
+    });
     expect(seedAssign.spawned).toBe(true);
     expect(seedAssign.primaryGenre).toBe("metal");
 
@@ -373,7 +377,10 @@ describe("counterfactualReplay — refill primary-genre gate (LAB-45)", () => {
       audio: audio({ tempo: 160, energy: 0.98, valence: 0.3 }),
       genres: ["heavy metal"],
     });
-    const seedAssign = await assignTrack(db, metalSeed.id, { spawnThreshold: 0.7 });
+    const seedAssign = await assignTrack(db, metalSeed.id, {
+      origin: "seed_track",
+      spawnThreshold: 0.7,
+    });
     expect(seedAssign.spawned).toBe(true);
     expect(seedAssign.primaryGenre).toBe("metal");
 
