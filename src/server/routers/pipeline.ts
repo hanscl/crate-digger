@@ -1,8 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { retrainBroad } from "@/lib/feedback/retrain";
-import { mastra } from "@/mastra";
-import { buildRequestContext } from "@/mastra/runtime";
+import { runDailyPipeline } from "../pipeline-run";
 import { protectedProcedure, router } from "../trpc-base";
 
 /**
@@ -10,26 +9,26 @@ import { protectedProcedure, router } from "../trpc-base";
  *
  * The Mastra workflow orchestrates ingest → enrich → bucket → retrain →
  * recommend → surface. Cron auto-fires daily; the Console can fire it on
- * demand to demo the loop or recover from a missed run.
+ * demand to demo the loop or recover from a missed run. Both paths share
+ * `runDailyPipeline`, which serializes runs so a manual trigger can't
+ * interleave with the scheduled one.
  */
 export const pipelineRouter = router({
   runNow: protectedProcedure.mutation(async ({ ctx }) => {
-    const requestContext = buildRequestContext({ db: ctx.db, env: ctx.appEnv });
-    const workflow = mastra.getWorkflow("dailyPipeline");
-    const run = await workflow.createRun();
-    const result = await run.start({
-      inputData: {},
-      requestContext: requestContext as unknown as Parameters<
-        typeof run.start
-      >[0]["requestContext"],
-    });
-    if (result.status !== "success") {
+    const result = await runDailyPipeline({ db: ctx.db, env: ctx.appEnv });
+    if (result.status !== "success" || !result.output) {
       throw new TRPCError({
         code: "INTERNAL_SERVER_ERROR",
         message: `daily-pipeline ended with status "${result.status}"`,
       });
     }
-    return { ok: true, status: result.status };
+    return {
+      ok: true,
+      status: result.status,
+      surfacedCount: result.output.surfacedCount,
+      excludedDecidedCount: result.output.excludedDecidedCount,
+      excludedPendingCount: result.output.excludedPendingCount,
+    };
   }),
 
   retrainNow: protectedProcedure

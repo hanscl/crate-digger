@@ -36,7 +36,8 @@ import { logSurfaceEvents } from "./log";
  *   2. Resolve the queue-ceiling headroom. `effectiveCap = max(0, queueCeiling
  *      − unratedQueueDepth)`. This is the ONLY count bound — there is no
  *      per-day budget. The candidate pool always carries everything ingest
- *      pulled that is still undecided (Constraint #2, amended LAB-60).
+ *      pulled that is still undecided and not already queued unrated
+ *      (Constraint #2, amended LAB-60).
  *   3. Refill phase. Score every candidate against each refillable bucket's
  *      keeps + global dislikes. Every on-genre candidate whose keep-similarity
  *      clears the refill bar (the spawn_threshold family) is a refill winner —

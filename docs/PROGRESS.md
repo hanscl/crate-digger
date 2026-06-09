@@ -18,10 +18,13 @@ Phase tracker. Update at the end of every phase. Newest at the top.
   a decision dedupe, NOT a taste penalty — Constraint #4 untouched (dislikes
   still only downweight other candidates). Constraint #2's pool definition
   amended: the candidate pool carries everything ingest pulled **that is still
-  undecided** (one-line LAB-60 amendments to the Constraint #5 prose in
-  CLAUDE.md + docs/PLAN.md). Observability: `excludedDecidedCount` +
-  `excludedPendingCount` on `SurfacingResult` → `SurfaceSummary` →
-  daily-pipeline workflow output, so the Console payload carries them.
+  undecided and not already queued unrated** (one-line LAB-60 amendments to the
+  Constraint #5 prose in CLAUDE.md + docs/PLAN.md). Observability:
+  `excludedDecidedCount` + `excludedPendingCount` on `SurfacingResult` →
+  `SurfaceSummary` → daily-pipeline workflow output; the shared run entry point
+  (`src/server/pipeline-run.ts`) logs them in its completion line — the cron
+  path's only sink, since no Mastra storage is configured — and
+  `pipeline.runNow` returns them for the Console screen to render.
   Tests: new LAB-60 describe block in `tests/surfacing/pipeline.test.ts`
   (disliked not re-surfaced + absent from pool; kept bucket member doesn't
   re-surface into its own bucket under pure refill via the LAB-52 ingestRating
@@ -29,7 +32,9 @@ Phase tracker. Update at the end of every phase. Newest at the top.
   keeps queue depth at 1; mixed-pool integrity; defer+dislike rule pin) plus a
   rate-then-re-surface integration assertion in the daily-pipeline smoke.
   Two exclusion categories (new `loadIneligibleTrackIds`, two index-backed
-  queries):
+  queries — migration `0010` adds `rating_surface_event_idx` so the pending
+  query's rating-side join is indexed too; it equally serves `queue.next`,
+  queue depth, and `unratedSurfacedCount`):
   - **decided** — any keep/dislike rating, ever, regardless of model_version or
     a later defer. Ratings without a surface event (manual/import paths) count
     too: they are decisions.
@@ -43,10 +48,38 @@ Phase tracker. Update at the end of every phase. Newest at the top.
     carries its score.
   - **Exclude on keep/dislike only** (ticket text): neutral-only tracks remain
     eligible to re-surface — flagged as an open product question.
+  - **Pipeline runs serialize in-process** — the gate (and the pre-existing
+    queue-ceiling check) is read-then-write with no DB lock, so a Console
+    "Run now" overlapping the 03:00 cron run could double-queue a track. Both
+    trigger sites now share `runDailyPipeline` (`src/server/pipeline-run.ts`),
+    which queues runs behind an in-process mutex. Sufficient because the app
+    is a single process by spec; revisit with an advisory lock only if the
+    pipeline ever runs from more than one process.
 - **Notes for future phases:**
   - The dedupe is per-track, not per-(track, bucket): a track kept into bucket A
     never re-surfaces for bucket B either. Revisit only if cross-bucket
     re-surfacing ever becomes a feature.
+  - **The gate is prospective only.** Deployments that hit the bug before this
+    fix still carry unrated `surface_event` rows for already-decided tracks:
+    `queue.next` keeps serving those cards and each one depresses
+    `effectiveCap` until re-rated. No data migration ships here — deleting
+    surface events discards logged candidate pools (Constraint #2), so cleanup
+    is a deliberate manual step:
+
+    ```sql
+    -- decided zombies: unrated cards for tracks already keep/dislike-decided
+    DELETE FROM surface_event se
+    WHERE NOT EXISTS (SELECT 1 FROM rating r WHERE r.surface_event_id = se.id)
+      AND EXISTS (SELECT 1 FROM rating r
+                  WHERE r.track_id = se.track_id AND r.decision IN ('keep', 'dislike'));
+    -- duplicate pending cards: keep only the oldest unrated event per track
+    DELETE FROM surface_event se
+    WHERE NOT EXISTS (SELECT 1 FROM rating r WHERE r.surface_event_id = se.id)
+      AND se.id NOT IN (
+        SELECT MIN(se2.id) FROM surface_event se2
+        WHERE NOT EXISTS (SELECT 1 FROM rating r WHERE r.surface_event_id = se2.id)
+        GROUP BY se2.track_id);
+    ```
 
 ## LAB-53 — Quality-gated surfacing (drop the daily cap)
 

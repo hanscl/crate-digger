@@ -1,8 +1,7 @@
 import * as nodeCron from "node-cron";
 import type { Database } from "@/db/client";
-import { buildRequestContext } from "@/mastra/runtime";
-import { mastra } from "@/mastra";
 import type { Env } from "./env";
+import { runDailyPipeline } from "./pipeline-run";
 
 /**
  * In-process node-cron registry. Keeps the schedule deterministic and
@@ -22,7 +21,11 @@ import type { Env } from "./env";
  *
  * Tests + reduced-env deployments can disable scheduling via
  * `CRON_DISABLED=1` — the registry still exposes `runDailyPipelineNow` for
- * manual triggers from the Console screen tRPC route.
+ * manual triggers.
+ *
+ * Pipeline runs — scheduled here or fired from the Console — all go through
+ * `runDailyPipeline` (`src/server/pipeline-run.ts`), which serializes them so
+ * an overlapping manual run can't interleave with the 03:00 one.
  */
 
 export type CronHandle = {
@@ -40,23 +43,11 @@ export function startCron(deps: { db: Database; env: Env }): CronHandle {
   const cronDisabled = deps.env.CRON_DISABLED;
   const disabled = cronDisabled === "1" || cronDisabled.toLowerCase() === "true";
 
-  // Manual triggers (Console "Run now") need to observe failures, so the
-  // core path lets errors propagate. The cron entry below wraps it in a
-  // catch so a single bad run doesn't kill the schedule.
+  // Manual triggers need to observe failures, so the core path lets errors
+  // propagate. The cron entry below wraps it in a catch so a single bad run
+  // doesn't kill the schedule.
   const runDailyPipelineNow = async () => {
-    const requestContext = buildRequestContext(deps);
-    const workflow = mastra.getWorkflow("dailyPipeline");
-    const run = await workflow.createRun();
-    // Mastra's per-run RequestContext type is unknown-keyed; we narrow to
-    // our typed shape inside step handlers via the `getDb` / `getEnv`
-    // helpers in `src/mastra/runtime.ts`.
-    const result = await run.start({
-      inputData: {},
-      requestContext: requestContext as unknown as Parameters<
-        typeof run.start
-      >[0]["requestContext"],
-    });
-    console.log("[cron] daily-pipeline finished", { status: result.status });
+    const result = await runDailyPipeline(deps);
     // Mastra's `run.start()` resolves with `{status: "failed"}` rather than
     // rejecting, so manual callers must surface non-success themselves.
     if (result.status !== "success") {
