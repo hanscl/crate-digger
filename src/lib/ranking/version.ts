@@ -138,20 +138,39 @@ export async function bumpModelVersion(
 }
 
 /**
- * Same as `bumpModelVersion`, but reuses an existing transaction — for
- * callers whose bump must commit/roll back atomically with surrounding
- * writes (e.g. the LAB-61 bucket-reconcile sweep, where the version bump
- * accompanies the membership repair it annotates). Takes the same
- * app_config lock as the standalone variant.
+ * Mint a new version that carries the ACTIVE version's config forward
+ * unchanged, inside an existing transaction — for callers whose bump
+ * annotates a data repair rather than a config change (e.g. the bucket
+ * reconcile sweep, where a membership repair changes the refill keep-anchor
+ * set but not lambda). The active pointer AND its config are read under the
+ * same app_config FOR UPDATE lock that serializes every bump, so a config
+ * change committed concurrently can never be reverted by a stale pre-lock
+ * read. Returns null when no active version of `kind` exists — nothing to
+ * chain from or carry forward.
  */
-export async function bumpModelVersionInTx(
+export async function bumpModelVersionCarryForwardInTx(
   tx: Tx,
   kind: RankerKind,
-  config: RefillConfig | BroadConfig,
   options: BumpOptions = {},
-): Promise<ModelVersion> {
+): Promise<ModelVersion | null> {
   await lockAppConfig(tx);
-  return bumpInTx(tx, kind, config, options);
+  const [cfg] = await tx
+    .select({
+      activeRefill: appConfig.activeRefillVersionId,
+      activeBroad: appConfig.activeBroadVersionId,
+    })
+    .from(appConfig)
+    .where(eq(appConfig.id, 1))
+    .limit(1);
+  const activeId = kind === "refill" ? cfg?.activeRefill : cfg?.activeBroad;
+  if (!activeId) return null;
+  const [active] = await tx
+    .select()
+    .from(modelVersion)
+    .where(eq(modelVersion.id, activeId))
+    .limit(1);
+  if (!active) return null;
+  return bumpInTx(tx, kind, configFromVersion(active, kind), options);
 }
 
 /**

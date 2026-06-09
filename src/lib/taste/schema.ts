@@ -34,9 +34,10 @@ export type TasteTrackRef = z.infer<typeof TASTE_TRACK_REF_SCHEMA>;
 export const TASTE_BUCKET_MEMBER_SCHEMA = TASTE_TRACK_REF_SCHEMA.extend({
   // LAB-61 — membership provenance travels with the profile. Optional so
   // pre-LAB-61 exports (which lack it) still import: importTaste falls back
-  // to keep-inference — a member whose track has a keep decision in the same
-  // export imports as 'discovery_keep', the rest as 'seed_track' (the same
-  // mapping the 0010 backfill applies to legacy rows).
+  // to the full 0010 backfill mapping — a member whose track has a keep
+  // decision in the same export imports as 'discovery_keep'; a member whose
+  // track is rated but never kept is skipped (legacy eager-join cruft, the
+  // 0010 delete arm); unrated members import as the generic 'seed_track'.
   origin: z.enum(["seed_playlist", "seed_track", "seed_manual", "discovery_keep"]).optional(),
 });
 

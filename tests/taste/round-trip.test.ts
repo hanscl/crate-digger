@@ -302,9 +302,12 @@ describe("taste profile — LAB-61 membership origin round-trip", () => {
   });
 
   it("imports a pre-LAB-61 export without member origins via the keep-inference fallback", async () => {
-    // Backward-compat (LAB-61): members lacking `origin` import as
-    // 'discovery_keep' when the SAME export carries a keep rating for the
-    // track, else as the generic 'seed_track' — the 0010 backfill mapping.
+    // Backward-compat (LAB-61): members lacking `origin` follow the full
+    // 0010 backfill mapping — 'discovery_keep' when the SAME export carries
+    // a keep rating for the track, SKIPPED when the track is rated but never
+    // kept (legacy eager-join cruft; importing it as a seed would re-anchor
+    // refill on a disliked track), else the generic 'seed_track'. Ratings
+    // import regardless of membership.
     const kept = {
       isrc: "USABC2222222",
       spotifyId: null,
@@ -321,6 +324,14 @@ describe("taste profile — LAB-61 membership origin round-trip", () => {
       album: null,
       genres: ["rock"],
     };
+    const disliked = {
+      isrc: "USABC4444444",
+      spotifyId: null,
+      title: "Disliked legacy member",
+      artist: "Artist",
+      album: null,
+      genres: ["rock"],
+    };
     const payload = {
       version: 1 as const,
       exportedAt: new Date().toISOString(),
@@ -330,12 +341,17 @@ describe("taste profile — LAB-61 membership origin round-trip", () => {
           color: null,
           primaryGenre: "rock",
           isColdStartSeed: false,
-          members: [kept, unrated], // no `origin` on either — pre-LAB-61 shape
+          members: [kept, unrated, disliked], // no `origin` on any — pre-LAB-61 shape
         },
       ],
-      ratings: [{ decision: "keep" as const, ratedAt: new Date().toISOString(), track: kept }],
+      ratings: [
+        { decision: "keep" as const, ratedAt: new Date().toISOString(), track: kept },
+        { decision: "dislike" as const, ratedAt: new Date().toISOString(), track: disliked },
+      ],
     };
-    await importTaste(db, payload);
+    const result = await importTaste(db, payload);
+    expect(result.membersAdded).toBe(2);
+    expect(result.ratingsInserted).toBe(2);
 
     const reMembers = await db
       .select({ isrc: schema.track.isrc, origin: schema.bucketMember.origin })
@@ -345,5 +361,13 @@ describe("taste profile — LAB-61 membership origin round-trip", () => {
     const byIsrc = new Map(reMembers.map((m) => [m.isrc, m.origin]));
     expect(byIsrc.get("USABC2222222")).toBe("discovery_keep");
     expect(byIsrc.get("USABC3333333")).toBe("seed_track");
+    expect(byIsrc.has("USABC4444444")).toBe(false);
+
+    // The skipped membership never folds into the bucket's derived state…
+    const [legacyBucket] = await db.select().from(schema.bucket);
+    expect(legacyBucket?.memberCount).toBe(2);
+    // …but the dislike rating itself imports (eval substrate stays complete).
+    const reRatings = await db.select().from(schema.rating);
+    expect(reRatings.map((r) => r.decision).sort()).toEqual(["dislike", "keep"]);
   });
 });

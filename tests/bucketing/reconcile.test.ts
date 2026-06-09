@@ -213,12 +213,14 @@ describe("reconcileBuckets — LAB-61 post-migration sweep", () => {
     expect(pending[0]?.kind).toBe("merge");
     expect(pending[0]?.bucketIds).toEqual([cId, dId].sort((x, y) => x - y));
 
-    // Refill bumped exactly once, chained to v1, with the LAB-61 note.
+    // Refill bumped exactly once, chained to v1, with a note naming the
+    // drifted buckets that changed the keep-anchor set.
     const active = await getActiveModelVersion(db, "refill");
     expect(active?.id).not.toBe(refillV1.id);
     expect(active?.parentId).toBe(refillV1.id);
     expect(active?.note).toBe(
-      "LAB-61: keep-anchor narrowed to seed/keep members; legacy eager-join cleanup",
+      "bucket reconcile: membership repair changed the refill keep-anchor set " +
+        `(buckets ${[aAssign.bucketId, bId].sort((x, y) => x - y).join(", ")})`,
     );
     expect(active?.config).toEqual(refillV1.config);
     const refillVersions = await db
@@ -302,6 +304,56 @@ describe("reconcileBuckets — LAB-61 post-migration sweep", () => {
     const all = await db.select().from(schema.bucketRecommendation);
     expect(all).toHaveLength(1);
     expect(all[0]?.status).toBe("dismissed");
+  });
+
+  it("repairs stale recommendations without minting a refill version when membership is untouched", async () => {
+    // The merge-accept path deletes a bucket; `bucket_ids` is a plain int[]
+    // with no FK, so a pending recommendation can reference a bucket that no
+    // longer exists while every surviving bucket stays consistent. The sweep
+    // must clean and re-derive recommendations WITHOUT bumping the refill
+    // version — no membership changed, so the keep-anchor set is untouched.
+    const refillV1 = await ensureActiveModelVersion(db, "refill");
+    const twinCentroid = Array.from({ length: 64 }, (_, i) => (i % 2 === 0 ? 0.9 : 0.1));
+    const cId = await seedConsistentBucket({
+      name: "C",
+      primaryGenre: "house",
+      centroid: twinCentroid,
+    });
+    const dId = await seedConsistentBucket({
+      name: "D",
+      primaryGenre: "house",
+      centroid: twinCentroid,
+    });
+    await db.insert(schema.bucketRecommendation).values({
+      kind: "merge",
+      bucketIds: [cId, 99999], // 99999 = a merged-away bucket
+      reason: { similarity: 0.99, threshold: 0.92 },
+      status: "pending",
+    });
+
+    const result = await reconcileBuckets(db);
+    expect(result.repaired).toBe(true);
+    expect(result.driftedBucketIds).toEqual([]);
+    expect(result.staleRecommendationCount).toBe(1);
+    expect(result.recommendationsRebuilt).toBe(true);
+    expect(result.refillVersionBumped).toBe(false);
+
+    // Version chain untouched.
+    const active = await getActiveModelVersion(db, "refill");
+    expect(active?.id).toBe(refillV1.id);
+    const refillVersions = await db
+      .select()
+      .from(schema.modelVersion)
+      .where(eq(schema.modelVersion.kind, "refill"));
+    expect(refillVersions).toHaveLength(1);
+
+    // The stale row is gone; the C/D merge was re-derived as pending.
+    const pending = await db
+      .select()
+      .from(schema.bucketRecommendation)
+      .where(eq(schema.bucketRecommendation.status, "pending"));
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.bucketIds).toEqual([cId, dId].sort((x, y) => x - y));
   });
 
   it("skips the refill bump when no active refill version exists", async () => {

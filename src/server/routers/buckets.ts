@@ -237,6 +237,15 @@ export const bucketsRouter = router({
             .set({ bucketId: keepId })
             .where(eq(bucketMember.bucketId, mergeId));
           await tx.delete(bucket).where(eq(bucket.id, mergeId));
+          // `bucket_recommendation.bucket_ids` is a plain int[] with no FK —
+          // other pending recommendations referencing the merged-away bucket
+          // would dangle forever, so prune them here. The row being accepted
+          // is resolved below and keeps its audit trail.
+          await tx.delete(bucketRecommendation).where(
+            sql`${bucketRecommendation.status} = 'pending'
+              AND ${bucketRecommendation.id} <> ${rec.id}
+              AND ${mergeId} = ANY(${bucketRecommendation.bucketIds})`,
+          );
           // Recompute the merged bucket's centroid + counts from current members.
           await recomputeBucketStats(tx, keepId);
         }

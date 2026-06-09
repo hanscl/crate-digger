@@ -1,7 +1,7 @@
 import { eq, inArray, sql } from "drizzle-orm";
 import type { Database } from "@/db/client";
-import { appConfig, bucket, bucketMember, bucketRecommendation, modelVersion } from "@/db/schema";
-import { bumpModelVersionInTx, configFromVersion } from "@/lib/ranking/version";
+import { bucket, bucketMember, bucketRecommendation } from "@/db/schema";
+import { bumpModelVersionCarryForwardInTx } from "@/lib/ranking/version";
 import { evaluateBucketRecommendations } from "./recommendations";
 import { recomputeBucketStats } from "./recompute";
 
@@ -22,12 +22,16 @@ import { recomputeBucketStats } from "./recompute";
  *   (c) iff anything was repaired: the remaining pending recommendations are
  *       dropped and re-derived from the repaired bucket geometry (decided —
  *       accepted/dismissed — rows survive, and the (kind, bucket_ids) unique
- *       index keeps them from re-surfacing as pending), and the refill
- *       model_version is bumped EXACTLY once — the keep-anchor set changed,
- *       so subsequent ratings must not attribute to the pre-cleanup version
- *       (Constraint #3). The bump carries the current lambda forward and is
- *       skipped when no active refill version exists yet (nothing to chain
- *       from; the surfacing bootstrap mints the first version).
+ *       index keeps them from re-surfacing as pending). Additionally, iff
+ *       MEMBERSHIP changed (step (a) repaired at least one bucket), the
+ *       refill model_version is bumped EXACTLY once — the keep-anchor set
+ *       changed, so subsequent ratings must not attribute to the pre-repair
+ *       version (Constraint #3). A stale-recommendation-only repair touches
+ *       no membership or geometry and mints nothing. The bump carries the
+ *       active config forward (read under the app_config lock, so a
+ *       concurrent config change is never reverted) and is skipped when no
+ *       active refill version exists yet (nothing to chain from; the
+ *       surfacing bootstrap mints the first version).
  *
  * Idempotent and drift-gated: a second run finds counts consistent and no
  * stale references, repairs nothing, and therefore bumps nothing and leaves
@@ -42,7 +46,7 @@ export type ReconcileBucketsResult = {
   staleRecommendationCount: number;
   /** True when step (c) ran (pending recs re-derived). */
   recommendationsRebuilt: boolean;
-  /** True when the refill model_version was bumped (active pointer was set). */
+  /** True when the refill model_version was bumped (membership changed AND an active pointer was set). */
   refillVersionBumped: boolean;
   /** True when anything at all was repaired this run. */
   repaired: boolean;
@@ -97,28 +101,18 @@ export async function reconcileBuckets(db: Database): Promise<ReconcileBucketsRe
       await evaluateBucketRecommendations(tx);
       recommendationsRebuilt = true;
 
-      const [cfg] = await tx
-        .select({ activeRefill: appConfig.activeRefillVersionId })
-        .from(appConfig)
-        .limit(1);
-      if (cfg?.activeRefill) {
-        const [active] = await tx
-          .select()
-          .from(modelVersion)
-          .where(eq(modelVersion.id, cfg.activeRefill))
-          .limit(1);
-        if (active) {
-          const { lambda } = configFromVersion(active, "refill");
-          await bumpModelVersionInTx(
-            tx,
-            "refill",
-            { lambda },
-            {
-              note: "LAB-61: keep-anchor narrowed to seed/keep members; legacy eager-join cleanup",
-            },
-          );
-          refillVersionBumped = true;
-        }
+      // Bump only when MEMBERSHIP changed: a stale-recommendation-only repair
+      // touches no keep-anchor geometry, so minting a version there would put
+      // a false "ranker changed" marker in the chain (Constraint #3). The
+      // carry-forward variant reads the active config under the app_config
+      // lock and returns null when no active refill version exists yet.
+      if (driftedBucketIds.length > 0) {
+        const bumped = await bumpModelVersionCarryForwardInTx(tx, "refill", {
+          note:
+            "bucket reconcile: membership repair changed the refill keep-anchor set " +
+            `(buckets ${driftedBucketIds.join(", ")})`,
+        });
+        refillVersionBumped = bumped !== null;
       }
     }
 

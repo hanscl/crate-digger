@@ -6,7 +6,7 @@ Phase tracker. Update at the end of every phase. Newest at the top.
 
 - **Status:** review
 - **Branch:** `lab-61-bucket-member-provenance-origin-backfillcleanup-of-legacy`
-- **PR:** _pending_ (stacks on LAB-60)
+- **PR:** _pending_ (based on `main`; see the LAB-60 migration-collision note below)
 - **Scope landed:** `bucket_member.origin` enum
   (`seed_playlist | seed_track | seed_manual | discovery_keep`; `seed_manual`
   reserved — no live path yet) records membership provenance. Pre-LAB-52 the
@@ -18,9 +18,10 @@ Phase tracker. Update at the end of every phase. Newest at the top.
   both join + spawn inserts; `AssignOptions.origin` is required;
   `seedBucketsFromTrackIds(db, ids, origin)` gets `'seed_playlist'` /
   `'seed_track'` from the two Setup flows; the `ingestRating` keep branch
-  stamps `'discovery_keep'`; taste import stamps the exported origin (or
-  keep-infers for legacy exports). The alreadyAssigned short-circuit never
-  rewrites an existing origin.
+  stamps `'discovery_keep'`; taste import stamps the exported origin (or, for
+  legacy exports, applies the full 0011 mapping: keep-rated → `discovery_keep`,
+  rated-but-never-kept → membership skipped, unrated → `seed_track`). The
+  alreadyAssigned short-circuit never rewrites an existing origin.
   **Migration 0011 hand-edit pattern:** `pnpm db:generate` produced the pure
   ADD (no rename-prompt hazard), then the SQL was hand-edited into: CREATE
   TYPE → ADD COLUMN (nullable) → DELETE members rated-but-never-kept
@@ -39,13 +40,19 @@ Phase tracker. Update at the end of every phase. Newest at the top.
   member_count disagrees with reality (`recomputeBucketStats` extracted from
   the buckets router into `src/lib/bucketing/recompute.ts`; 0-member buckets
   deleted), delete pending recommendations referencing pruned buckets
-  (`bucket_ids` is a plain int[], no FK), and — only when membership actually
-  changed — re-derive all pending recommendations and bump the refill
-  `model_version` exactly once (membership-gated, dynamic note naming the
-  repaired buckets; parent chained, lambda carried forward under the
-  app_config lock). **Drift-gated bump rationale:** the cleanup changes the
-  refill keep-anchor set, so post-cleanup ratings must not attribute to the
-  pre-cleanup version (Constraint #3) — but a clean install that repairs
+  (`bucket_ids` is a plain int[], no FK; the merge-accept mutation now also
+  prunes other pending recommendations referencing the bucket it deletes),
+  re-derive all pending recommendations whenever anything was repaired, and
+  bump the refill `model_version` exactly once — but ONLY when membership
+  actually changed: a stale-recommendation-only repair touches no keep-anchor
+  geometry and mints nothing. The bump note is dynamic ("bucket reconcile:
+  membership repair changed the refill keep-anchor set (buckets …)"), parent
+  chained, config carried forward from the active version read under the
+  app_config lock (`bumpModelVersionCarryForwardInTx`), so a concurrently
+  committed knob change can never be silently reverted.
+  **Membership-gated bump rationale:** a membership repair changes the
+  refill keep-anchor set, so post-repair ratings must not attribute to the
+  pre-repair version (Constraint #3) — but a clean install that repairs
   nothing keeps its version chain untouched, and re-runs are complete
   no-ops (no second bump, no recommendation churn; dismissed rows are never
   resurrected thanks to the (kind, bucket_ids) unique index).
@@ -63,6 +70,12 @@ Phase tracker. Update at the end of every phase. Newest at the top.
   - **Residual gap (deliberate):** a seed member disliked AFTER LAB-61 still
     anchors refill — the cleanup only targets legacy eager-joins;
     differential weighting of dislike-rated seeds is out of scope here.
+  - **0011 delete-arm residual:** pre-LAB-61 rows carry no provenance, so a
+    membership deliberately re-created via Setup seeding AFTER the track was
+    rated elsewhere (defer-then-seed) is indistinguishable from eager-join
+    cruft and is deleted by the backfill (and skipped by the legacy taste
+    import). Single-user blast radius is one re-seed; documented in the
+    migration comment.
   - Generic backfill is lossy on purpose: playlist-seeded pre-LAB-52 installs
     get `seed_track` labels (cosmetic — no schema signal exists to recover
     the method; every seed origin anchors identically).
