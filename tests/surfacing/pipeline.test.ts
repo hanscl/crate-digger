@@ -2,13 +2,14 @@ import path from "node:path";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
-import { eq, sql } from "drizzle-orm";
+import { count, eq, isNull, sql } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import * as schema from "@/db/schema";
 import type { AudioFeatures, CandidatePoolEntry } from "@/db/schema";
 import { assignTrack } from "@/lib/bucketing/assign";
 import { buildEmbedding, derivePrimaryGenre } from "@/lib/embedding";
+import { ingestRating } from "@/lib/feedback/ingest-rating";
 import { scoreBroad } from "@/lib/ranking/broad";
 import { scoreRefill } from "@/lib/ranking/refill";
 import type { Candidate } from "@/lib/ranking/types";
@@ -663,6 +664,207 @@ describe("runSurfacingBatch — refill primary-genre winner-eligibility gate (LA
     expect(event.rankerKind).toBe("refill");
     expect(event.bucketId).toBe(seedAssign.bucketId);
     expect(event.trackId).toBe(nullCand.id);
+  });
+});
+
+describe("runSurfacingBatch — decided/pending eligibility gate (LAB-60)", () => {
+  it("a previously-disliked track is not re-surfaced and is absent from the candidate_pool", async () => {
+    // Eligibility gate, not a taste penalty: the disliked track itself never
+    // re-enters the pool, while its dislike signal keeps downweighting OTHER
+    // candidates (Constraint #4 coverage lives in the soft-penalties suite).
+    const disliked = await insertTrack({
+      title: "Disliked",
+      audioFeatures: audio({ energy: 0.3 }),
+      genres: ["rock"],
+    });
+    const control = await insertTrack({
+      title: "Control",
+      audioFeatures: audio({ energy: 0.6 }),
+      genres: ["rock"],
+    });
+    const broadVer = await ensureActiveModelVersion(db, "broad");
+    await db.insert(schema.rating).values({
+      trackId: disliked.id,
+      decision: "dislike",
+      modelVersionId: broadVer.id,
+    });
+
+    const result = await runSurfacingBatch(db, {
+      candidates: await Promise.all([disliked, control].map(asCandidate)),
+      noveltyOverride: 1,
+      queueCeilingOverride: 50,
+    });
+
+    expect(result.excludedDecidedCount).toBe(1);
+    expect(result.excludedPendingCount).toBe(0);
+    expect(result.surfaced).toHaveLength(1);
+    expect(result.surfaced[0]?.candidate.trackId).toBe(control.id);
+
+    const events = await db.select().from(schema.surfaceEvent);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.trackId).toBe(control.id);
+    // Excluded BEFORE scoring — the decided track never enters the pool.
+    const poolIds = events[0]!.candidatePool.map((p: CandidatePoolEntry) => p.trackId);
+    expect(poolIds).not.toContain(disliked.id);
+    expect(poolIds).toContain(control.id);
+  });
+
+  it("a kept bucket member does not re-surface into its own bucket under pure refill", async () => {
+    // LAB-39's similar pull re-pulls tracks near bucket centroids — the kept
+    // member IS the centroid anchor, so without the gate it would top its own
+    // bucket's keep-similarity and re-queue as a fresh card.
+    const kept = await insertTrack({
+      title: "Kept member",
+      audioFeatures: audio({ tempo: 130, energy: 0.7 }),
+      genres: ["rock"],
+    });
+    // Route the keep through ingestRating so the LAB-52 commit path spawns
+    // the bucket with the kept track as its member/anchor.
+    const ingest = await ingestRating(db, { trackId: kept.id, decision: "keep" });
+    expect(ingest.committedBucketId).not.toBeNull();
+
+    const fresh = await insertTrack({
+      title: "Fresh in-genre",
+      audioFeatures: audio({ tempo: 129, energy: 0.68 }),
+      genres: ["rock"],
+    });
+
+    const result = await runSurfacingBatch(db, {
+      candidates: await Promise.all([kept, fresh].map(asCandidate)),
+      noveltyOverride: 0,
+      refillBarOverride: 0,
+      broadBarOverride: 1, // broad never fills — pure refill
+      queueCeilingOverride: 50,
+    });
+
+    expect(result.excludedDecidedCount).toBe(1);
+    expect(result.surfaced).toHaveLength(1);
+    expect(result.surfaced[0]?.candidate.trackId).toBe(fresh.id);
+    const events = await db.select().from(schema.surfaceEvent);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.rankerKind).toBe("refill");
+    expect(events[0]?.trackId).toBe(fresh.id);
+  });
+
+  it("a previously-deferred track re-surfaces — defer means later, not no", async () => {
+    const t = await insertTrack({ title: "Deferred", audioFeatures: audio(), genres: ["rock"] });
+    const cand = await asCandidate(t);
+    await runSurfacingBatch(db, {
+      candidates: [cand],
+      noveltyOverride: 1,
+      queueCeilingOverride: 50,
+    });
+    const [first] = await db.select().from(schema.surfaceEvent);
+    expect(first).toBeDefined();
+    await ingestRating(db, { trackId: t.id, decision: "defer", surfaceEventId: first!.id });
+
+    const result = await runSurfacingBatch(db, {
+      candidates: [cand],
+      noveltyOverride: 1,
+      queueCeilingOverride: 50,
+    });
+    expect(result.excludedDecidedCount).toBe(0);
+    expect(result.excludedPendingCount).toBe(0);
+    expect(result.surfaced).toHaveLength(1);
+    const events = await db
+      .select()
+      .from(schema.surfaceEvent)
+      .where(eq(schema.surfaceEvent.trackId, t.id));
+    expect(events).toHaveLength(2);
+  });
+
+  it("a surfaced-but-unrated track is not surfaced again — no duplicate queue cards", async () => {
+    const t = await insertTrack({ title: "Pending", audioFeatures: audio(), genres: ["rock"] });
+    const cand = await asCandidate(t);
+    await runSurfacingBatch(db, {
+      candidates: [cand],
+      noveltyOverride: 1,
+      queueCeilingOverride: 50,
+    });
+
+    // Re-run with ceiling headroom to spare — the dedupe, not the ceiling,
+    // must be what blocks the duplicate.
+    const result = await runSurfacingBatch(db, {
+      candidates: [cand],
+      noveltyOverride: 1,
+      queueCeilingOverride: 50,
+    });
+    expect(result.excludedPendingCount).toBe(1);
+    expect(result.excludedDecidedCount).toBe(0);
+    expect(result.surfaced).toHaveLength(0);
+    expect(result.events).toHaveLength(0);
+
+    expect(await db.select().from(schema.surfaceEvent)).toHaveLength(1);
+    // The queue-depth predicate (unrated surface events) still sees ONE card.
+    const [depth] = await db
+      .select({ n: count() })
+      .from(schema.surfaceEvent)
+      .leftJoin(schema.rating, eq(schema.rating.surfaceEventId, schema.surfaceEvent.id))
+      .where(isNull(schema.rating.id));
+    expect(Number(depth?.n ?? 0)).toBe(1);
+  });
+
+  it("mixed pool: candidate_pool carries deferred + fresh but never the decided track", async () => {
+    const disliked = await insertTrack({
+      title: "Decided (dislike)",
+      audioFeatures: audio({ energy: 0.2 }),
+      genres: ["rock"],
+    });
+    const deferred = await insertTrack({
+      title: "Deferred",
+      audioFeatures: audio({ energy: 0.5 }),
+      genres: ["rock"],
+    });
+    const fresh = await insertTrack({
+      title: "Fresh",
+      audioFeatures: audio({ energy: 0.8 }),
+      genres: ["rock"],
+    });
+    const broadVer = await ensureActiveModelVersion(db, "broad");
+    await db.insert(schema.rating).values([
+      { trackId: disliked.id, decision: "dislike", modelVersionId: broadVer.id },
+      { trackId: deferred.id, decision: "defer", modelVersionId: broadVer.id },
+    ]);
+
+    const result = await runSurfacingBatch(db, {
+      candidates: await Promise.all([disliked, deferred, fresh].map(asCandidate)),
+      noveltyOverride: 1,
+      queueCeilingOverride: 50,
+    });
+    expect(result.excludedDecidedCount).toBe(1);
+    expect(result.excludedPendingCount).toBe(0);
+    expect(result.surfaced.map((s) => s.candidate.trackId).sort((a, b) => a - b)).toEqual(
+      [deferred.id, fresh.id].sort((a, b) => a - b),
+    );
+
+    const events = await db.select().from(schema.surfaceEvent);
+    expect(events).toHaveLength(2);
+    for (const e of events) {
+      const ids = e.candidatePool.map((p: CandidatePoolEntry) => p.trackId).sort((a, b) => a - b);
+      expect(ids).toEqual([deferred.id, fresh.id].sort((a, b) => a - b));
+    }
+  });
+
+  it("a track with both defer and dislike rows is excluded — any keep/dislike ever decides", async () => {
+    const t = await insertTrack({
+      title: "Defer then dislike",
+      audioFeatures: audio(),
+      genres: ["rock"],
+    });
+    const broadVer = await ensureActiveModelVersion(db, "broad");
+    await db.insert(schema.rating).values([
+      { trackId: t.id, decision: "defer", modelVersionId: broadVer.id },
+      { trackId: t.id, decision: "dislike", modelVersionId: broadVer.id },
+    ]);
+
+    const result = await runSurfacingBatch(db, {
+      candidates: [await asCandidate(t)],
+      noveltyOverride: 1,
+      queueCeilingOverride: 50,
+    });
+    expect(result.excludedDecidedCount).toBe(1);
+    expect(result.surfaced).toHaveLength(0);
+    expect(await db.select().from(schema.surfaceEvent)).toHaveLength(0);
   });
 });
 

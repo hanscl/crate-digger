@@ -1,0 +1,1 @@
+CREATE INDEX "rating_surface_event_idx" ON "rating" USING btree ("surface_event_id");

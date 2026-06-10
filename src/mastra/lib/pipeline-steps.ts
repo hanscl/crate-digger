@@ -462,6 +462,10 @@ export type SurfaceSummary = {
   refillCount: number;
   broadCount: number;
   effectiveCap: number;
+  /** LAB-60 — candidates dropped at the surfacing entry gate: already keep/dislike-decided. */
+  excludedDecidedCount: number;
+  /** LAB-60 — candidates dropped at the surfacing entry gate: already queued unrated. */
+  excludedPendingCount: number;
 };
 
 /**
@@ -470,6 +474,8 @@ export type SurfaceSummary = {
  * LAB-53: surfacing emits every candidate that clears its ranker's quality bar,
  * bounded only by the queue ceiling (`effectiveCap = queueCeiling − unrated`);
  * there is no per-day cap. `effectiveCap` here is that ceiling headroom.
+ * LAB-60: already-decided and pending-unrated tracks are excluded inside
+ * `runSurfacingBatch`; the excluded counts are reported for observability.
  */
 export async function surfaceStep(
   db: Database,
@@ -484,6 +490,8 @@ export async function surfaceStep(
     refillCount,
     broadCount,
     effectiveCap: result.effectiveCap,
+    excludedDecidedCount: result.excludedDecidedCount,
+    excludedPendingCount: result.excludedPendingCount,
   };
 }
 
