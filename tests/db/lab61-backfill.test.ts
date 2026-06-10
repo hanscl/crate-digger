@@ -9,10 +9,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import * as schema from "@/db/schema";
 
 /**
- * Migration-replay harness for the LAB-61 backfill (0010). Phase one
- * migrates a copy of `migrations/` truncated to 0009 (the pre-LAB-61
+ * Migration-replay harness for the LAB-61 backfill (0011). Phase one
+ * migrates a copy of `migrations/` truncated to 0010 (the pre-LAB-61
  * schema, no `origin` column), seeds legacy state with raw SQL, then phase
- * two migrates the REAL folder — drizzle applies only 0010 — and asserts
+ * two migrates the REAL folder — drizzle applies only 0011 — and asserts
  * the backfill's mapping and cleanup against that state.
  */
 
@@ -22,7 +22,7 @@ let db: PostgresJsDatabase<typeof schema>;
 
 const PROVISION_TIMEOUT = 120_000;
 const MIGRATIONS_DIR = path.resolve(import.meta.dirname, "../../migrations");
-const LAB61_JOURNAL_IDX = 10;
+const LAB61_JOURNAL_IDX = 11;
 
 beforeAll(async () => {
   container = await new PostgreSqlContainer("pgvector/pgvector:pg16")
@@ -72,9 +72,9 @@ async function insertLegacyTrack(title: string): Promise<number> {
   return Number(rows[0]!.id);
 }
 
-describe("LAB-61 backfill (migration 0010)", () => {
+describe("LAB-61 backfill (migration 0011)", () => {
   it("maps keep→discovery_keep / no-rating→seed_track and deletes non-keep-rated memberships, keeping ratings", async () => {
-    // Phase one: the pre-LAB-61 schema (0000–0009) — bucket_member has no
+    // Phase one: the pre-LAB-61 schema (0000–0010) — bucket_member has no
     // origin column yet.
     const truncated = migrationsTruncatedBelow(LAB61_JOURNAL_IDX);
     await migrate(db, { migrationsFolder: truncated });
@@ -124,7 +124,7 @@ describe("LAB-61 backfill (migration 0010)", () => {
       );
     }
 
-    // Phase two: the real folder — drizzle applies only 0010.
+    // Phase two: the real folder — drizzle applies only 0011.
     await migrate(db, { migrationsFolder: MIGRATIONS_DIR });
 
     const members = await client.unsafe(
