@@ -20,8 +20,8 @@ import { runDailyPipeline } from "./pipeline-run";
  *      observability when something goes wrong with the daily run.
  *
  * Tests + reduced-env deployments can disable scheduling via
- * `CRON_DISABLED=1` — the registry still exposes `runDailyPipelineNow` for
- * manual triggers.
+ * `CRON_DISABLED=1` — scheduling is a no-op but the cron task objects are
+ * still created.
  *
  * Pipeline runs — scheduled here or fired from the Console — all go through
  * `runDailyPipeline` (`src/server/pipeline-run.ts`), which serializes them so
@@ -30,7 +30,11 @@ import { runDailyPipeline } from "./pipeline-run";
 
 export type CronHandle = {
   stop: () => void;
-  /** Manually fire the daily pipeline (Console "Run now" button uses this). */
+  /**
+   * Fire the daily pipeline outside the schedule. The Console "Run now"
+   * button does NOT come through here — it calls `runDailyPipeline`
+   * (`src/server/pipeline-run.ts`) directly; both paths serialize there.
+   */
   runDailyPipelineNow: () => Promise<void>;
 };
 
