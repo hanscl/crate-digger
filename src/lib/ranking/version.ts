@@ -176,14 +176,25 @@ export async function bumpModelVersionCarryForwardInTx(
 
 /**
  * LAB-36 — idempotent config upgrade for EXISTING installs: when the ACTIVE
- * refill version's config predates audioWeight, mint one refill version
- * carrying lambda forward and adding `{audioWeight: app_config.audio_weight,
- * genreGate: 'slot-overlap'}`, parent-chained, under the app_config lock
+ * refill version's config predates the cross-lane fields, mint one refill
+ * version carrying lambda forward and filling in whichever fields are
+ * missing — `audioWeight` (from the active config when a Console knob bump
+ * already froze one, else `app_config.audio_weight`) and
+ * `genreGate: 'slot-overlap'` — parent-chained, under the app_config lock
  * (Constraint #3: the gate/metric change must be a version boundary so
- * ratings collected after it attribute to the new chain). Returns null —
- * complete no-op — when the active config already has audioWeight (re-run),
- * or when no active refill version exists (fresh install: the
- * `ensureActiveModelVersion` bootstrap mints the full config directly).
+ * ratings collected after it attribute to the new chain).
+ *
+ * The two fields are checked INDEPENDENTLY because they can drift apart: a
+ * Console audioWeight bump on a still-legacy `{lambda}` config mints
+ * `{lambda, audioWeight}` WITHOUT a gate (the knob never invents one — see
+ * the params router), and keying this upgrade on audioWeight alone would
+ * leave such an install on the 'exact' fallback forever, with no product
+ * path to 'slot-overlap'. An already-frozen audioWeight is carried forward,
+ * never overwritten from app_config.
+ *
+ * Returns null — complete no-op — when the active config already has both
+ * fields (re-run), or when no active refill version exists (fresh install:
+ * the `ensureActiveModelVersion` bootstrap mints the full config directly).
  * The check-and-mint runs entirely under the lock, so concurrent callers
  * serialize and exactly one mints.
  */
@@ -207,14 +218,16 @@ export async function mintRefillAudioWeightUpgradeInTx(
     .where(eq(modelVersion.id, cfg.activeRefill))
     .limit(1);
   if (!active || !isRefillConfig(active.config)) return null;
-  if (active.config.audioWeight !== undefined) return null;
+  if (active.config.audioWeight !== undefined && active.config.genreGate !== undefined) {
+    return null;
+  }
   return bumpInTx(
     tx,
     "refill",
     {
       lambda: active.config.lambda,
-      audioWeight: cfg.audioWeight ?? DEFAULT_AUDIO_WEIGHT,
-      genreGate: "slot-overlap",
+      audioWeight: active.config.audioWeight ?? cfg.audioWeight ?? DEFAULT_AUDIO_WEIGHT,
+      genreGate: active.config.genreGate ?? "slot-overlap",
     },
     options,
   );

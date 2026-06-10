@@ -53,9 +53,13 @@ Phase tracker. Update at the end of every phase. Newest at the top.
     (`ensureActiveModelVersion`); EXISTING installs get a second idempotent
     reconcile-sweep step (`mintRefillAudioWeightUpgradeInTx`, runs after the
     LAB-61 membership step inside `db:migrate`) that mints ONE upgrade
-    version (lambda carried forward, parent-chained, under the app_config
-    lock) iff the active config lacks `audioWeight`. Composition with the
-    LAB-61 membership bump = separate rows, separate notes; re-runs no-op.
+    version (lambda — and any knob-frozen `audioWeight` — carried forward,
+    parent-chained, under the app_config lock) iff the active config lacks
+    `audioWeight` OR `genreGate`, checked independently: a Console
+    audioWeight bump on a still-legacy config mints `{lambda, audioWeight}`
+    without a gate, and the upgrade must still install `slot-overlap` on it.
+    Composition with the LAB-61 membership bump = separate rows, separate
+    notes; re-runs no-op.
     `loadAssignConfig` resolves the live gate/weight from the ACTIVE refill
     version (legacy → exact/1 during the pre-reconcile window; none → new
     defaults), so membership decisions always match the scoring version.

@@ -426,6 +426,31 @@ describe("reconcileBuckets — LAB-36 refill config upgrade step", () => {
     expect(activeAfterSecond?.id).toBe(active?.id);
   });
 
+  it("installs the gate on a gate-less {lambda, audioWeight} config, preserving the frozen weight", async () => {
+    // A Console audioWeight bump on a still-legacy active config mints
+    // {lambda, audioWeight} WITHOUT a genreGate (the knob never invents one —
+    // pinned by the params router tests). The upgrade must key on the missing
+    // gate, not on audioWeight presence, or such an install would stay on the
+    // 'exact' fallback forever. The frozen weight (4) must survive even when
+    // app_config.audio_weight has drifted (3) — carry-forward, not re-read.
+    const gateless = await bumpModelVersion(
+      db,
+      "refill",
+      { lambda: 0.3, audioWeight: 4 },
+      { note: "audioWeight update: 2.5 → 4" },
+    );
+    await db.update(schema.appConfig).set({ audioWeight: 3 });
+
+    const result = await reconcileBuckets(db);
+    expect(result.refillConfigUpgraded).toBe(true);
+    const active = await getActiveModelVersion(db, "refill");
+    expect(active?.parentId).toBe(gateless.id);
+    expect(active?.config).toEqual({ lambda: 0.3, audioWeight: 4, genreGate: "slot-overlap" });
+
+    const second = await reconcileBuckets(db);
+    expect(second.refillConfigUpgraded).toBe(false);
+  });
+
   it("never fires for a fresh bootstrap (its config already carries audioWeight) or with no active version", async () => {
     const bare = await reconcileBuckets(db);
     expect(bare.refillConfigUpgraded).toBe(false);

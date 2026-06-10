@@ -6,6 +6,7 @@ import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import * as schema from "@/db/schema";
+import { reconcileBuckets } from "@/lib/bucketing/reconcile";
 import { ensureActiveModelVersion, getActiveModelVersion } from "@/lib/ranking/version";
 import type { Env } from "@/server/env";
 import { paramsRouter } from "@/server/routers/params";
@@ -108,7 +109,7 @@ describe("params.update — audioWeight (LAB-36)", () => {
     await expect(caller().update({ audioWeight: 9 })).rejects.toThrow();
   });
 
-  it("bumping audioWeight on a legacy active config does not invent a genreGate", async () => {
+  it("bumping audioWeight on a legacy active config does not invent a genreGate; the reconcile upgrade then installs it", async () => {
     // Conservative: the gate only changes via the reconcile upgrade (or a
     // bootstrap), never as a side effect of turning the weight knob.
     await db.insert(schema.appConfig).values({ id: 1 }).onConflictDoNothing();
@@ -119,6 +120,15 @@ describe("params.update — audioWeight (LAB-36)", () => {
     expect(result.bumped).toBe(true);
     const active = await getActiveModelVersion(db, "refill");
     expect(active?.config).toEqual({ lambda: 0.3, audioWeight: 3 });
-    expect((active?.config as { genreGate?: string }).genreGate).toBeUndefined();
+    expect(active?.config).not.toHaveProperty("genreGate");
+
+    // The knob-minted gate-less config must NOT defeat the upgrade: the
+    // reconcile sweep keys on the missing gate and finishes the migration,
+    // carrying the operator-chosen weight forward.
+    const reconciled = await reconcileBuckets(db);
+    expect(reconciled.refillConfigUpgraded).toBe(true);
+    const upgraded = await getActiveModelVersion(db, "refill");
+    expect(upgraded?.parentId).toBe(active?.id);
+    expect(upgraded?.config).toEqual({ lambda: 0.3, audioWeight: 3, genreGate: "slot-overlap" });
   });
 });

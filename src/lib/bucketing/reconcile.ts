@@ -41,9 +41,11 @@ import { recomputeBucketStats } from "./recompute";
  * recommendations untouched.
  *
  * LAB-36 — a second idempotent step runs AFTER the membership repair: when
- * the ACTIVE refill version's config predates audioWeight (existing install
- * upgrading across LAB-36), mint ONE refill version carrying lambda forward
- * and adding the cross-lane fields (slot-overlap gate + audio-weighted
+ * the ACTIVE refill version's config is missing either cross-lane field
+ * (existing install upgrading across LAB-36, including one whose Console
+ * audioWeight knob was bumped before this sweep ran), mint ONE refill
+ * version carrying lambda — and any already-frozen audioWeight — forward
+ * and filling in the missing fields (slot-overlap gate + audio-weighted
  * cosine; see `mintRefillAudioWeightUpgradeInTx`). Composition with the
  * membership-gated bump above: separate version rows, separate notes — a
  * drifted install minting both gets `repair → upgrade` chained in that

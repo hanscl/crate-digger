@@ -118,6 +118,29 @@ export async function loadAssignConfig(db: Database | Tx): Promise<AssignConfig>
   };
 }
 
+/**
+ * Resolve the effective per-call assignment config: overrides win field by
+ * field; the DB ({@link loadAssignConfig} — an app_config read plus a
+ * model_version read) is only hit when at least one field is missing.
+ * Callers that override everything (tests/evals replaying a fixed config,
+ * e.g. the LAB-36 reassignment replay) skip both queries entirely.
+ */
+async function resolveAssignConfig(
+  db: Database,
+  overrides: { spawnThreshold?: number; audioWeight?: number; genreGate?: GenreGate },
+): Promise<AssignConfig> {
+  const { spawnThreshold, audioWeight, genreGate } = overrides;
+  if (spawnThreshold !== undefined && audioWeight !== undefined && genreGate !== undefined) {
+    return { spawnThreshold, audioWeight, genreGate };
+  }
+  const loaded = await loadAssignConfig(db);
+  return {
+    spawnThreshold: spawnThreshold ?? loaded.spawnThreshold,
+    audioWeight: audioWeight ?? loaded.audioWeight,
+    genreGate: genreGate ?? loaded.genreGate,
+  };
+}
+
 function defaultBucketName(primaryGenre: string | null): string {
   // Placeholder; the Mastra `bucket-namer` agent in Phase 6 replaces this on spawn.
   return primaryGenre ? `${primaryGenre} (auto)` : "Unnamed (auto)";
@@ -165,12 +188,7 @@ export async function assignTrack(
   trackId: number,
   options: AssignOptions,
 ): Promise<AssignResult> {
-  const loaded = await loadAssignConfig(db);
-  const threshold = options.spawnThreshold ?? loaded.spawnThreshold;
-  const gate: BucketGateConfig = {
-    audioWeight: options.audioWeight ?? loaded.audioWeight,
-    genreGate: options.genreGate ?? loaded.genreGate,
-  };
+  const { spawnThreshold: threshold, ...gate } = await resolveAssignConfig(db, options);
   const coldStartSeed = options.coldStartSeed ?? false;
 
   // One retry covers the only race left: the loser of a unique-on-track_id
@@ -210,12 +228,7 @@ export async function flagCandidateBucket(
   trackId: number,
   options: { spawnThreshold?: number; audioWeight?: number; genreGate?: GenreGate } = {},
 ): Promise<CandidateFlagResult> {
-  const loaded = await loadAssignConfig(db);
-  const threshold = options.spawnThreshold ?? loaded.spawnThreshold;
-  const gate: BucketGateConfig = {
-    audioWeight: options.audioWeight ?? loaded.audioWeight,
-    genreGate: options.genreGate ?? loaded.genreGate,
-  };
+  const { spawnThreshold: threshold, ...gate } = await resolveAssignConfig(db, options);
   return db.transaction(async (tx) => {
     const [existing] = await tx
       .select({ bucketId: bucketMember.bucketId })

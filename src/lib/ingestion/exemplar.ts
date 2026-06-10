@@ -39,6 +39,12 @@ export const DEFAULT_MAX_SEED_BUCKETS = 5;
  *   3. Members without an embedding are ignored. Buckets with no embedded
  *      members, or whose exemplar has a blank artist/title, are skipped.
  *
+ * Deliberately PLAIN cosine, not the LAB-36 audio-weighted membership metric
+ * (mirroring the merge-gate exemption in `recommendations.ts`): the seed
+ * should be the bucket's most representative track overall — genre mass
+ * included — for an external Last.fm similar pull, not the cross-lane
+ * outlier the audio-up-weighted metric may have pulled in at the margin.
+ *
  * Returns one `{ bucketId, seedArtist, seedTrack }` per surviving bucket,
  * in the bucket ordering above.
  */
@@ -79,6 +85,7 @@ export async function selectBucketSeeds(
     let best: { artist: string; title: string; sim: number } | null = null;
     for (const m of members) {
       if (!m.embedding) continue;
+      // Plain cosine on purpose — see the exemption note in the doc above.
       const sim = cosine(m.embedding, b.centroid);
       // Strictly-greater keeps the first (lowest track.id) member on ties,
       // since `members` is ordered by track.id ASC.
