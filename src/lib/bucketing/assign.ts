@@ -58,6 +58,13 @@ export type AssignOptions = {
 const FALLBACK_SPAWN_THRESHOLD = 0.7;
 /** Postgres SQLSTATE for unique_violation. */
 const PG_UNIQUE_VIOLATION = "23505";
+/**
+ * The spawn-or-join decision full-scans `bucket` and filters in JS — fine at
+ * the tens-of-buckets scale this app runs at, but an implicit bound. Warn
+ * loudly once it stops holding so the HNSW/pgvector candidate query gets
+ * built before this becomes a hot-path cost.
+ */
+const FULL_SCAN_WARN_BUCKETS = 500;
 
 /**
  * LAB-36 — the comparison config for spawn-or-join decisions: which genre
@@ -331,6 +338,12 @@ async function computeBucketDecision(
 
   const audioWeight = t.audioFeatures === null ? 1 : gate.audioWeight;
   const allBuckets = await tx.select().from(bucket);
+  if (allBuckets.length > FULL_SCAN_WARN_BUCKETS) {
+    console.warn(
+      `[bucketing] spawn-or-join full-scanned ${allBuckets.length} buckets ` +
+        `(> ${FULL_SCAN_WARN_BUCKETS}) — time to move candidate selection to pgvector`,
+    );
+  }
 
   let best: { id: number; sim: number } | null = null;
   for (const b of allBuckets) {

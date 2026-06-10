@@ -3,7 +3,7 @@ import type { Database } from "@/db/client";
 import { bucket, bucketMember, bucketRecommendation } from "@/db/schema";
 import {
   bumpModelVersionCarryForwardInTx,
-  mintRefillAudioWeightUpgradeInTx,
+  mintRefillCrossLaneUpgradeInTx,
 } from "@/lib/ranking/version";
 import { evaluateBucketRecommendations } from "./recommendations";
 import { recomputeBucketStats } from "./recompute";
@@ -46,7 +46,7 @@ import { recomputeBucketStats } from "./recompute";
  * audioWeight knob was bumped before this sweep ran), mint ONE refill
  * version carrying lambda — and any already-frozen audioWeight — forward
  * and filling in the missing fields (slot-overlap gate + audio-weighted
- * cosine; see `mintRefillAudioWeightUpgradeInTx`). Composition with the
+ * cosine; see `mintRefillCrossLaneUpgradeInTx`). Composition with the
  * membership-gated bump above: separate version rows, separate notes — a
  * drifted install minting both gets `repair → upgrade` chained in that
  * order. Both steps are no-ops on re-run, so `db:migrate` stays
@@ -137,7 +137,7 @@ export async function reconcileBuckets(db: Database): Promise<ReconcileBucketsRe
     // LAB-36 — config upgrade for existing installs, AFTER the membership
     // step so a drifted upgrade chains repair → upgrade. Self-gating and
     // lock-serialized; null means "already upgraded or nothing to upgrade".
-    const upgraded = await mintRefillAudioWeightUpgradeInTx(tx, {
+    const upgraded = await mintRefillCrossLaneUpgradeInTx(tx, {
       note: "LAB-36: cross-lane membership — slot-overlap gate + audio-weighted cosine",
     });
     const refillConfigUpgraded = upgraded !== null;

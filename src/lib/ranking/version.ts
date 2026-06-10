@@ -198,7 +198,7 @@ export async function bumpModelVersionCarryForwardInTx(
  * The check-and-mint runs entirely under the lock, so concurrent callers
  * serialize and exactly one mints.
  */
-export async function mintRefillAudioWeightUpgradeInTx(
+export async function mintRefillCrossLaneUpgradeInTx(
   tx: Tx,
   options: BumpOptions = {},
 ): Promise<ModelVersion | null> {
