@@ -484,7 +484,7 @@ async function loadGlobalDislikes(db: Database): Promise<RatedTrack[]> {
  * scoring. LAB-61 guarantees every member is either a deliberate cold-start
  * seed (the user chose it for the seed playlist/paste — counts as a keep) or
  * a discovery track the user explicitly kept; legacy eager-joined members
- * with non-keep ratings were removed by the 0010 backfill and
+ * with non-keep ratings were removed by the 0011 backfill and
  * `loadRefillableBuckets` filters on the keep-anchor origins. The caller
  * passes member ids already scoped that way — this function only hydrates
  * embeddings.

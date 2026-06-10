@@ -95,10 +95,10 @@ export async function importTaste(db: Database, raw: unknown): Promise<TasteImpo
     };
 
     // LAB-61 — keep-inference fallback for pre-LAB-61 exports whose members
-    // carry no origin, mirroring the FULL 0010 backfill mapping: a member
+    // carry no origin, mirroring the FULL 0011 backfill mapping: a member
     // whose track was kept in this same export imports as 'discovery_keep';
     // a member whose track was rated but never kept is legacy eager-join
-    // cruft and is SKIPPED (0010 deletes those membership rows — importing
+    // cruft and is SKIPPED (0011 deletes those membership rows — importing
     // them as seeds would re-anchor refill on a disliked track); a member
     // with no rating at all imports as the generic 'seed_track'. Ratings
     // themselves always import (the eval substrate keeps every decision).
@@ -131,7 +131,7 @@ export async function importTaste(db: Database, raw: unknown): Promise<TasteImpo
           const key = trackKey(memberRef);
           if (keptTrackKeys.has(key)) origin = "discovery_keep";
           else if (ratedTrackKeys.has(key))
-            continue; // rated-but-never-kept: 0010 delete arm
+            continue; // rated-but-never-kept: 0011 delete arm
           else origin = "seed_track";
         }
         const trackId = await resolveTrack(memberRef);

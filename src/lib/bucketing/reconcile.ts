@@ -6,7 +6,7 @@ import { evaluateBucketRecommendations } from "./recommendations";
 import { recomputeBucketStats } from "./recompute";
 
 /**
- * LAB-61 — post-migration bucket reconcile sweep. The 0010 backfill deletes
+ * LAB-61 — post-migration bucket reconcile sweep. The 0011 backfill deletes
  * eager-join cruft from `bucket_member` in raw SQL, which leaves derived
  * state behind: `bucket.member_count`/centroid/feature_stats/dislike_count
  * drift from the surviving rows, emptied buckets linger, and pending
