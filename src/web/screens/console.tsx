@@ -220,7 +220,11 @@ export function ConsoleScreen() {
                 </button>
               </div>
               {runNow.data ? (
-                <div className="mt-3 text-xs mono text-keep">pipeline: {runNow.data.status}</div>
+                <div className="mt-3 text-xs mono text-keep">
+                  pipeline: {runNow.data.status} • surfaced {runNow.data.surfacedCount} • excluded{" "}
+                  {runNow.data.excludedDecidedCount} decided / {runNow.data.excludedPendingCount}{" "}
+                  pending
+                </div>
               ) : null}
               {retrain.data ? (
                 <div className="mt-3 text-xs mono">

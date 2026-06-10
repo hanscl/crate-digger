@@ -38,7 +38,8 @@ current state.** Then proceed.
    not at ingestion. Ingest captures everything; surfacing emits every candidate that clears its
    ranker's quality bar (refill = keep-similarity; broad = classifier P(keep)), bounded only by the
    queue ceiling (`max(0, queueCeiling − unrated)`). Below-bar tracks stay enriched but unsurfaced.
-   The per-run pull size (LAB-51) is the throttle.
+   The per-run pull size (LAB-51) is the throttle. Keep/dislike-decided and pending-unrated tracks
+   are excluded at surfacing entry (amended LAB-60); defer re-surfaces.
 6. **Novelty knob = ranking parameter.** Affects explore/exploit weight (broad) and bucket-spawn
    aggressiveness (refill).
 7. **Admin dashboard is read-mostly + parameter tweaks.** Writes limited to config, manual

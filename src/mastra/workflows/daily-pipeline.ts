@@ -65,6 +65,8 @@ const SurfaceResult = z.object({
   refillCount: z.number().int().nonnegative(),
   broadCount: z.number().int().nonnegative(),
   effectiveCap: z.number().int().nonnegative(),
+  excludedDecidedCount: z.number().int().nonnegative(),
+  excludedPendingCount: z.number().int().nonnegative(),
 });
 
 export const DailyPipelineInput = z.object({
@@ -225,6 +227,8 @@ const surfaceWorkflowStep = createStep({
       refillCount: result.refillCount,
       broadCount: result.broadCount,
       effectiveCap: result.effectiveCap,
+      excludedDecidedCount: result.excludedDecidedCount,
+      excludedPendingCount: result.excludedPendingCount,
     };
   },
 });

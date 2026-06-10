@@ -7,6 +7,7 @@ import postgres from "postgres";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import * as schema from "@/db/schema";
 import { assignTrack } from "@/lib/bucketing/assign";
+import { ingestRating } from "@/lib/feedback/ingest-rating";
 import { selectBucketSeeds } from "@/lib/ingestion/exemplar";
 import type { SourceAdapter, RawCandidate } from "@/lib/ingestion";
 import {
@@ -274,6 +275,23 @@ describe("daily-pipeline (step-by-step)", () => {
       const winners = ev.candidatePool.filter((e) => e.surfaced);
       expect(winners.length).toBe(1);
     }
+
+    // 6. LAB-60 — a rated track must not re-enter the queue. Rate the first
+    //    surfaced event, then re-run the surface step over the SAME day pool:
+    //    the rated track is decided, the rest still sit unrated in the queue —
+    //    nothing new surfaces and no duplicate queue card appears.
+    const firstEvent = events[0]!;
+    await ingestRating(db, {
+      trackId: firstEvent.trackId,
+      decision: "keep",
+      surfaceEventId: firstEvent.id,
+    });
+    const resurface = await surfaceStep(db, pull.resolvedTrackIds);
+    expect(resurface.surfacedCount).toBe(0);
+    expect(resurface.excludedDecidedCount).toBe(1);
+    expect(resurface.excludedPendingCount).toBe(events.length - 1);
+    const eventsAfterResurface = await db.select().from(schema.surfaceEvent);
+    expect(eventsAfterResurface).toHaveLength(events.length);
 
     // Regression guard: Spotify retired `/audio-features` for new apps — the
     // enrich phase must never call Spotify's copy (it would silently 403 in

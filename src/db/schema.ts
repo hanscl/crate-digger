@@ -230,6 +230,10 @@ export const rating = pgTable(
     index("rating_track_idx").on(t.trackId),
     index("rating_rated_at_idx").on(t.ratedAt),
     index("rating_model_version_idx").on(t.modelVersionId),
+    // Backs every "unrated surface event" lookup — the rating side of the
+    // surfaceEvent⟕rating left join (queue.next, queue depth, the surfacing
+    // pending-eligibility gate).
+    index("rating_surface_event_idx").on(t.surfaceEventId),
   ],
 );
 
