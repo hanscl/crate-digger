@@ -93,6 +93,7 @@ export async function exportTaste(db: Database): Promise<TasteExport> {
           broadQualityBar: cfg.broadQualityBar,
           spawnThreshold: cfg.spawnThreshold,
           refillLambda: cfg.refillLambda,
+          audioWeight: cfg.audioWeight,
           mergeThreshold: cfg.mergeThreshold,
           splitDislikeRate: cfg.splitDislikeRate,
           trendingLimitPerSource: cfg.trendingLimitPerSource,

@@ -1,4 +1,4 @@
-import { eq, isNull, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import type { Database } from "@/db/client";
 import {
   type AudioFeatures,
@@ -7,10 +7,18 @@ import {
   bucketMember,
   type BucketMemberOrigin,
   type FeatureStats,
+  modelVersion,
   track,
 } from "@/db/schema";
-import { buildEmbedding, cosine, derivePrimaryGenre } from "@/lib/embedding";
+import { buildEmbedding, derivePrimaryGenre, weightedCosine } from "@/lib/embedding";
+import {
+  DEFAULT_AUDIO_WEIGHT,
+  isRefillConfig,
+  refillAudioWeight,
+  refillGenreGate,
+} from "@/lib/ranking/types";
 import { addFeatureSample, emptyFeatureStats, updateCentroid } from "./centroid";
+import { type GenreGate, genreScopeCompatible } from "./genre-scope";
 
 /**
  * Outcome of a single bucket assignment. `spawned=true` means a brand-new
@@ -39,6 +47,10 @@ export type AssignOptions = {
   origin: BucketMemberOrigin;
   /** Cosine threshold above which a track joins the nearest bucket. Falls back to app_config. */
   spawnThreshold?: number;
+  /** LAB-36 — audio-dim weight override (tests/evals). Falls back to {@link loadAssignConfig}. */
+  audioWeight?: number;
+  /** LAB-36 — genre-gate override (tests/evals). Falls back to {@link loadAssignConfig}. */
+  genreGate?: GenreGate;
   /** Mark a freshly-spawned bucket as a cold-start seed (Setup-screen playlist flow). */
   coldStartSeed?: boolean;
 };
@@ -46,13 +58,94 @@ export type AssignOptions = {
 const FALLBACK_SPAWN_THRESHOLD = 0.7;
 /** Postgres SQLSTATE for unique_violation. */
 const PG_UNIQUE_VIOLATION = "23505";
+/**
+ * The spawn-or-join decision full-scans `bucket` and filters in JS — fine at
+ * the tens-of-buckets scale this app runs at, but an implicit bound. Warn
+ * loudly once it stops holding so the HNSW/pgvector candidate query gets
+ * built before this becomes a hot-path cost.
+ */
+const FULL_SCAN_WARN_BUCKETS = 500;
 
-export async function loadSpawnThreshold(db: Database | Tx): Promise<number> {
-  const [row] = await db
-    .select({ spawnThreshold: appConfig.spawnThreshold })
+/**
+ * LAB-36 — the comparison config for spawn-or-join decisions: which genre
+ * gate filters candidate buckets and how hard the audio dims weigh in the
+ * cosine. One value pair per decision so the JOIN gate and the surfacing
+ * winner gate stay one metric family.
+ */
+export type BucketGateConfig = {
+  audioWeight: number;
+  genreGate: GenreGate;
+};
+
+export type AssignConfig = BucketGateConfig & { spawnThreshold: number };
+
+/**
+ * Resolve the live assignment config. spawnThreshold comes straight from
+ * app_config; audioWeight/genreGate come from the ACTIVE refill
+ * model_version's config so membership decisions and refill scoring always
+ * run the same metric (Constraint #3: the version IS the config record).
+ * Resolution:
+ *
+ *   - active refill version with LAB-36 fields → its audioWeight/genreGate;
+ *   - active refill version with a legacy {lambda}-only config (pre-LAB-36
+ *     install mid-migration, before the reconcile sweep mints the upgrade
+ *     version) → weight 1 + 'exact', preserving old behavior exactly;
+ *   - no active refill version (fresh install before first surfacing
+ *     bootstrap) → app_config.audio_weight + 'slot-overlap', matching the
+ *     config `ensureActiveModelVersion` will mint.
+ */
+export async function loadAssignConfig(db: Database | Tx): Promise<AssignConfig> {
+  const [cfg] = await db
+    .select({
+      spawnThreshold: appConfig.spawnThreshold,
+      audioWeight: appConfig.audioWeight,
+      activeRefillVersionId: appConfig.activeRefillVersionId,
+    })
     .from(appConfig)
     .limit(1);
-  return row?.spawnThreshold ?? FALLBACK_SPAWN_THRESHOLD;
+  const spawnThreshold = cfg?.spawnThreshold ?? FALLBACK_SPAWN_THRESHOLD;
+  if (cfg?.activeRefillVersionId) {
+    const [active] = await db
+      .select({ config: modelVersion.config })
+      .from(modelVersion)
+      .where(eq(modelVersion.id, cfg.activeRefillVersionId))
+      .limit(1);
+    if (active && isRefillConfig(active.config)) {
+      return {
+        spawnThreshold,
+        audioWeight: refillAudioWeight(active.config),
+        genreGate: refillGenreGate(active.config),
+      };
+    }
+  }
+  return {
+    spawnThreshold,
+    audioWeight: cfg?.audioWeight ?? DEFAULT_AUDIO_WEIGHT,
+    genreGate: "slot-overlap",
+  };
+}
+
+/**
+ * Resolve the effective per-call assignment config: overrides win field by
+ * field; the DB ({@link loadAssignConfig} — an app_config read plus a
+ * model_version read) is only hit when at least one field is missing.
+ * Callers that override everything (tests/evals replaying a fixed config,
+ * e.g. the LAB-36 reassignment replay) skip both queries entirely.
+ */
+async function resolveAssignConfig(
+  db: Database,
+  overrides: { spawnThreshold?: number; audioWeight?: number; genreGate?: GenreGate },
+): Promise<AssignConfig> {
+  const { spawnThreshold, audioWeight, genreGate } = overrides;
+  if (spawnThreshold !== undefined && audioWeight !== undefined && genreGate !== undefined) {
+    return { spawnThreshold, audioWeight, genreGate };
+  }
+  const loaded = await loadAssignConfig(db);
+  return {
+    spawnThreshold: spawnThreshold ?? loaded.spawnThreshold,
+    audioWeight: audioWeight ?? loaded.audioWeight,
+    genreGate: genreGate ?? loaded.genreGate,
+  };
 }
 
 function defaultBucketName(primaryGenre: string | null): string {
@@ -69,11 +162,17 @@ function isUniqueViolation(err: unknown): boolean {
 /**
  * Hybrid spawn-or-join assignment. The contract pinned by tests:
  *
- *   1. Only buckets that share the track's primary genre are considered.
- *      A track whose primary genre matches no existing bucket spawns a new
- *      one regardless of how close it is to other centroids.
- *   2. Among same-genre buckets, the closest centroid wins. If max cosine
- *      similarity ≥ `spawnThreshold` the track joins; otherwise it spawns.
+ *   1. Only buckets passing the config's genre gate are considered
+ *      (LAB-36: 'slot-overlap' — ≥1 shared genre slot between the track's
+ *      embedding and the bucket's centroid genre mass; legacy 'exact' —
+ *      same primary genre, null===null). A track compatible with no
+ *      existing bucket spawns a new one regardless of how close it is to
+ *      other centroids.
+ *   2. Among compatible buckets, the closest centroid by audio-weighted
+ *      cosine wins. If max similarity ≥ `spawnThreshold` the track joins;
+ *      otherwise it spawns. Tracks with NULL audio_features compare at
+ *      weight 1 (their audio dims are neutral 0.5 fills — up-weighting
+ *      those would make them promiscuous joiners).
  *   3. Joining incrementally updates the bucket's centroid, feature_stats
  *      (Welford), and member_count in a single transaction with the
  *      bucket_member insert. Re-running on the same track is a no-op.
@@ -96,7 +195,7 @@ export async function assignTrack(
   trackId: number,
   options: AssignOptions,
 ): Promise<AssignResult> {
-  const threshold = options.spawnThreshold ?? (await loadSpawnThreshold(db));
+  const { spawnThreshold: threshold, ...gate } = await resolveAssignConfig(db, options);
   const coldStartSeed = options.coldStartSeed ?? false;
 
   // One retry covers the only race left: the loser of a unique-on-track_id
@@ -104,7 +203,11 @@ export async function assignTrack(
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       return await db.transaction((tx) =>
-        commitAssignmentInTx(tx, trackId, threshold, { origin: options.origin, coldStartSeed }),
+        commitAssignmentInTx(tx, trackId, threshold, {
+          origin: options.origin,
+          coldStartSeed,
+          gate,
+        }),
       );
     } catch (err) {
       if (attempt === 0 && isUniqueViolation(err)) continue;
@@ -119,20 +222,20 @@ export type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
 /**
  * LAB-52 — flag the bucket a freshly-ingested (discovery) track WOULD join,
  * without joining it. Persists the track's embedding/primary_genre (other
- * phases read these), runs the same primary-genre gate + nearest-centroid
+ * phases read these), runs the same genre gate + weighted nearest-centroid
  * decision as the eager path, then writes `candidate_bucket_id` /
  * `candidate_score` on the track — NO `bucket_member` insert, NO centroid
  * move. The track becomes a real member only when the user keeps it (see
  * {@link commitAssignmentInTx}, invoked from `ingestRating`). A NULL
- * `candidate_bucket_id` means "no same-genre bucket cleared the threshold — a
- * keep spawns a new bucket."
+ * `candidate_bucket_id` means "no gate-compatible bucket cleared the
+ * threshold — a keep spawns a new bucket."
  */
 export async function flagCandidateBucket(
   db: Database,
   trackId: number,
-  options: { spawnThreshold?: number } = {},
+  options: { spawnThreshold?: number; audioWeight?: number; genreGate?: GenreGate } = {},
 ): Promise<CandidateFlagResult> {
-  const threshold = options.spawnThreshold ?? (await loadSpawnThreshold(db));
+  const { spawnThreshold: threshold, ...gate } = await resolveAssignConfig(db, options);
   return db.transaction(async (tx) => {
     const [existing] = await tx
       .select({ bucketId: bucketMember.bucketId })
@@ -152,7 +255,7 @@ export async function flagCandidateBucket(
       };
     }
 
-    const decision = await computeBucketDecision(tx, trackId);
+    const decision = await computeBucketDecision(tx, trackId, gate);
     const wouldJoin =
       decision.bestBucketId !== null &&
       decision.bestSimilarity !== null &&
@@ -179,11 +282,11 @@ export type CandidateFlagResult = {
   trackId: number;
   /** Bucket the track would join on approval, or null if it would spawn. */
   candidateBucketId: number | null;
-  /** Cosine to the candidate bucket (only when it would join), else null. */
+  /** Weighted cosine to the candidate bucket (only when it would join), else null. */
   candidateScore: number | null;
   /** Already a committed member — nothing was flagged. */
   alreadyAssigned: boolean;
-  /** No same-genre bucket cleared the threshold — a keep spawns a new bucket. */
+  /** No gate-compatible bucket cleared the threshold — a keep spawns a new bucket. */
   wouldSpawn: boolean;
 };
 
@@ -192,9 +295,9 @@ type BucketDecision = {
   audioFeatures: AudioFeatures | null;
   primaryGenre: string | null;
   hadAudioFeatures: boolean;
-  /** Nearest same-genre bucket id, or null when none shares the genre. */
+  /** Nearest gate-compatible bucket id, or null when none is compatible. */
   bestBucketId: number | null;
-  /** Cosine to that bucket, or null when there is no candidate. */
+  /** Weighted cosine to that bucket, or null when there is no candidate. */
   bestSimilarity: number | null;
 };
 
@@ -205,8 +308,20 @@ type BucketDecision = {
  * commit path ({@link commitAssignmentInTx}) and the LAB-52 candidate-flag path
  * ({@link flagCandidateBucket}). The caller probes membership first and decides
  * join-vs-spawn against the threshold.
+ *
+ * LAB-36: candidate buckets are ALL buckets passing the config's genre gate
+ * (fetch-all + filter in JS — tens of buckets, nothing queries HNSW here);
+ * nearest is by `weightedCosine` at the config's audioWeight. NULL-AUDIO
+ * DAMPING: when the track's audio_features IS NULL its embedding carries
+ * neutral 0.5 audio fills, so its comparisons degrade to weight 1 — otherwise
+ * up-weighting the neutral dims would make featureless tracks similar to
+ * everything and they'd converge into whichever bucket came first.
  */
-async function computeBucketDecision(tx: Tx, trackId: number): Promise<BucketDecision> {
+async function computeBucketDecision(
+  tx: Tx,
+  trackId: number,
+  gate: BucketGateConfig,
+): Promise<BucketDecision> {
   const [t] = await tx.select().from(track).where(eq(track.id, trackId)).limit(1);
   if (!t) throw new Error(`assignTrack: track id=${trackId} not found`);
 
@@ -221,15 +336,27 @@ async function computeBucketDecision(tx: Tx, trackId: number): Promise<BucketDec
       .where(eq(track.id, trackId));
   }
 
-  // Candidate buckets sharing the track's primary genre (the LAB-45 gate).
-  const candidates = await tx
-    .select()
-    .from(bucket)
-    .where(primaryGenre ? eq(bucket.primaryGenre, primaryGenre) : isNull(bucket.primaryGenre));
+  const audioWeight = t.audioFeatures === null ? 1 : gate.audioWeight;
+  const allBuckets = await tx.select().from(bucket);
+  if (allBuckets.length > FULL_SCAN_WARN_BUCKETS) {
+    console.warn(
+      `[bucketing] spawn-or-join full-scanned ${allBuckets.length} buckets ` +
+        `(> ${FULL_SCAN_WARN_BUCKETS}) — time to move candidate selection to pgvector`,
+    );
+  }
 
   let best: { id: number; sim: number } | null = null;
-  for (const b of candidates) {
-    const sim = cosine(embedding, b.centroid);
+  for (const b of allBuckets) {
+    if (
+      !genreScopeCompatible(
+        gate.genreGate,
+        { primaryGenre, embedding },
+        { primaryGenre: b.primaryGenre, centroid: b.centroid },
+      )
+    ) {
+      continue;
+    }
+    const sim = weightedCosine(embedding, b.centroid, audioWeight);
     if (!best || sim > best.sim) best = { id: b.id, sim };
   }
 
@@ -258,7 +385,7 @@ export async function commitAssignmentInTx(
   tx: Tx,
   trackId: number,
   threshold: number,
-  options: { origin: BucketMemberOrigin; coldStartSeed: boolean },
+  options: { origin: BucketMemberOrigin; coldStartSeed: boolean; gate: BucketGateConfig },
 ): Promise<AssignResult> {
   // 1. Probe membership first. If already assigned, we're done.
   const [existing] = await tx
@@ -284,7 +411,7 @@ export async function commitAssignmentInTx(
     };
   }
 
-  const decision = await computeBucketDecision(tx, trackId);
+  const decision = await computeBucketDecision(tx, trackId, options.gate);
 
   let result: AssignResult | null = null;
   if (

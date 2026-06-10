@@ -1,0 +1,2344 @@
+[
+  {
+    "id": 1,
+    "title": "Simple Song",
+    "artist": "The Shins, James Mercer",
+    "genres": ["indie", "indie rock", "indie pop", "alternative", "rock"],
+    "audioFeatures": {
+      "tempo": 119.945,
+      "energy": 0.878,
+      "valence": 0.35,
+      "acousticness": 0.0133,
+      "danceability": 0.546,
+      "instrumentalness": 0
+    }
+  },
+  {
+    "id": 2,
+    "title": "Laredo",
+    "artist": "Band of Horses",
+    "genres": [
+      "indie",
+      "indie rock",
+      "alternative",
+      "Alt-country",
+      "rock",
+      "Blues",
+      "Folk, World, & Country",
+      "Acoustic"
+    ],
+    "audioFeatures": {
+      "tempo": 123.356,
+      "energy": 0.826,
+      "valence": 0.602,
+      "acousticness": 0.00338,
+      "danceability": 0.505,
+      "instrumentalness": 0.00000204
+    }
+  },
+  {
+    "id": 3,
+    "title": "Little Red Left Behind",
+    "artist": "Twisted Reality",
+    "genres": [
+      "Electronic",
+      "Non-Music",
+      "Stage & Screen",
+      "Electroacoustic",
+      "Ambient",
+      "Experimental",
+      "Modern Classical",
+      "Sound Collage",
+      "Spoken Word"
+    ],
+    "audioFeatures": null
+  },
+  {
+    "id": 4,
+    "title": "Skandal im Sperrbezirk - Remastered 2007",
+    "artist": "Spider Murphy Gang",
+    "genres": [
+      "german",
+      "NDW",
+      "Neue Deutsche Welle",
+      "deutsch",
+      "rock",
+      "spider murphy gang",
+      "80s",
+      "Rock & Roll"
+    ],
+    "audioFeatures": {
+      "tempo": 92.521,
+      "energy": 0.879,
+      "valence": 0.808,
+      "acousticness": 0.0889,
+      "danceability": 0.577,
+      "instrumentalness": 0.000369
+    }
+  },
+  {
+    "id": 5,
+    "title": "Hurra, hurra, die Schule brennt",
+    "artist": "Extrabreit",
+    "genres": [
+      "NDW",
+      "german",
+      "Neue Deutsche Welle",
+      "punk rock",
+      "80s",
+      "Electronic",
+      "Pop Rock",
+      "Synth-pop"
+    ],
+    "audioFeatures": {
+      "tempo": 96.154,
+      "energy": 0.472,
+      "valence": 0.685,
+      "acousticness": 0.000917,
+      "danceability": 0.61,
+      "instrumentalness": 0.0000243
+    }
+  },
+  {
+    "id": 6,
+    "title": "Herz an Herz",
+    "artist": "Paso Doble",
+    "genres": ["german", "NDW", "Neue Deutsche Welle", "80s", "deutsch", "Pop", "Europop"],
+    "audioFeatures": {
+      "tempo": 164.563,
+      "energy": 0.71,
+      "valence": 0.664,
+      "acousticness": 0.363,
+      "danceability": 0.599,
+      "instrumentalness": 0.000179
+    }
+  },
+  {
+    "id": 7,
+    "title": "Forever Young - 2019 Remaster",
+    "artist": "Alphaville",
+    "genres": ["synthpop", "new wave", "80s", "pop", "synth pop"],
+    "audioFeatures": {
+      "tempo": 137.012,
+      "energy": 0.471,
+      "valence": 0.291,
+      "acousticness": 0.397,
+      "danceability": 0.483,
+      "instrumentalness": 0.000336
+    }
+  },
+  {
+    "id": 8,
+    "title": "Sounds Like a Melody - 2019 Remaster",
+    "artist": "Alphaville",
+    "genres": ["synthpop", "new wave", "80s", "pop", "synth pop"],
+    "audioFeatures": {
+      "tempo": 97.189,
+      "energy": 0.802,
+      "valence": 0.445,
+      "acousticness": 0.0422,
+      "danceability": 0.7,
+      "instrumentalness": 0.17
+    }
+  },
+  {
+    "id": 9,
+    "title": "Goldener Reiter",
+    "artist": "Joachim Witt",
+    "genres": [
+      "darkwave",
+      "german",
+      "NDW",
+      "Gothic",
+      "Neue Deutsche Welle",
+      "rock",
+      "Electronic",
+      "Synth-pop"
+    ],
+    "audioFeatures": {
+      "tempo": 137.009,
+      "energy": 0.659,
+      "valence": 0.82,
+      "acousticness": 0.646,
+      "danceability": 0.823,
+      "instrumentalness": 0.0698
+    }
+  },
+  {
+    "id": 10,
+    "title": "More Than Words",
+    "artist": "Extreme",
+    "genres": ["hard rock", "rock", "funk metal", "hair metal"],
+    "audioFeatures": {
+      "tempo": 91.893,
+      "energy": 0.134,
+      "valence": 0.239,
+      "acousticness": 0.467,
+      "danceability": 0.626,
+      "instrumentalness": 0
+    }
+  },
+  {
+    "id": 11,
+    "title": "Fairytale Gone Bad",
+    "artist": "Sunrise Avenue",
+    "genres": ["rock", "pop rock", "finnish", "alternative rock", "alternative", "Pop"],
+    "audioFeatures": {
+      "tempo": 138.024,
+      "energy": 0.607,
+      "valence": 0.665,
+      "acousticness": 0.0514,
+      "danceability": 0.693,
+      "instrumentalness": 0
+    }
+  },
+  {
+    "id": 12,
+    "title": "Insane in the Brain",
+    "artist": "Cypress Hill",
+    "genres": ["Hip-Hop", "rap", "rapcore", "hip hop", "Gangsta"],
+    "audioFeatures": {
+      "tempo": 102.304,
+      "energy": 0.611,
+      "valence": 0.769,
+      "acousticness": 0.0291,
+      "danceability": 0.897,
+      "instrumentalness": 0.186
+    }
+  },
+  {
+    "id": 13,
+    "title": "Ertrinken",
+    "artist": "Die Toten Hosen",
+    "genres": ["punk rock", "german", "punk", "rock", "Deutschrock"],
+    "audioFeatures": {
+      "tempo": 133.852,
+      "energy": 0.805,
+      "valence": 0.36,
+      "acousticness": 0.00105,
+      "danceability": 0.618,
+      "instrumentalness": 0.00000313
+    }
+  },
+  {
+    "id": 14,
+    "title": "Gegen Den Wind",
+    "artist": "Megaherz",
+    "genres": [
+      "industrial metal",
+      "german",
+      "industrial",
+      "Neue Deutsche Haerte",
+      "metal",
+      "Rock",
+      "Gothic Metal"
+    ],
+    "audioFeatures": {
+      "tempo": 122.983,
+      "energy": 0.79,
+      "valence": 0.396,
+      "acousticness": 0.00654,
+      "danceability": 0.605,
+      "instrumentalness": 0
+    }
+  },
+  {
+    "id": 15,
+    "title": "Fanatisch",
+    "artist": "Megaherz",
+    "genres": [
+      "industrial metal",
+      "german",
+      "industrial",
+      "Neue Deutsche Haerte",
+      "metal",
+      "Rock",
+      "Gothic Metal"
+    ],
+    "audioFeatures": {
+      "tempo": 154.971,
+      "energy": 0.755,
+      "valence": 0.437,
+      "acousticness": 0.00142,
+      "danceability": 0.497,
+      "instrumentalness": 0.0512
+    }
+  },
+  {
+    "id": 16,
+    "title": "Mar adentro",
+    "artist": "Heroes Del Silencio",
+    "genres": [
+      "rock",
+      "spanish",
+      "Spanish Rock",
+      "hard rock",
+      "Rock en Espanol",
+      "Pop",
+      "Alternative Rock",
+      "Pop Rock",
+      "Rock & Roll"
+    ],
+    "audioFeatures": {
+      "tempo": 140.349,
+      "energy": 0.872,
+      "valence": 0.468,
+      "acousticness": 0.0552,
+      "danceability": 0.518,
+      "instrumentalness": 0.00107
+    }
+  },
+  {
+    "id": 17,
+    "title": "La sirena varada - 2012 Remastered Version",
+    "artist": "Heroes Del Silencio",
+    "genres": ["rock", "spanish", "Spanish Rock", "hard rock", "Rock en Espanol"],
+    "audioFeatures": {
+      "tempo": 159.947,
+      "energy": 0.932,
+      "valence": 0.701,
+      "acousticness": 0.00789,
+      "danceability": 0.426,
+      "instrumentalness": 0
+    }
+  },
+  {
+    "id": 18,
+    "title": "Digging the Grave - 2016 Remaster",
+    "artist": "Faith No More",
+    "genres": [
+      "alternative rock",
+      "rock",
+      "alternative",
+      "metal",
+      "alternative metal",
+      "mike patton"
+    ],
+    "audioFeatures": {
+      "tempo": 163.192,
+      "energy": 0.985,
+      "valence": 0.703,
+      "acousticness": 0.00029,
+      "danceability": 0.249,
+      "instrumentalness": 0.000277
+    }
+  },
+  {
+    "id": 19,
+    "title": "Creep",
+    "artist": "Rozzi",
+    "genres": ["soul", "pop", "rnb", "Stage & Screen", "Score"],
+    "audioFeatures": {
+      "tempo": 180.029,
+      "energy": 0.216,
+      "valence": 0.111,
+      "acousticness": 0.801,
+      "danceability": 0.406,
+      "instrumentalness": 0.000029
+    }
+  },
+  {
+    "id": 20,
+    "title": "Dancing In The Dark",
+    "artist": "biz colletti",
+    "genres": [],
+    "audioFeatures": {
+      "tempo": 128.416,
+      "energy": 0.321,
+      "valence": 0.195,
+      "acousticness": 0.826,
+      "danceability": 0.433,
+      "instrumentalness": 0
+    }
+  },
+  {
+    "id": 21,
+    "title": "Just a Man",
+    "artist": "Faith No More",
+    "genres": [
+      "alternative rock",
+      "rock",
+      "alternative",
+      "metal",
+      "alternative metal",
+      "mike patton"
+    ],
+    "audioFeatures": {
+      "tempo": 152.047,
+      "energy": 0.731,
+      "valence": 0.603,
+      "acousticness": 0.0609,
+      "danceability": 0.525,
+      "instrumentalness": 0.0117
+    }
+  },
+  {
+    "id": 22,
+    "title": "Digging the Grave",
+    "artist": "Faith No More",
+    "genres": [
+      "alternative rock",
+      "rock",
+      "alternative",
+      "metal",
+      "alternative metal",
+      "mike patton",
+      "Hard Rock"
+    ],
+    "audioFeatures": {
+      "tempo": 163.076,
+      "energy": 0.977,
+      "valence": 0.769,
+      "acousticness": 0.0000849,
+      "danceability": 0.248,
+      "instrumentalness": 0.00189
+    }
+  },
+  {
+    "id": 23,
+    "title": "Evidence",
+    "artist": "Faith No More",
+    "genres": [
+      "alternative rock",
+      "rock",
+      "alternative",
+      "metal",
+      "alternative metal",
+      "mike patton",
+      "Non-Music",
+      "Interview",
+      "Hard Rock"
+    ],
+    "audioFeatures": {
+      "tempo": 97.948,
+      "energy": 0.779,
+      "valence": 0.627,
+      "acousticness": 0.0259,
+      "danceability": 0.686,
+      "instrumentalness": 0.00759
+    }
+  },
+  {
+    "id": 24,
+    "title": "Everything's Ruined",
+    "artist": "Faith No More",
+    "genres": [
+      "alternative rock",
+      "rock",
+      "alternative",
+      "metal",
+      "alternative metal",
+      "mike patton",
+      "Heavy Metal"
+    ],
+    "audioFeatures": {
+      "tempo": 103.955,
+      "energy": 0.959,
+      "valence": 0.228,
+      "acousticness": 0.0012,
+      "danceability": 0.541,
+      "instrumentalness": 0.122
+    }
+  },
+  {
+    "id": 25,
+    "title": "Nobody Hears",
+    "artist": "Suicidal Tendencies",
+    "genres": [
+      "hardcore",
+      "crossover",
+      "thrash metal",
+      "punk",
+      "hardcore punk",
+      "crossover thrash",
+      "Rock",
+      "Alternative Metal"
+    ],
+    "audioFeatures": {
+      "tempo": 116.983,
+      "energy": 0.877,
+      "valence": 0.377,
+      "acousticness": 0.000226,
+      "danceability": 0.558,
+      "instrumentalness": 0.0015
+    }
+  },
+  {
+    "id": 26,
+    "title": "There Is No God",
+    "artist": "Extreme",
+    "genres": ["hard rock", "rock", "funk metal", "hair metal", "Classic Rock"],
+    "audioFeatures": {
+      "tempo": 167.93,
+      "energy": 0.851,
+      "valence": 0.267,
+      "acousticness": 0.00329,
+      "danceability": 0.332,
+      "instrumentalness": 0.00659
+    }
+  },
+  {
+    "id": 27,
+    "title": "Epic",
+    "artist": "Faith No More",
+    "genres": [
+      "alternative rock",
+      "rock",
+      "alternative",
+      "metal",
+      "alternative metal",
+      "mike patton",
+      "Hard Rock"
+    ],
+    "audioFeatures": {
+      "tempo": 174.238,
+      "energy": 0.893,
+      "valence": 0.262,
+      "acousticness": 0.0222,
+      "danceability": 0.358,
+      "instrumentalness": 0.0524
+    }
+  },
+  {
+    "id": 28,
+    "title": "Words - Original Version 1983",
+    "artist": "F.R. David",
+    "genres": ["80s", "pop", "Disco", "france", "classic rock", "Europop"],
+    "audioFeatures": {
+      "tempo": 123.78,
+      "energy": 0.782,
+      "valence": 0.543,
+      "acousticness": 0.347,
+      "danceability": 0.536,
+      "instrumentalness": 0.0000168
+    }
+  },
+  {
+    "id": 29,
+    "title": "Zombie Eaters",
+    "artist": "Faith No More",
+    "genres": [
+      "alternative rock",
+      "rock",
+      "alternative",
+      "metal",
+      "alternative metal",
+      "mike patton",
+      "Funk Metal"
+    ],
+    "audioFeatures": {
+      "tempo": 141.886,
+      "energy": 0.767,
+      "valence": 0.164,
+      "acousticness": 0.00228,
+      "danceability": 0.239,
+      "instrumentalness": 0.0449
+    }
+  },
+  {
+    "id": 30,
+    "title": "Call of the Wild",
+    "artist": "Saxon",
+    "genres": ["heavy metal", "NWOBHM", "hard rock", "metal", "Rock"],
+    "audioFeatures": {
+      "tempo": 145.578,
+      "energy": 0.807,
+      "valence": 0.438,
+      "acousticness": 0.00351,
+      "danceability": 0.486,
+      "instrumentalness": 0.276
+    }
+  },
+  {
+    "id": 31,
+    "title": "Liberian Girl - 2012 Remastered Version",
+    "artist": "Michael Jackson",
+    "genres": [
+      "pop",
+      "80s",
+      "dance",
+      "soul",
+      "funk",
+      "Electronic",
+      "Rock",
+      "Funk / Soul",
+      "Pop Rock",
+      "House",
+      "Disco",
+      "Rhythm & Blues",
+      "Dubstep",
+      "Synth-pop",
+      "Ballad",
+      "Tech House"
+    ],
+    "audioFeatures": {
+      "tempo": 105.232,
+      "energy": 0.546,
+      "valence": 0.454,
+      "acousticness": 0.464,
+      "danceability": 0.749,
+      "instrumentalness": 0.00191
+    }
+  },
+  {
+    "id": 32,
+    "title": "Heavy Is The Crown (Original Score) (from the series Arcane League of Legends)",
+    "artist": "Arcane, Mike Shinoda, Emily Armstrong",
+    "genres": [
+      "Progressive metal",
+      "thrash metal",
+      "australian",
+      "Progressive rock",
+      "Electronic",
+      "Hip Hop",
+      "Rock",
+      "Pop",
+      "Stage & Screen",
+      "Soundtrack"
+    ],
+    "audioFeatures": {
+      "tempo": 105.024,
+      "energy": 0.589,
+      "valence": 0.0554,
+      "acousticness": 0.00641,
+      "danceability": 0.458,
+      "instrumentalness": 0.000576
+    }
+  },
+  {
+    "id": 33,
+    "title": "Halt aus - Live",
+    "artist": "Klaus Lage, Bo Heart",
+    "genres": ["Deutschrock", "german", "klaus lage", "deutsch", "rock", "Pop"],
+    "audioFeatures": {
+      "tempo": 82.34,
+      "energy": 0.313,
+      "valence": 0.114,
+      "acousticness": 0.793,
+      "danceability": 0.48,
+      "instrumentalness": 0.000907
+    }
+  },
+  {
+    "id": 34,
+    "title": "God Only Knows",
+    "artist": "The Beach Boys",
+    "genres": ["classic rock", "60s", "pop", "Surf", "rock", "surf rock", "Pop Rock"],
+    "audioFeatures": null
+  },
+  {
+    "id": 35,
+    "title": "Sloop John B",
+    "artist": "The Beach Boys",
+    "genres": ["classic rock", "60s", "pop", "Surf", "rock", "surf rock"],
+    "audioFeatures": {
+      "tempo": 125.575,
+      "energy": 0.745,
+      "valence": 0.903,
+      "acousticness": 0.402,
+      "danceability": 0.567,
+      "instrumentalness": 0
+    }
+  },
+  {
+    "id": 36,
+    "title": "1000 und 1 Nacht - 2008 Digital Remaster",
+    "artist": "Klaus Lage",
+    "genres": ["Deutschrock", "german", "klaus lage", "deutsch", "rock", "Pop", "Schlager"],
+    "audioFeatures": null
+  },
+  {
+    "id": 37,
+    "title": "Faust auf Faust (Schimanski) - Remastered 2007",
+    "artist": "Klaus Lage",
+    "genres": ["Deutschrock", "german", "klaus lage", "deutsch", "rock", "Pop Rock"],
+    "audioFeatures": {
+      "tempo": 109.144,
+      "energy": 0.866,
+      "valence": 0.439,
+      "acousticness": 0.088,
+      "danceability": 0.587,
+      "instrumentalness": 0
+    }
+  },
+  {
+    "id": 38,
+    "title": "Someday The Rains Will Fall",
+    "artist": "John Mellencamp",
+    "genres": [
+      "rock",
+      "classic rock",
+      "singer-songwriter",
+      "80s",
+      "Folk, World, & Country",
+      "Acoustic",
+      "Folk",
+      "Rock & Roll",
+      "Folk Rock",
+      "Blues Rock",
+      "Pop Rock"
+    ],
+    "audioFeatures": {
+      "tempo": 81.348,
+      "energy": 0.226,
+      "valence": 0.37,
+      "acousticness": 0.938,
+      "danceability": 0.629,
+      "instrumentalness": 0.00000843
+    }
+  },
+  {
+    "id": 39,
+    "title": "Geweint vor Glück",
+    "artist": "Pur",
+    "genres": [
+      "german",
+      "pop",
+      "deutsch",
+      "Deutschrock",
+      "rock",
+      "pur",
+      "Pop Rock",
+      "Ballad",
+      "Schlager"
+    ],
+    "audioFeatures": {
+      "tempo": 151.853,
+      "energy": 0.375,
+      "valence": 0.319,
+      "acousticness": 0.532,
+      "danceability": 0.347,
+      "instrumentalness": 0
+    }
+  },
+  {
+    "id": 40,
+    "title": "Weil ich dich liebe - MTV Unplugged",
+    "artist": "Westernhagen",
+    "genres": ["german", "Deutschrock", "rock", "deutsch", "pop", "Acoustic", "Pop Rock"],
+    "audioFeatures": {
+      "tempo": 104.259,
+      "energy": 0.383,
+      "valence": 0.298,
+      "acousticness": 0.939,
+      "danceability": 0.506,
+      "instrumentalness": 0.00127
+    }
+  },
+  {
+    "id": 41,
+    "title": "Faster Disco",
+    "artist": "Faith No More",
+    "genres": [
+      "alternative rock",
+      "rock",
+      "alternative",
+      "metal",
+      "alternative metal",
+      "mike patton",
+      "Hard Rock",
+      "Funk Metal"
+    ],
+    "audioFeatures": {
+      "tempo": 116.986,
+      "energy": 0.918,
+      "valence": 0.333,
+      "acousticness": 0.0337,
+      "danceability": 0.529,
+      "instrumentalness": 0.483
+    }
+  },
+  {
+    "id": 42,
+    "title": "Anker auf - Live",
+    "artist": "Klaus Lage, Bo Heart",
+    "genres": ["Deutschrock", "german", "klaus lage", "deutsch", "rock"],
+    "audioFeatures": {
+      "tempo": 136.241,
+      "energy": 0.325,
+      "valence": 0.298,
+      "acousticness": 0.899,
+      "danceability": 0.374,
+      "instrumentalness": 0.000925
+    }
+  },
+  {
+    "id": 43,
+    "title": "God Was Never on Your Side",
+    "artist": "Motörhead",
+    "genres": ["heavy metal", "hard rock", "speed metal", "metal", "rock"],
+    "audioFeatures": {
+      "tempo": 175.921,
+      "energy": 0.887,
+      "valence": 0.183,
+      "acousticness": 0.161,
+      "danceability": 0.291,
+      "instrumentalness": 0.000634
+    }
+  },
+  {
+    "id": 44,
+    "title": "The Man Who Sold The World - Live",
+    "artist": "Nirvana",
+    "genres": [
+      "Grunge",
+      "rock",
+      "alternative rock",
+      "alternative",
+      "90s",
+      "folk rock",
+      "hard rock",
+      "indie rock",
+      "acoustic",
+      "alternative pop/rock",
+      "alternative/indie rock",
+      "guitar",
+      "melancholy",
+      "pop/rock",
+      "sad",
+      "Stage & Screen",
+      "Concert Film"
+    ],
+    "audioFeatures": {
+      "tempo": 115.102,
+      "energy": 0.753,
+      "valence": 0.42,
+      "acousticness": 0.425,
+      "danceability": 0.483,
+      "instrumentalness": 0.000142
+    }
+  },
+  {
+    "id": 45,
+    "title": "Where Did You Sleep Last Night - Live",
+    "artist": "Nirvana",
+    "genres": [
+      "Grunge",
+      "rock",
+      "alternative rock",
+      "alternative",
+      "90s",
+      "acoustic rock",
+      "blues rock",
+      "folk rock",
+      "hard rock",
+      "indie rock",
+      "noise rock",
+      "acoustic",
+      "alternative pop/rock",
+      "alternative/indie rock",
+      "garage",
+      "melancholy",
+      "pop/rock",
+      "rerip grunge",
+      "rock music"
+    ],
+    "audioFeatures": {
+      "tempo": 108.789,
+      "energy": 0.59,
+      "valence": 0.364,
+      "acousticness": 0.667,
+      "danceability": 0.573,
+      "instrumentalness": 0.000397
+    }
+  },
+  {
+    "id": 46,
+    "title": "All You Zombies",
+    "artist": "The Hooters",
+    "genres": ["rock", "80s", "classic rock", "folk rock", "Electronic", "Pop Rock", "Synth-pop"],
+    "audioFeatures": {
+      "tempo": 86.786,
+      "energy": 0.803,
+      "valence": 0.535,
+      "acousticness": 0.125,
+      "danceability": 0.541,
+      "instrumentalness": 0.136
+    }
+  },
+  {
+    "id": 47,
+    "title": "500 Miles",
+    "artist": "The Hooters",
+    "genres": ["rock", "80s", "classic rock", "folk rock", "Pop", "Pop Rock"],
+    "audioFeatures": {
+      "tempo": 75.102,
+      "energy": 0.775,
+      "valence": 0.705,
+      "acousticness": 0.36,
+      "danceability": 0.595,
+      "instrumentalness": 0.00000786
+    }
+  },
+  {
+    "id": 48,
+    "title": "Running Up That Hill",
+    "artist": "Placebo",
+    "genres": ["alternative rock", "alternative", "rock", "indie", "britpop"],
+    "audioFeatures": {
+      "tempo": 179.935,
+      "energy": 0.357,
+      "valence": 0.0838,
+      "acousticness": 0.268,
+      "danceability": 0.45,
+      "instrumentalness": 0.519
+    }
+  },
+  {
+    "id": 49,
+    "title": "Yoshimi Battles the Pink Robots - Live on BBC Radio 1 10/31/03",
+    "artist": "The Flaming Lips",
+    "genres": [
+      "alternative",
+      "indie",
+      "alternative rock",
+      "indie rock",
+      "rock",
+      "psychedelic",
+      "experimental"
+    ],
+    "audioFeatures": {
+      "tempo": 138.715,
+      "energy": 0.138,
+      "valence": 0.256,
+      "acousticness": 0.912,
+      "danceability": 0.54,
+      "instrumentalness": 0
+    }
+  },
+  {
+    "id": 50,
+    "title": "Creep",
+    "artist": "Radiohead",
+    "genres": ["rock", "alternative", "alternative rock", "indie", "electronic", "Indie Rock"],
+    "audioFeatures": {
+      "tempo": 91.844,
+      "energy": 0.43,
+      "valence": 0.104,
+      "acousticness": 0.0097,
+      "danceability": 0.515,
+      "instrumentalness": 0.000133
+    }
+  },
+  {
+    "id": 51,
+    "title": "House Of Cards",
+    "artist": "Radiohead",
+    "genres": ["rock", "alternative", "alternative rock", "indie", "electronic", "Indie Rock"],
+    "audioFeatures": {
+      "tempo": 111.652,
+      "energy": 0.499,
+      "valence": 0.628,
+      "acousticness": 0.269,
+      "danceability": 0.708,
+      "instrumentalness": 0.57
+    }
+  },
+  {
+    "id": 52,
+    "title": "Let It Burn",
+    "artist": "Volbeat",
+    "genres": [
+      "heavy metal",
+      "metal",
+      "rockabilly",
+      "elvis metal",
+      "danish",
+      "Rock",
+      "Hard Rock",
+      "Rock & Roll"
+    ],
+    "audioFeatures": {
+      "tempo": 106.97,
+      "energy": 0.906,
+      "valence": 0.485,
+      "acousticness": 0.000168,
+      "danceability": 0.514,
+      "instrumentalness": 0.000682
+    }
+  },
+  {
+    "id": 53,
+    "title": "Shepherd of Fire",
+    "artist": "Avenged Sevenfold",
+    "genres": ["metalcore", "hard rock", "metal", "hardcore", "rock", "Heavy Metal"],
+    "audioFeatures": {
+      "tempo": 127.935,
+      "energy": 0.906,
+      "valence": 0.211,
+      "acousticness": 0.000332,
+      "danceability": 0.576,
+      "instrumentalness": 0.0614
+    }
+  },
+  {
+    "id": 54,
+    "title": "The Mission - Remastered 2003",
+    "artist": "Queensrÿche",
+    "genres": ["Progressive metal", "heavy metal", "Progressive rock", "hard rock", "Rock"],
+    "audioFeatures": {
+      "tempo": 187.812,
+      "energy": 0.941,
+      "valence": 0.137,
+      "acousticness": 0.0476,
+      "danceability": 0.311,
+      "instrumentalness": 0.0000082
+    }
+  },
+  {
+    "id": 55,
+    "title": "Runaway",
+    "artist": "Bon Jovi",
+    "genres": ["rock", "hard rock", "classic rock", "80s", "hair metal", "Glam", "Heavy Metal"],
+    "audioFeatures": {
+      "tempo": 152.445,
+      "energy": 0.899,
+      "valence": 0.603,
+      "acousticness": 0.00375,
+      "danceability": 0.475,
+      "instrumentalness": 0.0000191
+    }
+  },
+  {
+    "id": 56,
+    "title": "Tell It to My Heart",
+    "artist": "Taylor Dayne",
+    "genres": [
+      "pop",
+      "80s",
+      "female vocalists",
+      "dance",
+      "american",
+      "Electronic",
+      "House",
+      "Disco"
+    ],
+    "audioFeatures": {
+      "tempo": 117.955,
+      "energy": 0.988,
+      "valence": 0.723,
+      "acousticness": 0.0302,
+      "danceability": 0.638,
+      "instrumentalness": 0.0000116
+    }
+  },
+  {
+    "id": 57,
+    "title": "I Wanna Dance with Somebody (Who Loves Me)",
+    "artist": "Whitney Houston",
+    "genres": ["pop", "soul", "female vocalists", "rnb", "80s", "Electronic", "Synth-pop"],
+    "audioFeatures": {
+      "tempo": 118.818,
+      "energy": 0.824,
+      "valence": 0.867,
+      "acousticness": 0.207,
+      "danceability": 0.709,
+      "instrumentalness": 0.000307
+    }
+  },
+  {
+    "id": 58,
+    "title": "Never Gonna Give You Up",
+    "artist": "Rick Astley",
+    "genres": ["pop", "80s", "rickroll", "dance", "Electronic", "Euro-Disco"],
+    "audioFeatures": {
+      "tempo": 113.309,
+      "energy": 0.939,
+      "valence": 0.914,
+      "acousticness": 0.115,
+      "danceability": 0.721,
+      "instrumentalness": 0.0000379
+    }
+  },
+  {
+    "id": 59,
+    "title": "Verdammt ich lieb dich - Remastered",
+    "artist": "Matthias Reim",
+    "genres": [
+      "Matthias Reim",
+      "Schlager",
+      "deutsch",
+      "german",
+      "Deutsche Schlager",
+      "Rock",
+      "Pop",
+      "Pop Rock"
+    ],
+    "audioFeatures": {
+      "tempo": 100.318,
+      "energy": 0.802,
+      "valence": 0.315,
+      "acousticness": 0.497,
+      "danceability": 0.588,
+      "instrumentalness": 0.0000015
+    }
+  },
+  {
+    "id": 60,
+    "title": "Don't Speak",
+    "artist": "No Doubt",
+    "genres": ["rock", "ska", "pop", "alternative", "female vocalists", "Pop Rock"],
+    "audioFeatures": {
+      "tempo": 76.039,
+      "energy": 0.709,
+      "valence": 0.536,
+      "acousticness": 0.247,
+      "danceability": 0.52,
+      "instrumentalness": 0.0000178
+    }
+  },
+  {
+    "id": 61,
+    "title": "Irgendwie, irgendwo, irgendwann - Special 12\" Dance Mix",
+    "artist": "Nena",
+    "genres": ["pop", "german", "new wave", "80s", "female vocalists", "Rock", "NDW"],
+    "audioFeatures": {
+      "tempo": 101.542,
+      "energy": 0.605,
+      "valence": 0.441,
+      "acousticness": 0.00324,
+      "danceability": 0.529,
+      "instrumentalness": 0.00218
+    }
+  },
+  {
+    "id": 62,
+    "title": "In These Arms",
+    "artist": "Bon Jovi",
+    "genres": ["rock", "hard rock", "classic rock", "80s", "hair metal", "Pop Rock"],
+    "audioFeatures": {
+      "tempo": 123.257,
+      "energy": 0.915,
+      "valence": 0.459,
+      "acousticness": 0.00884,
+      "danceability": 0.51,
+      "instrumentalness": 0.0000175
+    }
+  },
+  {
+    "id": 63,
+    "title": "I'll Be There For You",
+    "artist": "Bon Jovi",
+    "genres": ["rock", "hard rock", "classic rock", "80s", "hair metal", "Pop Rock"],
+    "audioFeatures": {
+      "tempo": 73.029,
+      "energy": 0.727,
+      "valence": 0.233,
+      "acousticness": 0.0532,
+      "danceability": 0.437,
+      "instrumentalness": 0
+    }
+  },
+  {
+    "id": 64,
+    "title": "Dry County",
+    "artist": "Bon Jovi",
+    "genres": ["rock", "hard rock", "classic rock", "80s", "hair metal", "Pop Rock"],
+    "audioFeatures": {
+      "tempo": 160.004,
+      "energy": 0.726,
+      "valence": 0.164,
+      "acousticness": 0.0182,
+      "danceability": 0.28,
+      "instrumentalness": 0.00000148
+    }
+  },
+  {
+    "id": 65,
+    "title": "Gates of Hell",
+    "artist": "Judas Priest",
+    "genres": ["heavy metal", "metal", "hard rock", "NWOBHM", "Rock"],
+    "audioFeatures": {
+      "tempo": 146.991,
+      "energy": 0.953,
+      "valence": 0.653,
+      "acousticness": 0.000101,
+      "danceability": 0.488,
+      "instrumentalness": 0.00663
+    }
+  },
+  {
+    "id": 66,
+    "title": "Fight of Your Life",
+    "artist": "Judas Priest",
+    "genres": [
+      "heavy metal",
+      "metal",
+      "hard rock",
+      "NWOBHM",
+      "Rock",
+      "Blues Rock",
+      "Psychedelic Rock",
+      "Glam",
+      "Speed Metal",
+      "Symphonic Metal",
+      "Progressive Metal"
+    ],
+    "audioFeatures": {
+      "tempo": 102.529,
+      "energy": 0.918,
+      "valence": 0.559,
+      "acousticness": 0.00024,
+      "danceability": 0.536,
+      "instrumentalness": 0.00551
+    }
+  },
+  {
+    "id": 67,
+    "title": "Christmas Eve / Sarajevo 12/24 - Instrumental",
+    "artist": "Trans-Siberian Orchestra",
+    "genres": [
+      "symphonic metal",
+      "Progressive metal",
+      "Classical",
+      "Progressive rock",
+      "christmas",
+      "Rock",
+      "Hard Rock",
+      "Holiday"
+    ],
+    "audioFeatures": {
+      "tempo": 186.405,
+      "energy": 0.567,
+      "valence": 0.156,
+      "acousticness": 0.197,
+      "danceability": 0.292,
+      "instrumentalness": 0.852
+    }
+  },
+  {
+    "id": 68,
+    "title": "Songbird - 2004 Remaster",
+    "artist": "Fleetwood Mac",
+    "genres": [
+      "classic rock",
+      "rock",
+      "70s",
+      "blues",
+      "pop",
+      "blues rock",
+      "instrumental rock",
+      "pop rock",
+      "singer-songwriter",
+      "soft rock",
+      "adult contemporary",
+      "album rock",
+      "rock/pop"
+    ],
+    "audioFeatures": {
+      "tempo": 92.123,
+      "energy": 0.0842,
+      "valence": 0.388,
+      "acousticness": 0.982,
+      "danceability": 0.58,
+      "instrumentalness": 0.00126
+    }
+  },
+  {
+    "id": 69,
+    "title": "Dreams - 2004 Remaster",
+    "artist": "Fleetwood Mac",
+    "genres": ["classic rock", "rock", "70s", "blues", "pop", "Soft Rock"],
+    "audioFeatures": {
+      "tempo": 120.151,
+      "energy": 0.492,
+      "valence": 0.789,
+      "acousticness": 0.0644,
+      "danceability": 0.828,
+      "instrumentalness": 0.00428
+    }
+  },
+  {
+    "id": 70,
+    "title": "Drown Me Slowly",
+    "artist": "Audioslave",
+    "genres": ["alternative rock", "rock", "hard rock", "Grunge", "alternative"],
+    "audioFeatures": {
+      "tempo": 102.375,
+      "energy": 0.908,
+      "valence": 0.481,
+      "acousticness": 0.0292,
+      "danceability": 0.361,
+      "instrumentalness": 0.0000248
+    }
+  },
+  {
+    "id": 71,
+    "title": "Mother",
+    "artist": "Danzig",
+    "genres": ["heavy metal", "hard rock", "metal", "rock", "Blues Rock"],
+    "audioFeatures": {
+      "tempo": 148.366,
+      "energy": 0.763,
+      "valence": 0.342,
+      "acousticness": 0.00726,
+      "danceability": 0.365,
+      "instrumentalness": 0.000457
+    }
+  },
+  {
+    "id": 72,
+    "title": "Harvest",
+    "artist": "Opeth",
+    "genres": [
+      "Progressive metal",
+      "progressive death metal",
+      "death metal",
+      "Melodic Death Metal",
+      "Rock",
+      "Acoustic",
+      "Prog Rock"
+    ],
+    "audioFeatures": {
+      "tempo": 62.509,
+      "energy": 0.686,
+      "valence": 0.218,
+      "acousticness": 0.0405,
+      "danceability": 0.501,
+      "instrumentalness": 0.014
+    }
+  },
+  {
+    "id": 73,
+    "title": "An Deinem Grab",
+    "artist": "Megaherz",
+    "genres": [
+      "industrial metal",
+      "german",
+      "industrial",
+      "Neue Deutsche Haerte",
+      "metal",
+      "Electronic",
+      "Rock",
+      "Heavy Metal"
+    ],
+    "audioFeatures": {
+      "tempo": 145.726,
+      "energy": 0.784,
+      "valence": 0.371,
+      "acousticness": 0.0486,
+      "danceability": 0.323,
+      "instrumentalness": 0.0000024
+    }
+  },
+  {
+    "id": 74,
+    "title": "Heute Schon Gelebt?",
+    "artist": "Megaherz",
+    "genres": [
+      "industrial metal",
+      "german",
+      "industrial",
+      "Neue Deutsche Haerte",
+      "metal",
+      "Electronic",
+      "Rock",
+      "Heavy Metal"
+    ],
+    "audioFeatures": {
+      "tempo": 120.004,
+      "energy": 0.98,
+      "valence": 0.146,
+      "acousticness": 0.0000476,
+      "danceability": 0.536,
+      "instrumentalness": 0.178
+    }
+  },
+  {
+    "id": 75,
+    "title": "5. März",
+    "artist": "Megaherz",
+    "genres": [
+      "industrial metal",
+      "german",
+      "industrial",
+      "Neue Deutsche Haerte",
+      "metal",
+      "Electronic",
+      "Rock",
+      "Heavy Metal"
+    ],
+    "audioFeatures": {
+      "tempo": 100.033,
+      "energy": 0.836,
+      "valence": 0.451,
+      "acousticness": 0.000889,
+      "danceability": 0.616,
+      "instrumentalness": 0.00501
+    }
+  },
+  {
+    "id": 76,
+    "title": "The Unforgiven (Remastered)",
+    "artist": "Metallica",
+    "genres": ["heavy metal", "metal", "hard rock", "rock", "Thrash"],
+    "audioFeatures": null
+  },
+  {
+    "id": 77,
+    "title": "Jordan",
+    "artist": "Megaherz",
+    "genres": ["industrial metal", "german", "industrial", "Neue Deutsche Haerte", "metal", "Rock"],
+    "audioFeatures": {
+      "tempo": 139.965,
+      "energy": 0.934,
+      "valence": 0.294,
+      "acousticness": 0.0212,
+      "danceability": 0.658,
+      "instrumentalness": 0.00000415
+    }
+  },
+  {
+    "id": 78,
+    "title": "Einsam",
+    "artist": "Megaherz",
+    "genres": [
+      "industrial metal",
+      "german",
+      "industrial",
+      "Neue Deutsche Haerte",
+      "metal",
+      "Electronic",
+      "Rock",
+      "Gothic Metal"
+    ],
+    "audioFeatures": {
+      "tempo": 129.922,
+      "energy": 0.705,
+      "valence": 0.597,
+      "acousticness": 0.143,
+      "danceability": 0.743,
+      "instrumentalness": 0
+    }
+  },
+  {
+    "id": 79,
+    "title": "Fields Of Gold",
+    "artist": "Sting",
+    "genres": [
+      "rock",
+      "pop",
+      "classic rock",
+      "british",
+      "singer-songwriter",
+      "Soft Rock",
+      "Pop Rock"
+    ],
+    "audioFeatures": {
+      "tempo": 103.997,
+      "energy": 0.339,
+      "valence": 0.319,
+      "acousticness": 0.373,
+      "danceability": 0.651,
+      "instrumentalness": 0.0145
+    }
+  },
+  {
+    "id": 80,
+    "title": "November Rain - 2022 Version",
+    "artist": "Guns N' Roses",
+    "genres": ["hard rock", "rock", "classic rock", "80s", "Arena Rock", "Glam"],
+    "audioFeatures": {
+      "tempo": 77.972,
+      "energy": 0.797,
+      "valence": 0.199,
+      "acousticness": 0.00458,
+      "danceability": 0.252,
+      "instrumentalness": 0.424
+    }
+  },
+  {
+    "id": 81,
+    "title": "I Hope Your Heart Runs Empty",
+    "artist": "Neverending White Lights",
+    "genres": ["Canadian", "indie", "alternative", "indie rock", "rock", "Alternative Rock"],
+    "audioFeatures": {
+      "tempo": 83.447,
+      "energy": 0.317,
+      "valence": 0.0368,
+      "acousticness": 0.848,
+      "danceability": 0.536,
+      "instrumentalness": 0.663
+    }
+  },
+  {
+    "id": 82,
+    "title": "Song for Zula",
+    "artist": "Phosphorescent",
+    "genres": [
+      "folk",
+      "singer-songwriter",
+      "indie",
+      "Lo-Fi",
+      "freak folk",
+      "Rock",
+      "Folk, World, & Country",
+      "Folk Rock",
+      "Indie Rock"
+    ],
+    "audioFeatures": {
+      "tempo": 86.007,
+      "energy": 0.623,
+      "valence": 0.525,
+      "acousticness": 0.734,
+      "danceability": 0.486,
+      "instrumentalness": 0.536
+    }
+  },
+  {
+    "id": 83,
+    "title": "Kindergarten",
+    "artist": "Faith No More",
+    "genres": [
+      "alternative rock",
+      "rock",
+      "alternative",
+      "metal",
+      "alternative metal",
+      "mike patton",
+      "Funk Metal"
+    ],
+    "audioFeatures": {
+      "tempo": 94.866,
+      "energy": 0.933,
+      "valence": 0.504,
+      "acousticness": 0.015,
+      "danceability": 0.486,
+      "instrumentalness": 0.00609
+    }
+  },
+  {
+    "id": 84,
+    "title": "The Secret",
+    "artist": "Diary Of Dreams",
+    "genres": ["darkwave", "Gothic", "electronic", "industrial", "german"],
+    "audioFeatures": {
+      "tempo": 150.036,
+      "energy": 0.879,
+      "valence": 0.58,
+      "acousticness": 0.276,
+      "danceability": 0.545,
+      "instrumentalness": 0.122
+    }
+  },
+  {
+    "id": 85,
+    "title": "K.",
+    "artist": "Cigarettes After Sex",
+    "genres": [
+      "dream pop",
+      "shoegaze",
+      "slowcore",
+      "Lo-Fi",
+      "Rock",
+      "Pop",
+      "Indie Rock",
+      "Indie Pop"
+    ],
+    "audioFeatures": null
+  },
+  {
+    "id": 86,
+    "title": "Fakest Bitch",
+    "artist": "London Grammar",
+    "genres": ["indie pop", "electronic", "indie", "female vocalists", "british", "Pop"],
+    "audioFeatures": {
+      "tempo": 74.203,
+      "energy": 0.396,
+      "valence": 0.265,
+      "acousticness": 0.858,
+      "danceability": 0.306,
+      "instrumentalness": 0
+    }
+  },
+  {
+    "id": 87,
+    "title": "Cry Little Sister",
+    "artist": "Blutengel",
+    "genres": ["darkwave", "Gothic", "ebm", "industrial", "electronic"],
+    "audioFeatures": {
+      "tempo": 143.987,
+      "energy": 0.601,
+      "valence": 0.0462,
+      "acousticness": 0.0394,
+      "danceability": 0.526,
+      "instrumentalness": 0.00000179
+    }
+  },
+  {
+    "id": 88,
+    "title": "Sekundenglück",
+    "artist": "Herbert Grönemeyer",
+    "genres": ["german", "pop", "deutsch", "singer-songwriter", "rock"],
+    "audioFeatures": {
+      "tempo": 102.021,
+      "energy": 0.487,
+      "valence": 0.449,
+      "acousticness": 0.0377,
+      "danceability": 0.843,
+      "instrumentalness": 0.000144
+    }
+  },
+  {
+    "id": 89,
+    "title": "The Last Unicorn",
+    "artist": "America",
+    "genres": [
+      "classic rock",
+      "rock",
+      "70s",
+      "soft rock",
+      "folk",
+      "folk rock",
+      "Pop",
+      "Stage & Screen",
+      "Soundtrack",
+      "Ballad",
+      "Symphonic Rock",
+      "Score"
+    ],
+    "audioFeatures": {
+      "tempo": 96.823,
+      "energy": 0.422,
+      "valence": 0.196,
+      "acousticness": 0.304,
+      "danceability": 0.45,
+      "instrumentalness": 0
+    }
+  },
+  {
+    "id": 90,
+    "title": "Heaven For Everyone - Remastered 2011",
+    "artist": "Queen",
+    "genres": ["classic rock", "rock", "hard rock", "glam rock", "80s", "Pop Rock", "Prog Rock"],
+    "audioFeatures": {
+      "tempo": 110.208,
+      "energy": 0.425,
+      "valence": 0.268,
+      "acousticness": 0.29,
+      "danceability": 0.593,
+      "instrumentalness": 0.00000134
+    }
+  },
+  {
+    "id": 91,
+    "title": "Leningrad",
+    "artist": "Billy Joel",
+    "genres": ["classic rock", "singer-songwriter", "rock", "pop", "piano", "Folk Rock", "Ballad"],
+    "audioFeatures": {
+      "tempo": 138.782,
+      "energy": 0.52,
+      "valence": 0.233,
+      "acousticness": 0.38,
+      "danceability": 0.508,
+      "instrumentalness": 0.00000591
+    }
+  },
+  {
+    "id": 92,
+    "title": "Love Me Like There's No Tomorrow - Special Edition",
+    "artist": "Freddie Mercury",
+    "genres": [
+      "classic rock",
+      "rock",
+      "80s",
+      "Queen",
+      "pop",
+      "Electronic",
+      "House",
+      "Pop Rock",
+      "Synth-pop"
+    ],
+    "audioFeatures": {
+      "tempo": 78.024,
+      "energy": 0.587,
+      "valence": 0.237,
+      "acousticness": 0.231,
+      "danceability": 0.516,
+      "instrumentalness": 0
+    }
+  },
+  {
+    "id": 93,
+    "title": "Entombed",
+    "artist": "Deftones",
+    "genres": ["Nu Metal", "alternative", "metal", "alternative rock", "alternative metal", "rock"],
+    "audioFeatures": {
+      "tempo": 130.055,
+      "energy": 0.753,
+      "valence": 0.167,
+      "acousticness": 0.00593,
+      "danceability": 0.399,
+      "instrumentalness": 0.128
+    }
+  },
+  {
+    "id": 94,
+    "title": "Richter und Henker",
+    "artist": "OOMPH!",
+    "genres": ["industrial metal", "industrial", "german", "metal", "rock", "Alternative Metal"],
+    "audioFeatures": {
+      "tempo": 130.01,
+      "energy": 0.922,
+      "valence": 0.394,
+      "acousticness": 0.000476,
+      "danceability": 0.57,
+      "instrumentalness": 0.106
+    }
+  },
+  {
+    "id": 95,
+    "title": "Learning to Live",
+    "artist": "Project Pitchfork",
+    "genres": ["darkwave", "industrial", "ebm", "electronic", "Gothic", "Electro", "Synth-pop"],
+    "audioFeatures": {
+      "tempo": 125.006,
+      "energy": 0.937,
+      "valence": 0.263,
+      "acousticness": 0.145,
+      "danceability": 0.646,
+      "instrumentalness": 0.0018
+    }
+  },
+  {
+    "id": 96,
+    "title": "Big Jet Plane",
+    "artist": "Angus & Julia Stone",
+    "genres": [
+      "folk",
+      "indie",
+      "acoustic",
+      "australian",
+      "singer-songwriter",
+      "Rock",
+      "Pop",
+      "Folk, World, & Country",
+      "Folk Rock"
+    ],
+    "audioFeatures": {
+      "tempo": 109.959,
+      "energy": 0.387,
+      "valence": 0.274,
+      "acousticness": 0.239,
+      "danceability": 0.762,
+      "instrumentalness": 0.00756
+    }
+  },
+  {
+    "id": 97,
+    "title": "The Everlasting",
+    "artist": "Volbeat",
+    "genres": ["heavy metal", "metal", "rockabilly", "elvis metal", "danish", "Rock"],
+    "audioFeatures": {
+      "tempo": 103.72,
+      "energy": 0.904,
+      "valence": 0.436,
+      "acousticness": 0.000153,
+      "danceability": 0.3,
+      "instrumentalness": 0.0174
+    }
+  },
+  {
+    "id": 98,
+    "title": "Bewildered Herd",
+    "artist": "Therapy?",
+    "genres": ["alternative rock", "rock", "alternative", "hard rock", "metal", "Punk"],
+    "audioFeatures": {
+      "tempo": 119.994,
+      "energy": 0.956,
+      "valence": 0.489,
+      "acousticness": 0.0000221,
+      "danceability": 0.561,
+      "instrumentalness": 0.0000745
+    }
+  },
+  {
+    "id": 99,
+    "title": "Holier than Thou",
+    "artist": "Apocalyptica",
+    "genres": [
+      "symphonic metal",
+      "instrumental",
+      "metal",
+      "finnish",
+      "heavy metal",
+      "Rock",
+      "Classical"
+    ],
+    "audioFeatures": {
+      "tempo": 112.833,
+      "energy": 0.97,
+      "valence": 0.257,
+      "acousticness": 0.0000741,
+      "danceability": 0.267,
+      "instrumentalness": 0.747
+    }
+  },
+  {
+    "id": 100,
+    "title": "Storm Son",
+    "artist": "Enslaved",
+    "genres": [
+      "black metal",
+      "viking metal",
+      "progressive black metal",
+      "Progressive metal",
+      "Rock"
+    ],
+    "audioFeatures": {
+      "tempo": 164.978,
+      "energy": 0.968,
+      "valence": 0.174,
+      "acousticness": 0.000734,
+      "danceability": 0.2,
+      "instrumentalness": 0.548
+    }
+  },
+  {
+    "id": 101,
+    "title": "The Chemicals Between Us",
+    "artist": "Bush",
+    "genres": [
+      "Grunge",
+      "alternative rock",
+      "rock",
+      "alternative",
+      "90s",
+      "Electronic",
+      "Downtempo",
+      "Drum n Bass"
+    ],
+    "audioFeatures": null
+  },
+  {
+    "id": 102,
+    "title": "The Funeral",
+    "artist": "Band of Horses",
+    "genres": ["indie", "indie rock", "alternative", "Alt-country", "rock"],
+    "audioFeatures": null
+  },
+  {
+    "id": 103,
+    "title": "Take a Walk",
+    "artist": "Passion Pit",
+    "genres": ["electronic", "indie", "indie pop", "pop", "Rock", "Synth-pop", "Indie Rock"],
+    "audioFeatures": {
+      "tempo": 101.006,
+      "energy": 0.755,
+      "valence": 0.445,
+      "acousticness": 0.0338,
+      "danceability": 0.566,
+      "instrumentalness": 0
+    }
+  },
+  {
+    "id": 104,
+    "title": "The a Team - Live at the Tabernacle",
+    "artist": "Birdy",
+    "genres": [
+      "folk",
+      "indie",
+      "female vocalists",
+      "british",
+      "singer-songwriter",
+      "Rock",
+      "Pop",
+      "Baroque Pop",
+      "Indie Rock",
+      "Indie Pop",
+      "Soft Rock",
+      "Ballad"
+    ],
+    "audioFeatures": {
+      "tempo": 135.152,
+      "energy": 0.242,
+      "valence": 0.211,
+      "acousticness": 0.917,
+      "danceability": 0.475,
+      "instrumentalness": 0
+    }
+  },
+  {
+    "id": 105,
+    "title": "I Know I Know I Know - Live",
+    "artist": "Tegan and Sara",
+    "genres": [
+      "indie",
+      "female vocalists",
+      "indie pop",
+      "Canadian",
+      "alternative",
+      "Rock",
+      "Indie Rock"
+    ],
+    "audioFeatures": {
+      "tempo": 128.12,
+      "energy": 0.499,
+      "valence": 0.388,
+      "acousticness": 0.582,
+      "danceability": 0.632,
+      "instrumentalness": 0.00000272
+    }
+  },
+  {
+    "id": 106,
+    "title": "Master Of Puppets",
+    "artist": "Metallica",
+    "genres": ["heavy metal", "metal", "hard rock", "rock", "Thrash", "Speed Metal"],
+    "audioFeatures": {
+      "tempo": 105.173,
+      "energy": 0.836,
+      "valence": 0.56,
+      "acousticness": 0.000647,
+      "danceability": 0.543,
+      "instrumentalness": 0.431
+    }
+  },
+  {
+    "id": 107,
+    "title": "All Nightmare Long",
+    "artist": "Metallica",
+    "genres": ["heavy metal", "metal", "hard rock", "rock"],
+    "audioFeatures": {
+      "tempo": 182.095,
+      "energy": 0.974,
+      "valence": 0.342,
+      "acousticness": 0.00067,
+      "danceability": 0.268,
+      "instrumentalness": 0.00106
+    }
+  },
+  {
+    "id": 108,
+    "title": "CASA CUBA",
+    "artist": "Cave, Amo",
+    "genres": ["Psychedelic Rock", "psychedelic", "krautrock", "techno", "drone"],
+    "audioFeatures": null
+  },
+  {
+    "id": 109,
+    "title": "LDNB",
+    "artist": "AK AUSSERKONTROLLE, Shirin David",
+    "genres": ["Deutschrap", "rap", "Hip-Hop", "hip hop"],
+    "audioFeatures": null
+  },
+  {
+    "id": 110,
+    "title": "Self Aware",
+    "artist": "Temper City",
+    "genres": [],
+    "audioFeatures": null
+  },
+  {
+    "id": 111,
+    "title": "Prada Sport",
+    "artist": "Pashanim, AK AUSSERKONTROLLE, Selim61",
+    "genres": ["german", "rap"],
+    "audioFeatures": null
+  },
+  {
+    "id": 112,
+    "title": "Dracula - JENNIE Remix",
+    "artist": "Tame Impala, JENNIE",
+    "genres": [
+      "Psychedelic Rock",
+      "psychedelic",
+      "indie rock",
+      "australian",
+      "rock",
+      "dance",
+      "pop",
+      "alternative",
+      "Electronic",
+      "Alt-Pop"
+    ],
+    "audioFeatures": {
+      "tempo": 114.972,
+      "energy": 0.786,
+      "valence": 0.761,
+      "acousticness": 0.0247,
+      "danceability": 0.662,
+      "instrumentalness": 0
+    }
+  },
+  {
+    "id": 113,
+    "title": "hate that i made you love me",
+    "artist": "Ariana Grande",
+    "genres": ["pop", "rnb", "female vocalists", "offizielle charts"],
+    "audioFeatures": null
+  },
+  {
+    "id": 114,
+    "title": "the cure",
+    "artist": "Olivia Rodrigo",
+    "genres": ["pop", "pop rock", "rock", "indie pop", "offizielle charts"],
+    "audioFeatures": null
+  },
+  {
+    "id": 115,
+    "title": "Stateside + Zara Larsson",
+    "artist": "PinkPantheress",
+    "genres": ["pop", "electronic", "2-step", "rnb", "dance-pop", "UK Garage", "alt-pop"],
+    "audioFeatures": null
+  },
+  {
+    "id": 116,
+    "title": "Earrings",
+    "artist": "Malcolm Todd",
+    "genres": ["alternative rnb", "indie", "USA", "indie rock", "Funk / Soul", "Pop"],
+    "audioFeatures": {
+      "tempo": 79.877,
+      "energy": 0.505,
+      "valence": 0.547,
+      "acousticness": 0.233,
+      "danceability": 0.498,
+      "instrumentalness": 0.000028
+    }
+  },
+  {
+    "id": 117,
+    "title": "drop dead",
+    "artist": "Olivia Rodrigo",
+    "genres": [
+      "pop",
+      "pop rock",
+      "rock",
+      "indie pop",
+      "5+ wochen",
+      "billboard no 1",
+      "english",
+      "offizielle charts"
+    ],
+    "audioFeatures": null
+  },
+  {
+    "id": 118,
+    "title": "Billie Jean",
+    "artist": "Michael Jackson",
+    "genres": ["pop", "80s", "dance", "soul", "funk", "Electronic", "Funk / Soul", "Disco"],
+    "audioFeatures": {
+      "tempo": 117.002,
+      "energy": 0.457,
+      "valence": 0.884,
+      "acousticness": 0.0173,
+      "danceability": 0.932,
+      "instrumentalness": 0.0436
+    }
+  },
+  {
+    "id": 128,
+    "title": "Mr. Brightside",
+    "artist": "The Killers",
+    "genres": ["indie", "indie rock", "rock", "alternative", "alternative rock"],
+    "audioFeatures": {
+      "tempo": 148.033,
+      "energy": 0.911,
+      "valence": 0.236,
+      "acousticness": 0.00121,
+      "danceability": 0.352,
+      "instrumentalness": 0
+    }
+  },
+  {
+    "id": 130,
+    "title": "Manchild",
+    "artist": "Sabrina Carpenter",
+    "genres": ["pop", "female vocalists", "rnb", "american"],
+    "audioFeatures": {
+      "tempo": 123.014,
+      "energy": 0.686,
+      "valence": 0.839,
+      "acousticness": 0.0987,
+      "danceability": 0.73,
+      "instrumentalness": 0
+    }
+  },
+  {
+    "id": 135,
+    "title": "505",
+    "artist": "Arctic Monkeys",
+    "genres": ["indie rock", "indie", "british", "alternative", "rock", "Alternative Rock"],
+    "audioFeatures": {
+      "tempo": 140.266,
+      "energy": 0.866,
+      "valence": 0.248,
+      "acousticness": 0.00287,
+      "danceability": 0.526,
+      "instrumentalness": 0.0000778
+    }
+  },
+  {
+    "id": 234,
+    "title": "KILLY MANJARO",
+    "artist": "Summer Cem, BILLA JOE",
+    "genres": ["Deutschrap", "rap", "summer cem"],
+    "audioFeatures": null
+  },
+  {
+    "id": 235,
+    "title": "Schwarzer Engel",
+    "artist": "Megaherz",
+    "genres": [
+      "industrial metal",
+      "german",
+      "industrial",
+      "Neue Deutsche Haerte",
+      "metal",
+      "Rock",
+      "Gothic Metal"
+    ],
+    "audioFeatures": {
+      "tempo": 96.011,
+      "energy": 0.795,
+      "valence": 0.427,
+      "acousticness": 0.000124,
+      "danceability": 0.524,
+      "instrumentalness": 0.00539
+    }
+  },
+  {
+    "id": 236,
+    "title": "Lieblingsfeind",
+    "artist": "Megaherz",
+    "genres": [
+      "industrial metal",
+      "german",
+      "industrial",
+      "Neue Deutsche Haerte",
+      "metal",
+      "Rock",
+      "Gothic Metal"
+    ],
+    "audioFeatures": {
+      "tempo": 132.066,
+      "energy": 0.896,
+      "valence": 0.366,
+      "acousticness": 0.000138,
+      "danceability": 0.498,
+      "instrumentalness": 0
+    }
+  },
+  {
+    "id": 237,
+    "title": "Todesspiel",
+    "artist": "Heldmaschine",
+    "genres": [
+      "industrial metal",
+      "NDH",
+      "industrial",
+      "german",
+      "metal",
+      "Electronic",
+      "Rock",
+      "Heavy Metal"
+    ],
+    "audioFeatures": {
+      "tempo": 140.013,
+      "energy": 0.716,
+      "valence": 0.686,
+      "acousticness": 0.0013,
+      "danceability": 0.672,
+      "instrumentalness": 0.0937
+    }
+  },
+  {
+    "id": 238,
+    "title": "If I Ever Lose My Faith in You",
+    "artist": "Sting",
+    "genres": [
+      "rock",
+      "pop",
+      "classic rock",
+      "british",
+      "singer-songwriter",
+      "Acoustic",
+      "Pop Rock"
+    ],
+    "audioFeatures": {
+      "tempo": 98,
+      "energy": 0.727,
+      "valence": 0.504,
+      "acousticness": 0.00953,
+      "danceability": 0.575,
+      "instrumentalness": 0.00756
+    }
+  },
+  {
+    "id": 239,
+    "title": "Fragile",
+    "artist": "Sting",
+    "genres": ["rock", "pop", "classic rock", "british", "singer-songwriter", "Pop Rock"],
+    "audioFeatures": {
+      "tempo": 82.37,
+      "energy": 0.199,
+      "valence": 0.288,
+      "acousticness": 0.912,
+      "danceability": 0.338,
+      "instrumentalness": 0.0675
+    }
+  },
+  {
+    "id": 240,
+    "title": "Another Day in Paradise",
+    "artist": "Phil Collins",
+    "genres": ["pop", "80s", "rock", "classic rock", "soft rock", "Electronic", "Synth-pop"],
+    "audioFeatures": null
+  },
+  {
+    "id": 241,
+    "title": "Somebody Told Me",
+    "artist": "The Killers",
+    "genres": ["indie", "indie rock", "rock", "alternative", "alternative rock", "Electronic"],
+    "audioFeatures": {
+      "tempo": 138.081,
+      "energy": 0.97,
+      "valence": 0.689,
+      "acousticness": 0.0000904,
+      "danceability": 0.497,
+      "instrumentalness": 0.000674
+    }
+  },
+  {
+    "id": 242,
+    "title": "Smile Like You Mean It",
+    "artist": "The Killers",
+    "genres": ["indie", "indie rock", "rock", "alternative", "alternative rock"],
+    "audioFeatures": {
+      "tempo": 125.043,
+      "energy": 0.965,
+      "valence": 0.384,
+      "acousticness": 0.000461,
+      "danceability": 0.346,
+      "instrumentalness": 0.012
+    }
+  },
+  {
+    "id": 243,
+    "title": "Take Me Out",
+    "artist": "Franz Ferdinand",
+    "genres": ["indie rock", "indie", "rock", "alternative", "britpop", "Alternative Rock"],
+    "audioFeatures": {
+      "tempo": 104.561,
+      "energy": 0.663,
+      "valence": 0.527,
+      "acousticness": 0.000409,
+      "danceability": 0.277,
+      "instrumentalness": 0.00051
+    }
+  },
+  {
+    "id": 244,
+    "title": "Sternenhimmel",
+    "artist": "Hubert Kah",
+    "genres": [
+      "NDW",
+      "german",
+      "Neue Deutsche Welle",
+      "80s",
+      "pop",
+      "germany",
+      "Electronic",
+      "New Wave",
+      "Synth-pop"
+    ],
+    "audioFeatures": {
+      "tempo": 190.492,
+      "energy": 0.82,
+      "valence": 0.946,
+      "acousticness": 0.0346,
+      "danceability": 0.529,
+      "instrumentalness": 0.0975
+    }
+  },
+  {
+    "id": 245,
+    "title": "Skandal im Sperrbezirk",
+    "artist": "Spider Murphy Gang",
+    "genres": [
+      "german",
+      "NDW",
+      "Neue Deutsche Welle",
+      "deutsch",
+      "rock",
+      "spider murphy gang",
+      "80s",
+      "New Wave",
+      "Pop Rock"
+    ],
+    "audioFeatures": {
+      "tempo": 92.506,
+      "energy": 0.73,
+      "valence": 0.867,
+      "acousticness": 0.401,
+      "danceability": 0.605,
+      "instrumentalness": 0.000665
+    }
+  },
+  {
+    "id": 246,
+    "title": "Ohne Dich (schlaf' ich heut Nacht nicht ein)",
+    "artist": "Münchener Freiheit",
+    "genres": [
+      "pop",
+      "german",
+      "80s",
+      "Schlager",
+      "deutsch",
+      "ballad",
+      "deep house",
+      "electronic",
+      "europop",
+      "pop rock",
+      "rock",
+      "soft rock",
+      "synth-pop",
+      "5+ wochen",
+      "offizielle charts"
+    ],
+    "audioFeatures": {
+      "tempo": 88.83,
+      "energy": 0.593,
+      "valence": 0.364,
+      "acousticness": 0.211,
+      "danceability": 0.532,
+      "instrumentalness": 0
+    }
+  },
+  {
+    "id": 247,
+    "title": "Unter Strom",
+    "artist": "Megaherz",
+    "genres": [
+      "industrial metal",
+      "german",
+      "industrial",
+      "Neue Deutsche Haerte",
+      "metal",
+      "Rock",
+      "Gothic Metal"
+    ],
+    "audioFeatures": {
+      "tempo": 92.954,
+      "energy": 0.886,
+      "valence": 0.513,
+      "acousticness": 0.0000599,
+      "danceability": 0.542,
+      "instrumentalness": 0.0000785
+    }
+  },
+  {
+    "id": 248,
+    "title": "Leuchtfeuer",
+    "artist": "Stahlmann",
+    "genres": ["industrial metal", "industrial", "german", "neue deutsche härte", "Rock"],
+    "audioFeatures": {
+      "tempo": 183.939,
+      "energy": 0.898,
+      "valence": 0.438,
+      "acousticness": 0.00473,
+      "danceability": 0.448,
+      "instrumentalness": 0.00939
+    }
+  }
+]

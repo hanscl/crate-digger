@@ -30,6 +30,11 @@ try {
   } else {
     console.log("bucket reconcile: clean — nothing to repair");
   }
+  if (result.refillConfigUpgraded) {
+    console.log(
+      "bucket reconcile: LAB-36 refill config upgraded (slot-overlap gate + audio-weighted cosine)",
+    );
+  }
 } catch (err) {
   console.error("bucket reconcile failed:", err);
   process.exitCode = 1;

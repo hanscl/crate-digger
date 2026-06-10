@@ -214,6 +214,24 @@ export function buildEmbedding(input: {
  * — used by callers that treat that case as "no similarity signal."
  */
 export function cosine(a: readonly number[], b: readonly number[]): number {
+  return weightedCosine(a, b, 1);
+}
+
+/**
+ * LAB-36 — cosine with the audio dims (0..AUDIO_FEATURE_DIM-1) of BOTH
+ * vectors scaled by `audioWeight` before the dot product. The 6 audio dims
+ * carry ~9% of the embedding mass against 58 genre slots; weighting them up
+ * at comparison time lets audio pull tracks across genre lanes WITHOUT
+ * re-embedding — stored vectors are untouched, so historical replay stays
+ * exact. `audioWeight=1` reduces EXACTLY to plain cosine (`x * 1 === x` in
+ * IEEE 754 — pinned by test), which is what keeps legacy `{lambda}`-only
+ * refill configs byte-identical on replay.
+ */
+export function weightedCosine(
+  a: readonly number[],
+  b: readonly number[],
+  audioWeight: number,
+): number {
   if (a.length !== b.length) {
     throw new Error(`cosine: dim mismatch ${a.length} vs ${b.length}`);
   }
@@ -221,14 +239,50 @@ export function cosine(a: readonly number[], b: readonly number[]): number {
   let na = 0;
   let nb = 0;
   for (let i = 0; i < a.length; i++) {
-    const ai = a[i] ?? 0;
-    const bi = b[i] ?? 0;
+    const w = i < AUDIO_FEATURE_DIM ? audioWeight : 1;
+    const ai = (a[i] ?? 0) * w;
+    const bi = (b[i] ?? 0) * w;
     dot += ai * bi;
     na += ai * ai;
     nb += bi * bi;
   }
   if (na === 0 || nb === 0) return 0;
   return dot / Math.sqrt(na * nb);
+}
+
+/**
+ * LAB-36 — genre-mass threshold for {@link genreSlotsFromVector}. A bucket
+ * centroid is a running mean of member multi-hot vectors, so one member out
+ * of N contributes 1/N to its slots; any strictly positive mass means "some
+ * member carries this slot". The epsilon only guards float32 noise from
+ * pgvector round-trips.
+ */
+export const GENRE_MASS_EPSILON = 1e-6;
+
+/**
+ * LAB-36 — the set of genre-slot indices (0-based into GENRE_SLOTS) with
+ * mass > epsilon in a full embedding/centroid vector. Track embeddings yield
+ * their exact multi-hot slots; bucket centroids yield every slot ANY member
+ * contributed — the order-insensitive bucket side of the slot-overlap gate.
+ */
+export function genreSlotsFromVector(
+  vec: readonly number[],
+  epsilon: number = GENRE_MASS_EPSILON,
+): Set<number> {
+  const slots = new Set<number>();
+  for (let i = 0; i < GENRE_DIM; i++) {
+    if ((vec[AUDIO_FEATURE_DIM + i] ?? 0) > epsilon) slots.add(i);
+  }
+  return slots;
+}
+
+/** True iff the two slot sets share at least one slot. */
+export function hasSlotOverlap(a: ReadonlySet<number>, b: ReadonlySet<number>): boolean {
+  const [small, large] = a.size <= b.size ? [a, b] : [b, a];
+  for (const s of small) {
+    if (large.has(s)) return true;
+  }
+  return false;
 }
 
 export const ZERO_AUDIO: AudioFeatures = {

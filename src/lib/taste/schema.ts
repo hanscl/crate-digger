@@ -68,6 +68,10 @@ export const TASTE_CONFIG_SCHEMA = z.object({
   broadQualityBar: z.number().min(0).max(1).optional(),
   spawnThreshold: z.number().min(0).max(1),
   refillLambda: z.number().min(0),
+  // LAB-36 — audio-dim weight travels with the taste profile. Optional so
+  // pre-LAB-36 exports (which lack it) still import (LAB-53 precedent):
+  // importTaste's upsert falls back to the app_config column default.
+  audioWeight: z.number().min(1).max(8).optional(),
   mergeThreshold: z.number().min(0).max(1),
   splitDislikeRate: z.number().min(0).max(1),
   // LAB-51 — pull throttle travels with the taste profile (Constraint #8).
