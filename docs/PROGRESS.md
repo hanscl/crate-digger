@@ -2,6 +2,103 @@
 
 Phase tracker. Update at the end of every phase. Newest at the top.
 
+## LAB-36 — Cross-lane bucket membership: slot-overlap genre gate + audio-weighted cosine
+
+- **Status:** review
+- **Branch:** `lab-36-rework-bucket-membership-pre-filter-so-audio-dims-can-pull`
+- **PR:** _pending_ (stacked on LAB-61)
+- **Problem:** `computeBucketDecision` pre-filtered candidate buckets by EXACT
+  `bucket.primary_genre = track.primary_genre` before any cosine, and the 6
+  audio dims carry only ~9% of the 64-dim embedding mass — so audio had zero
+  leverage across artist-genre lanes ("More Than Words", a metal-tagged
+  acoustic ballad at energy 0.134, was ineligible for any non-metal bucket).
+- **Scope landed (design locked by analyst + 3-judge panel — slot-overlap
+  gate + comparison-time weighted cosine, NO re-embedding):**
+  - `weightedCosine(a, b, audioWeight)` (`src/lib/embedding.ts`) scales the
+    audio dims of BOTH vectors before cosine; `audioWeight=1` reduces
+    bit-identically to `cosine` (pinned by test), which is what keeps legacy
+    replays byte-exact. Slot helpers `genreSlotsFromVector` /
+    `hasSlotOverlap` expose the genre dims; stored vectors are untouched.
+  - ONE shared genre-compatibility predicate (`genreScopeCompatible`,
+    `src/lib/bucketing/genre-scope.ts`) used by the JOIN gate
+    (`computeBucketDecision` — the seam shared by eager commit, LAB-52
+    `flagCandidateBucket`, and the keep-commit path), the refill winner gate
+    (surfacing pipeline), and the counterfactual replay gate — selected PER
+    MODEL VERSION via `RefillConfig.genreGate` (`'exact' | 'slot-overlap'`).
+    Slot-overlap definition: track side = its embedding genre slots; bucket
+    side = centroid genre MASS (slot on iff any member contributed it —
+    insert-order-insensitive, pinned by an Extrabreit-before-SMG test);
+    compatible iff ≥1 shared slot. Zero-slot tracks fall back to exact
+    primary-genre equality (null===null included) and a slotted track never
+    enters a zero-genre-mass bucket — today's null/raw-tag lanes preserved
+    exactly.
+  - NULL-AUDIO DAMPING: a track whose `audio_features IS NULL` embeds
+    neutral 0.5 fills; its comparisons degrade to weight 1 (assign +
+    refill scoring) so featureless tracks don't become promiscuous joiners
+    (the fixture's 17 no-audio rows are asserted to stay spread).
+  - `RefillConfig` → `{lambda, audioWeight?, genreGate?}`; `isRefillConfig`
+    accepts legacy `{lambda}`-only (absent → weight 1 + 'exact' via
+    `refillAudioWeight`/`refillGenreGate`), so v1 replays are byte-identical.
+    `scoreRefill` keepSim AND dislikeSim use `weightedCosine` at the
+    config's weight — membership + surfacing stay one metric family
+    (Constraint #5 coherence).
+  - Migration `0012`: `app_config.audio_weight` (double precision, NOT NULL,
+    DEFAULT **2.5**) — live knob like `refillLambda`; params router
+    zod-validates (≥1, ≤8) and bumps the refill version on change (one bump
+    when lambda+weight change together); Console gets the "audio wt" knob;
+    taste config schema gains optional `audioWeight` (back-compat per LAB-53
+    precedent), export/import round-trips it.
+  - Version migration: fresh installs bootstrap refill with
+    `{lambda, audioWeight, genreGate:'slot-overlap'}` directly
+    (`ensureActiveModelVersion`); EXISTING installs get a second idempotent
+    reconcile-sweep step (`mintRefillAudioWeightUpgradeInTx`, runs after the
+    LAB-61 membership step inside `db:migrate`) that mints ONE upgrade
+    version (lambda carried forward, parent-chained, under the app_config
+    lock) iff the active config lacks `audioWeight`. Composition with the
+    LAB-61 membership bump = separate rows, separate notes; re-runs no-op.
+    `loadAssignConfig` resolves the live gate/weight from the ACTIVE refill
+    version (legacy → exact/1 during the pre-reconcile window; none → new
+    defaults), so membership decisions always match the scoring version.
+  - **W=2.5 chosen from the grid** (`scripts/lab36-grid.ts`, w ∈ {1,1.5,2,
+    2.5,3,4} × gate ∈ {exact, slot-overlap, none} over the cohort fixture):
+    minimum of the mandated W ≥ ~2.5 range; all three named cases pass
+    (pairwise at 2.5: Shins–BoH 0.825, SMG–Extrabreit 0.791, MTW–TING 0.685
+    < 0.7 spawn bar) with the least similarity-scale inflation and the least
+    cross-lane accretion (13 buckets vs 9 at w=3). Pinned in lock-step in
+    the schema default, `DEFAULT_AUDIO_WEIGHT`, bootstrap, and the eval.
+  - Eval artifacts: `scripts/export-lab36-cohort.ts` (one-shot read-only dev
+    DB export) → checked-in `tests/fixtures/lab36-cohort.json` (136 tracks,
+    17 null-audio); `tests/evals/lab36-reassignment-replay.test.ts` replays
+    the cohort at threshold 0.7 under the NEW config (cases A/B/C + sanity
+    guards) and under a CONTROL `{audioWeight:1, genreGate:'exact'}` block
+    that reproduces the dev DB's 32-bucket geometry and the old outcomes
+    (MTW metal-locked WITH "There Is No God") — the config toggle alone
+    drives the delta.
+- **Notes / deviations:**
+  - **Max-share guard deviation:** the ticket drafted "no bucket >40% of
+    tracks" as a sanity guard, but on this cohort that bound is
+    unsatisfiable at ANY weight that also passes cases B+C (slot-overlap
+    accretes a mainstream-rock bucket: 44.9% at w=1.5, 61% at w=2, 64% at
+    w=2.5, 70.6% at w=3). Guard pinned at <70% (still fails fast on
+    dissolution-to-one-bucket); the production blast radius is smaller than
+    the eager replay suggests — discovery tracks join only on keep (LAB-52)
+    and live geometry evolves from the existing 32 buckets.
+  - **Similarity-scale inflation:** weighted cosines run higher (member→
+    centroid keepSim p50 ≈ 0.962 at the old exact/w=1 vs 0.913 at
+    slot-overlap/w=2.5, but against MUCH coarser buckets; pairwise sims gain
+    ~0.13–0.22 at w=2.5) — `refill_quality_bar` (0.7) and `spawn_threshold`
+    (0.7) semantics loosen. Follow-up tuning ticket anticipated.
+  - MERGE gate (`recommendations.ts`) deliberately stays exact-match —
+    conservative asymmetry (a JOIN moves one track; a MERGE collapses
+    shelves); documented inline.
+  - `bucket.primary_genre` demoted to a naming/display hint + merge key:
+    buckets may legitimately hold cross-genre members now.
+  - Stale pre-change `candidate_bucket_id`/`candidate_score` on tracks are
+    display-only and re-derived fresh on keep — no backfill needed. An
+    optional re-bucket script for live memberships is a possible follow-up
+    (acceptance here is the counterfactual replay, not live re-bucketing).
+  - Novelty knob untouched (inert until LAB-42).
+
 ## LAB-61 — Bucket-member provenance (origin) + legacy eager-join cleanup
 
 - **Status:** review
