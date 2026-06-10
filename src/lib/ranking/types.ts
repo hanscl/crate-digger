@@ -1,4 +1,5 @@
 import { EMBEDDING_DIM, type AudioFeatures } from "@/db/schema";
+import type { GenreGate } from "@/lib/bucketing/genre-scope";
 
 /**
  * Shared types for the Phase 4 ranking + surfacing layer. The ranking layer
@@ -16,9 +17,14 @@ export type Candidate = {
   embedding: readonly number[];
   /** Used by `surfacedReason` text and source-mix bookkeeping; rankers ignore. */
   source?: "spotify" | "lastfm" | "viberate";
-  /** Optional — only used to build human-readable explanations. */
+  /** Used by the refill winner-eligibility gate and human-readable explanations. */
   primaryGenre?: string | null;
-  /** Audio features at decision time; persisted into `surface_event.features_at_decision`. */
+  /**
+   * Audio features at decision time; persisted into
+   * `surface_event.features_at_decision`. LAB-36: also the null-audio damping
+   * key for refill scoring — null/absent means the embedding's audio dims are
+   * neutral fills, so weighted comparisons degrade to plain cosine.
+   */
   audioFeatures?: AudioFeatures | null;
 };
 
@@ -38,7 +44,41 @@ export type ScoredCandidate = {
 export type RefillConfig = {
   /** Penalty weight on mean dislike similarity. From `app_config.refillLambda`. */
   lambda: number;
+  /**
+   * LAB-36 — comparison-time scale on the 6 audio embedding dims (see
+   * `weightedCosine`). From `app_config.audioWeight`. Optional: legacy
+   * `{lambda}`-only configs predate it and MUST keep replaying byte-identically,
+   * so absence means 1 (plain cosine) — see {@link refillAudioWeight}.
+   */
+  audioWeight?: number;
+  /**
+   * LAB-36 — which genre-compatibility predicate gates bucket JOINs, refill
+   * winners, and counterfactual replay under this version. Absence means
+   * 'exact' (the LAB-45 rule) so old versions replay under the gate they were
+   * scored with — see {@link refillGenreGate}.
+   */
+  genreGate?: GenreGate;
 };
+
+/**
+ * LAB-36 — default audioWeight, chosen from the grid sweep over the cohort
+ * fixture (scripts/lab36-grid.ts): the minimum of the mandated W ≥ ~2.5 range,
+ * where all three named cases pass while similarity-scale inflation and
+ * cross-lane accretion stay smallest. Pinned in lock-step with the
+ * `app_config.audio_weight` column default (migration 0012) and the
+ * reassignment-replay eval.
+ */
+export const DEFAULT_AUDIO_WEIGHT = 2.5;
+
+/** Effective audio weight for a refill config; legacy configs → 1 (plain cosine). */
+export function refillAudioWeight(config: RefillConfig): number {
+  return config.audioWeight ?? 1;
+}
+
+/** Effective genre gate for a refill config; legacy configs → 'exact' (LAB-45). */
+export function refillGenreGate(config: RefillConfig): GenreGate {
+  return config.genreGate ?? "exact";
+}
 
 /**
  * Logistic regression weights serialized into `model_version.config`. Weights
@@ -68,7 +108,19 @@ export type BroadConfig = {
  */
 export function isRefillConfig(x: unknown): x is RefillConfig {
   if (typeof x !== "object" || x === null) return false;
-  return Number.isFinite((x as RefillConfig).lambda);
+  const c = x as RefillConfig;
+  if (!Number.isFinite(c.lambda)) return false;
+  // LAB-36 fields are optional (legacy {lambda}-only configs stay valid) but
+  // when present must be sane: a NaN/zero/negative audioWeight would corrupt
+  // every membership decision and every replay; an unknown gate string would
+  // silently fall back to a behavior the version never had.
+  if (c.audioWeight !== undefined) {
+    if (!Number.isFinite(c.audioWeight) || c.audioWeight < 1) return false;
+  }
+  if (c.genreGate !== undefined) {
+    if (c.genreGate !== "exact" && c.genreGate !== "slot-overlap") return false;
+  }
+  return true;
 }
 
 export function isBroadConfig(x: unknown): x is BroadConfig {

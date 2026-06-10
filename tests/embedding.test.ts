@@ -8,8 +8,11 @@ import {
   derivePrimaryGenre,
   GENRE_DIM,
   GENRE_SLOTS,
+  genreSlotsFromVector,
   genresToHotVector,
+  hasSlotOverlap,
   normalizeTempo,
+  weightedCosine,
 } from "@/lib/embedding";
 
 describe("embedding — dimensions", () => {
@@ -116,5 +119,106 @@ describe("embedding — cosine", () => {
 
   it("throws on dim mismatch", () => {
     expect(() => cosine([1, 2], [1, 2, 3])).toThrow();
+  });
+});
+
+describe("embedding — weightedCosine (LAB-36)", () => {
+  it("audioWeight=1 reduces EXACTLY to cosine (bit-identical, not approximately)", () => {
+    const a = buildEmbedding({
+      audioFeatures: {
+        tempo: 137,
+        energy: 0.83,
+        valence: 0.21,
+        danceability: 0.64,
+        acousticness: 0.07,
+        instrumentalness: 0.45,
+      },
+      genres: ["indie rock", "shoegaze"],
+    });
+    const b = buildEmbedding({
+      audioFeatures: {
+        tempo: 92,
+        energy: 0.31,
+        valence: 0.77,
+        danceability: 0.4,
+        acousticness: 0.88,
+        instrumentalness: 0.02,
+      },
+      genres: ["folk", "rock"],
+    });
+    expect(weightedCosine(a, b, 1)).toBe(cosine(a, b));
+  });
+
+  it("scales only the audio dims: identical-audio pairs gain, identical-genre pairs lose", () => {
+    const audio = audioFeaturesToVector({
+      tempo: 120,
+      energy: 0.8,
+      valence: 0.4,
+      danceability: 0.6,
+      acousticness: 0.2,
+      instrumentalness: 0.1,
+    });
+    const sameAudioDiffGenre = [
+      [...audio, ...genresToHotVector(["jazz"])],
+      [...audio, ...genresToHotVector(["classical"])],
+    ] as const;
+    expect(weightedCosine(sameAudioDiffGenre[0], sameAudioDiffGenre[1], 3)).toBeGreaterThan(
+      cosine(sameAudioDiffGenre[0], sameAudioDiffGenre[1]),
+    );
+
+    const otherAudio = audioFeaturesToVector({
+      tempo: 60,
+      energy: 0.1,
+      valence: 0.9,
+      danceability: 0.2,
+      acousticness: 0.95,
+      instrumentalness: 0.8,
+    });
+    const diffAudioSameGenre = [
+      [...audio, ...genresToHotVector(["rock"])],
+      [...otherAudio, ...genresToHotVector(["rock"])],
+    ] as const;
+    expect(weightedCosine(diffAudioSameGenre[0], diffAudioSameGenre[1], 3)).toBeLessThan(
+      cosine(diffAudioSameGenre[0], diffAudioSameGenre[1]),
+    );
+  });
+
+  it("throws on dim mismatch", () => {
+    expect(() => weightedCosine([1, 2], [1, 2, 3], 2)).toThrow();
+  });
+});
+
+describe("embedding — genre slot helpers (LAB-36)", () => {
+  it("genreSlotsFromVector recovers a track's multi-hot slots from the full embedding", () => {
+    const embedding = buildEmbedding({ audioFeatures: null, genres: ["indie rock"] });
+    const slots = genreSlotsFromVector(embedding);
+    expect(slots.has(GENRE_SLOTS.indexOf("rock"))).toBe(true);
+    expect(slots.has(GENRE_SLOTS.indexOf("indie"))).toBe(true);
+    expect(slots.size).toBe(2);
+  });
+
+  it("centroid genre MASS counts: one member out of N keeps the slot on (> epsilon)", () => {
+    // Simulated 4-member centroid where a single member contributed "jazz":
+    // mass 0.25 — still on. The neutral 0.5 audio fills never read as slots.
+    const centroid = [
+      ...audioFeaturesToVector(null),
+      ...genresToHotVector(["jazz"]).map((x) => x / 4),
+    ];
+    const slots = genreSlotsFromVector(centroid);
+    expect(slots.has(GENRE_SLOTS.indexOf("jazz"))).toBe(true);
+    expect(slots.size).toBe(1);
+  });
+
+  it("zero-genre embeddings yield the empty set; hasSlotOverlap demands a shared slot", () => {
+    const none = genreSlotsFromVector(buildEmbedding({ audioFeatures: null, genres: [] }));
+    expect(none.size).toBe(0);
+    const rock = genreSlotsFromVector(buildEmbedding({ audioFeatures: null, genres: ["rock"] }));
+    const indieRock = genreSlotsFromVector(
+      buildEmbedding({ audioFeatures: null, genres: ["indie rock"] }),
+    );
+    const jazz = genreSlotsFromVector(buildEmbedding({ audioFeatures: null, genres: ["jazz"] }));
+    expect(hasSlotOverlap(rock, indieRock)).toBe(true);
+    expect(hasSlotOverlap(rock, jazz)).toBe(false);
+    expect(hasSlotOverlap(rock, none)).toBe(false);
   });
 });

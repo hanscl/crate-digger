@@ -253,7 +253,7 @@ describe("counterfactualReplay — broad", () => {
   });
 });
 
-describe("counterfactualReplay — refill primary-genre gate (LAB-45)", () => {
+describe("counterfactualReplay — refill genre gate (LAB-45, config-selected per LAB-36)", () => {
   it("replay applies the same winner-eligibility gate as live refill (criterion 6)", async () => {
     // Pins acceptance criterion (6): counterfactual replay must AGREE with
     // live refill because both apply the same primary-genre eligibility gate.
@@ -363,6 +363,80 @@ describe("counterfactualReplay — refill primary-genre gate (LAB-45)", () => {
     const replayedIds = evt.replayedPool.map((p) => p.trackId);
     expect(replayedIds).toContain(indieCand.id);
     expect(replayedIds).toContain(metalCand.id);
+  });
+
+  it("the TARGET version's genreGate drives replay: legacy replays 'exact', LAB-36 replays 'slot-overlap' over the same event", async () => {
+    // One persisted refill event, two replays. The live event is scored under
+    // a pinned LEGACY {lambda}-only version, whose exact gate keeps a
+    // cross-lane "indie rock" candidate (shared rock slot, top keep-sim) from
+    // winning. Replaying at that legacy version reproduces the exact-gated
+    // winner (agreed). Replaying at a LAB-36 slot-overlap version flips the
+    // winner to the cross-lane candidate — old history is never silently
+    // re-gated, and what-if questions against the new gate are answerable.
+    const legacy = await bumpModelVersion(db, "refill", { lambda: 0.3 }, { note: "legacy pin" });
+
+    const rockSeed = await seed({
+      title: "Rock seed",
+      audio: audio({ tempo: 128, energy: 0.7 }),
+      genres: ["rock"],
+    });
+    const seedAssign = await assignTrack(db, rockSeed.id, {
+      origin: "seed_track",
+      spawnThreshold: 0.7,
+    });
+    expect(seedAssign.primaryGenre).toBe("rock");
+
+    // In-lane rock candidate with the OPPOSITE audio shape (low keep-sim)…
+    const rockCand = await seed({
+      title: "Slow acoustic rock",
+      audio: audio({ tempo: 60, energy: 0.1, acousticness: 0.9 }),
+      genres: ["rock"],
+    });
+    // …vs a cross-lane indie-primary candidate matching the seed's audio.
+    const indieRockCand = await seed({
+      title: "Indie rock kin",
+      audio: audio({ tempo: 128, energy: 0.7 }),
+      genres: ["indie rock"],
+    });
+    const candidates = await Promise.all([rockCand, indieRockCand].map(asCand));
+
+    const surfacing = await runSurfacingBatch(db, {
+      candidates,
+      noveltyOverride: 0,
+      refillBarOverride: 0,
+      broadBarOverride: 1,
+      queueCeilingOverride: 1,
+    });
+    expect(surfacing.refillModelVersionId).toBe(legacy.id);
+    expect(surfacing.events).toHaveLength(1);
+    const event = (await db.select().from(schema.surfaceEvent))[0]!;
+    expect(event.trackId).toBe(rockCand.id); // exact gate excluded the indie
+
+    // Replay at the legacy version: same exact gate, same winner, agreed.
+    const legacyReplay = await counterfactualReplay(db, legacy.id);
+    expect(legacyReplay.replayedEventCount).toBe(1);
+    expect(legacyReplay.perEvent[0]?.replayedTrackId).toBe(rockCand.id);
+    expect(legacyReplay.perEvent[0]?.agreed).toBe(true);
+
+    // Replay at a LAB-36 version: slot-overlap admits the cross-lane
+    // candidate, whose keep-sim tops the in-lane one — winner flips.
+    const lab36 = await bumpModelVersion(
+      db,
+      "refill",
+      { lambda: 0.3, audioWeight: 2.5, genreGate: "slot-overlap" },
+      { note: "LAB-36 what-if" },
+    );
+    const lab36Replay = await counterfactualReplay(db, lab36.id);
+    expect(lab36Replay.replayedEventCount).toBe(1);
+    expect(lab36Replay.perEvent[0]?.replayedTrackId).toBe(indieRockCand.id);
+    expect(lab36Replay.perEvent[0]?.agreed).toBe(false);
+    // Constraint #2 at replay time: both candidates stay in the pool under
+    // both gates.
+    for (const replay of [legacyReplay, lab36Replay]) {
+      const ids = replay.perEvent[0]?.replayedPool.map((p) => p.trackId) ?? [];
+      expect(ids).toContain(rockCand.id);
+      expect(ids).toContain(indieRockCand.id);
+    }
   });
 
   it("skips a refill event whose bucket was deleted/merged before replay", async () => {

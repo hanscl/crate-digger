@@ -7,9 +7,11 @@ import postgres from "postgres";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import * as schema from "@/db/schema";
 import type { AudioFeatures } from "@/db/schema";
-import { assignTrack } from "@/lib/bucketing/assign";
+import { assignTrack, loadAssignConfig } from "@/lib/bucketing/assign";
 import { seedBucketsFromTrackIds } from "@/lib/bucketing/cold-start";
 import { buildEmbedding } from "@/lib/embedding";
+import { DEFAULT_AUDIO_WEIGHT } from "@/lib/ranking/types";
+import { bumpModelVersion } from "@/lib/ranking/version";
 
 let container: StartedPostgreSqlContainer;
 let client: ReturnType<typeof postgres>;
@@ -46,6 +48,11 @@ beforeEach(async () => {
   await db.execute(sql`TRUNCATE TABLE ${schema.bucket} RESTART IDENTITY CASCADE`);
   await db.execute(sql`TRUNCATE TABLE ${schema.trackSource} RESTART IDENTITY CASCADE`);
   await db.execute(sql`TRUNCATE TABLE ${schema.track} RESTART IDENTITY CASCADE`);
+  await db.execute(
+    sql`UPDATE ${schema.appConfig} SET active_refill_version_id = NULL, active_broad_version_id = NULL`,
+  );
+  await db.execute(sql`TRUNCATE TABLE ${schema.modelVersion} RESTART IDENTITY CASCADE`);
+  await db.execute(sql`DELETE FROM ${schema.appConfig}`);
 });
 
 function audio(overrides: Partial<AudioFeatures> = {}): AudioFeatures {
@@ -153,10 +160,11 @@ describe("assignTrack — spawn-or-join contract", () => {
     for (const b of buckets) expect(b.memberCount).toBe(1);
   });
 
-  it("spawns a new bucket when primary genre does not match — even if embeddings are close", async () => {
-    // A jazz seed with audio identical to a follow-up classical track. If
-    // bucketing falls through to centroid similarity blindly the second
-    // track joins; the genre filter must keep them apart.
+  it("spawns when NO genre slot is shared (identical audio, e.g. jazz vs classical)", async () => {
+    // LAB-36 slot-overlap gate: a jazz seed with audio identical to a
+    // follow-up classical track. The weighted cosine of an identical-audio
+    // pair is near 1, so if bucketing fell through to similarity blindly the
+    // second track would join; the disjoint slot sets must keep them apart.
     const sharedAudio = audio({ tempo: 100, energy: 0.4 });
 
     const jazzId = await insertTrack({
@@ -167,6 +175,7 @@ describe("assignTrack — spawn-or-join contract", () => {
     const jazzResult = await assignTrack(db, jazzId, {
       origin: "seed_track",
       spawnThreshold: SPAWN_THRESHOLD,
+      genreGate: "slot-overlap",
     });
     expect(jazzResult.primaryGenre).toBe("jazz");
 
@@ -178,6 +187,7 @@ describe("assignTrack — spawn-or-join contract", () => {
     const classicalResult = await assignTrack(db, classicalId, {
       origin: "seed_track",
       spawnThreshold: SPAWN_THRESHOLD,
+      genreGate: "slot-overlap",
     });
     expect(classicalResult.primaryGenre).toBe("classical");
     expect(classicalResult.spawned).toBe(true);
@@ -187,6 +197,41 @@ describe("assignTrack — spawn-or-join contract", () => {
     expect(buckets).toHaveLength(2);
     const genres = buckets.map((b) => b.primaryGenre).sort();
     expect(genres).toEqual(["classical", "jazz"]);
+  });
+
+  it("joins across primary_genre lanes when a slot is shared and weighted cosine clears threshold", async () => {
+    // LAB-36 headline behavior: a rock-primary seed and an indie-primary
+    // candidate live in different LAB-45 lanes, but the candidate's "indie
+    // rock" tag shares the rock slot — with matching audio the weighted
+    // cosine clears the threshold and the track joins across the lane.
+    const seedAudio = audio({ tempo: 128, energy: 0.7 });
+    const rockId = await insertTrack({
+      title: "Rock seed",
+      audioFeatures: seedAudio,
+      genres: ["rock"],
+    });
+    const rockResult = await assignTrack(db, rockId, {
+      origin: "seed_track",
+      spawnThreshold: SPAWN_THRESHOLD,
+      genreGate: "slot-overlap",
+    });
+    expect(rockResult.primaryGenre).toBe("rock");
+
+    const indieId = await insertTrack({
+      title: "Indie rock candidate",
+      audioFeatures: seedAudio,
+      genres: ["indie rock"],
+    });
+    const indieResult = await assignTrack(db, indieId, {
+      origin: "seed_track",
+      spawnThreshold: SPAWN_THRESHOLD,
+      genreGate: "slot-overlap",
+    });
+    // Different primary genre — the exact gate would have forced a spawn.
+    expect(indieResult.primaryGenre).toBe("indie");
+    expect(indieResult.spawned).toBe(false);
+    expect(indieResult.bucketId).toBe(rockResult.bucketId);
+    expect(indieResult.similarity).toBeGreaterThanOrEqual(SPAWN_THRESHOLD);
   });
 
   it("Welford: bucket centroid after N joins matches the batch mean of the embeddings", async () => {
@@ -345,6 +390,45 @@ describe("assignTrack — concurrency", () => {
     for (let i = 0; i < dim; i++) {
       expect(persisted[i]).toBeCloseTo(expectedCentroid[i] ?? 0, 6);
     }
+  });
+});
+
+describe("loadAssignConfig — gate/weight resolution (LAB-36)", () => {
+  it("fresh install (no active refill version): app_config audio_weight + slot-overlap", async () => {
+    // No app_config row at all → column-default-equivalent fallbacks.
+    const bare = await loadAssignConfig(db);
+    expect(bare.spawnThreshold).toBe(0.7);
+    expect(bare.audioWeight).toBe(DEFAULT_AUDIO_WEIGHT);
+    expect(bare.genreGate).toBe("slot-overlap");
+
+    // With a row, the live knob feeds through.
+    await db.insert(schema.appConfig).values({ id: 1, audioWeight: 4, spawnThreshold: 0.8 });
+    const cfg = await loadAssignConfig(db);
+    expect(cfg.spawnThreshold).toBe(0.8);
+    expect(cfg.audioWeight).toBe(4);
+    expect(cfg.genreGate).toBe("slot-overlap");
+  });
+
+  it("active legacy {lambda}-only version: weight 1 + exact (pre-reconcile window stays old-behavior)", async () => {
+    await bumpModelVersion(db, "refill", { lambda: 0.3 }, { note: "legacy" });
+    const cfg = await loadAssignConfig(db);
+    expect(cfg.audioWeight).toBe(1);
+    expect(cfg.genreGate).toBe("exact");
+  });
+
+  it("active LAB-36 version: its audioWeight/genreGate win over the app_config knob", async () => {
+    await bumpModelVersion(
+      db,
+      "refill",
+      { lambda: 0.3, audioWeight: 3, genreGate: "slot-overlap" },
+      { note: "LAB-36 config" },
+    );
+    // The live knob diverging from the frozen version config must NOT leak
+    // into decisions — only a version bump changes the metric.
+    await db.update(schema.appConfig).set({ audioWeight: 7 }).where(eq(schema.appConfig.id, 1));
+    const cfg = await loadAssignConfig(db);
+    expect(cfg.audioWeight).toBe(3);
+    expect(cfg.genreGate).toBe("slot-overlap");
   });
 });
 

@@ -10,7 +10,11 @@ import { assignTrack } from "@/lib/bucketing/assign";
 import { reconcileBuckets } from "@/lib/bucketing/reconcile";
 import { buildEmbedding } from "@/lib/embedding";
 import { ingestRating } from "@/lib/feedback/ingest-rating";
-import { ensureActiveModelVersion, getActiveModelVersion } from "@/lib/ranking/version";
+import {
+  bumpModelVersion,
+  ensureActiveModelVersion,
+  getActiveModelVersion,
+} from "@/lib/ranking/version";
 
 let container: StartedPostgreSqlContainer;
 let client: ReturnType<typeof postgres>;
@@ -388,5 +392,87 @@ describe("reconcileBuckets — LAB-61 post-migration sweep", () => {
     expect(result.driftedBucketIds).toEqual([]);
     expect(result.prunedBucketIds).toEqual([]);
     expect(result.staleRecommendationCount).toBe(0);
+  });
+});
+
+describe("reconcileBuckets — LAB-36 refill config upgrade step", () => {
+  it("upgrades a legacy {lambda}-only active config exactly once; re-run is a no-op", async () => {
+    // Pre-LAB-36 install: the active refill version has no audioWeight. The
+    // app_config knob (here deliberately non-default) supplies the value.
+    const legacy = await bumpModelVersion(db, "refill", { lambda: 0.42 }, { note: "legacy" });
+    await db.update(schema.appConfig).set({ audioWeight: 3 });
+
+    const first = await reconcileBuckets(db);
+    expect(first.repaired).toBe(false); // config upgrade is not a repair
+    expect(first.refillVersionBumped).toBe(false);
+    expect(first.refillConfigUpgraded).toBe(true);
+
+    const active = await getActiveModelVersion(db, "refill");
+    expect(active?.id).not.toBe(legacy.id);
+    expect(active?.parentId).toBe(legacy.id);
+    expect(active?.config).toEqual({ lambda: 0.42, audioWeight: 3, genreGate: "slot-overlap" });
+    expect(active?.note).toBe(
+      "LAB-36: cross-lane membership — slot-overlap gate + audio-weighted cosine",
+    );
+
+    const second = await reconcileBuckets(db);
+    expect(second.refillConfigUpgraded).toBe(false);
+    const refillVersions = await db
+      .select()
+      .from(schema.modelVersion)
+      .where(eq(schema.modelVersion.kind, "refill"));
+    expect(refillVersions).toHaveLength(2);
+    const activeAfterSecond = await getActiveModelVersion(db, "refill");
+    expect(activeAfterSecond?.id).toBe(active?.id);
+  });
+
+  it("never fires for a fresh bootstrap (its config already carries audioWeight) or with no active version", async () => {
+    const bare = await reconcileBuckets(db);
+    expect(bare.refillConfigUpgraded).toBe(false);
+
+    const bootstrap = await ensureActiveModelVersion(db, "refill");
+    expect((bootstrap.config as { audioWeight?: number }).audioWeight).toBeDefined();
+    const result = await reconcileBuckets(db);
+    expect(result.refillConfigUpgraded).toBe(false);
+    const refillVersions = await db
+      .select()
+      .from(schema.modelVersion)
+      .where(eq(schema.modelVersion.kind, "refill"));
+    expect(refillVersions).toHaveLength(1);
+  });
+
+  it("composes with the membership-repair bump: repair (carry-forward) then upgrade, two rows, chained in order", async () => {
+    const legacy = await bumpModelVersion(db, "refill", { lambda: 0.3 }, { note: "legacy" });
+    const t = await insertTrack({
+      title: "Drifter",
+      audioFeatures: audio({ tempo: 130 }),
+      genres: ["rock"],
+    });
+    const assign = await assignTrack(db, t.id, { origin: "seed_track", spawnThreshold: 0.7 });
+    await db
+      .update(schema.bucket)
+      .set({ memberCount: 99 })
+      .where(eq(schema.bucket.id, assign.bucketId));
+
+    const result = await reconcileBuckets(db);
+    expect(result.repaired).toBe(true);
+    expect(result.refillVersionBumped).toBe(true);
+    expect(result.refillConfigUpgraded).toBe(true);
+
+    // Chain: legacy → repair bump (config carried forward UNCHANGED, still
+    // legacy-shaped) → LAB-36 upgrade (new fields added). Separate rows,
+    // separate notes.
+    const active = await getActiveModelVersion(db, "refill");
+    expect(active?.config).toEqual({ lambda: 0.3, audioWeight: 2.5, genreGate: "slot-overlap" });
+    expect(active?.note).toBe(
+      "LAB-36: cross-lane membership — slot-overlap gate + audio-weighted cosine",
+    );
+    const [repairBump] = await db
+      .select()
+      .from(schema.modelVersion)
+      .where(eq(schema.modelVersion.id, active!.parentId!));
+    expect(repairBump?.config).toEqual({ lambda: 0.3 });
+    expect(repairBump?.note).toContain("bucket reconcile: membership repair");
+    expect(repairBump?.parentId).toBe(legacy.id);
   });
 });

@@ -97,7 +97,10 @@ async function emitMergeRecommendations(
       // Same primary_genre is required: cosine on the genre multi-hot keeps
       // pairs close even when the user clearly maintains them as separate
       // shelves. Without this guard `[indie-rock] + [folk]` could merge if
-      // their audio dims drift together.
+      // their audio dims drift together. LAB-36 deliberately did NOT widen
+      // this to the slot-overlap gate: a JOIN moves one track; a MERGE
+      // collapses whole shelves. The conservative exact-match asymmetry is
+      // intentional.
       if (a.primaryGenre !== b.primaryGenre) continue;
       const sim = cosine(a.centroid, b.centroid);
       if (sim < mergeThreshold) continue;

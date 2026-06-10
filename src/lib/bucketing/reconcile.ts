@@ -1,7 +1,10 @@
 import { eq, inArray, sql } from "drizzle-orm";
 import type { Database } from "@/db/client";
 import { bucket, bucketMember, bucketRecommendation } from "@/db/schema";
-import { bumpModelVersionCarryForwardInTx } from "@/lib/ranking/version";
+import {
+  bumpModelVersionCarryForwardInTx,
+  mintRefillAudioWeightUpgradeInTx,
+} from "@/lib/ranking/version";
 import { evaluateBucketRecommendations } from "./recommendations";
 import { recomputeBucketStats } from "./recompute";
 
@@ -36,6 +39,17 @@ import { recomputeBucketStats } from "./recompute";
  * Idempotent and drift-gated: a second run finds counts consistent and no
  * stale references, repairs nothing, and therefore bumps nothing and leaves
  * recommendations untouched.
+ *
+ * LAB-36 — a second idempotent step runs AFTER the membership repair: when
+ * the ACTIVE refill version's config predates audioWeight (existing install
+ * upgrading across LAB-36), mint ONE refill version carrying lambda forward
+ * and adding the cross-lane fields (slot-overlap gate + audio-weighted
+ * cosine; see `mintRefillAudioWeightUpgradeInTx`). Composition with the
+ * membership-gated bump above: separate version rows, separate notes — a
+ * drifted install minting both gets `repair → upgrade` chained in that
+ * order. Both steps are no-ops on re-run, so `db:migrate` stays
+ * exactly-once. Fresh installs never fire it (their bootstrap mints the
+ * full config directly).
  */
 export type ReconcileBucketsResult = {
   /** Buckets whose member_count disagreed with the actual row count. */
@@ -48,7 +62,9 @@ export type ReconcileBucketsResult = {
   recommendationsRebuilt: boolean;
   /** True when the refill model_version was bumped (membership changed AND an active pointer was set). */
   refillVersionBumped: boolean;
-  /** True when anything at all was repaired this run. */
+  /** LAB-36 — true when the active refill config was upgraded with audioWeight/genreGate this run. */
+  refillConfigUpgraded: boolean;
+  /** True when anything at all was repaired this run (config upgrade excluded — it is not a repair). */
   repaired: boolean;
 };
 
@@ -116,12 +132,21 @@ export async function reconcileBuckets(db: Database): Promise<ReconcileBucketsRe
       }
     }
 
+    // LAB-36 — config upgrade for existing installs, AFTER the membership
+    // step so a drifted upgrade chains repair → upgrade. Self-gating and
+    // lock-serialized; null means "already upgraded or nothing to upgrade".
+    const upgraded = await mintRefillAudioWeightUpgradeInTx(tx, {
+      note: "LAB-36: cross-lane membership — slot-overlap gate + audio-weighted cosine",
+    });
+    const refillConfigUpgraded = upgraded !== null;
+
     return {
       driftedBucketIds,
       prunedBucketIds,
       staleRecommendationCount,
       recommendationsRebuilt,
       refillVersionBumped,
+      refillConfigUpgraded,
       repaired,
     };
   });

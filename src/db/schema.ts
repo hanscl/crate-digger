@@ -154,6 +154,11 @@ export const bucket = pgTable(
     memberCount: integer("member_count").notNull().default(0),
     dislikeCount: integer("dislike_count").notNull().default(0),
     isColdStartSeed: boolean("is_cold_start_seed").notNull().default(false),
+    // LAB-36 — the seed track's primary genre. Demoted to a naming/display
+    // hint and the MERGE gate's conservative key: under the slot-overlap JOIN
+    // gate a bucket may legitimately hold cross-genre members, so this is no
+    // longer a membership invariant. The 'exact' gate (legacy versions, and
+    // the zero-slot fallback) still matches against it.
     primaryGenre: text("primary_genre"),
     // LAB-25 drift-tracking: member count and centroid snapshot at the moment
     // of the last successful agent naming. Null on rows that still carry the
@@ -330,6 +335,12 @@ export const appConfig = pgTable(
     retrainCadence: text("retrain_cadence").notNull().default("daily"),
     spawnThreshold: doublePrecision("spawn_threshold").notNull().default(0.7),
     refillLambda: doublePrecision("refill_lambda").notNull().default(0.3),
+    // LAB-36 — comparison-time scale on the 6 audio embedding dims (see
+    // weightedCosine). Live knob like refillLambda: changes bump the refill
+    // model_version and freeze into its config. Default must stay in lock-step
+    // with DEFAULT_AUDIO_WEIGHT (src/lib/ranking/types.ts), chosen from the
+    // scripts/lab36-grid.ts sweep.
+    audioWeight: doublePrecision("audio_weight").notNull().default(2.5),
     mergeThreshold: doublePrecision("merge_threshold").notNull().default(0.92),
     splitDislikeRate: doublePrecision("split_dislike_rate").notNull().default(0.5),
     sourcesEnabled: jsonb("sources_enabled")

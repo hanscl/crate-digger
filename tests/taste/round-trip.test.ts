@@ -254,6 +254,21 @@ describe("taste profile export/import (Constraint #8)", () => {
     expect(cfg?.queueCeiling).toBe(42); // provided field applied
     expect(cfg?.refillQualityBar).toBe(0.7); // DB default
     expect(cfg?.broadQualityBar).toBe(0.5); // DB default
+    // Pre-LAB-36 exports also lack audioWeight — same fallback rule.
+    expect(cfg?.audioWeight).toBe(2.5); // DB default
+  });
+
+  it("round-trips audioWeight in the config block (LAB-36)", async () => {
+    await db.insert(schema.appConfig).values({ id: 1, audioWeight: 3.5 });
+    const exportPayload = await exportTaste(db);
+    expect(exportPayload.config?.audioWeight).toBe(3.5);
+
+    const wire = JSON.parse(JSON.stringify(exportPayload));
+    await wipe();
+    await importTaste(db, wire);
+
+    const [cfg] = await db.select().from(schema.appConfig).limit(1);
+    expect(cfg?.audioWeight).toBe(3.5);
   });
 });
 

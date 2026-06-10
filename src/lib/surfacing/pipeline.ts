@@ -10,10 +10,16 @@ import {
   surfaceEvent,
   track,
 } from "@/db/schema";
-import { sameGenreScope } from "@/lib/bucketing/genre-scope";
+import { genreScopeCompatible } from "@/lib/bucketing/genre-scope";
 import { scoreBroadBatch } from "@/lib/ranking/broad";
 import { scoreRefillBatch } from "@/lib/ranking/refill";
-import type { Candidate, RatedTrack, RefillConfig, ScoredCandidate } from "@/lib/ranking/types";
+import {
+  type Candidate,
+  type RatedTrack,
+  type RefillConfig,
+  refillGenreGate,
+  type ScoredCandidate,
+} from "@/lib/ranking/types";
 import { configFromVersion, ensureActiveModelVersion } from "@/lib/ranking/version";
 import { logSurfaceEvents } from "./log";
 
@@ -208,14 +214,20 @@ export async function runSurfacingBatch(
 
 type RefillPhaseInput = {
   // Invariant for the winner-eligibility gate: each candidate MUST carry the
-  // persisted `track.primary_genre` so `sameGenreScope` can compare it to the
-  // bucket's genre. An absent/undefined primaryGenre is coerced to null and is
-  // therefore excluded from every genre-having bucket. Satisfied today by
-  // `loadCandidates`, which projects `track.primary_genre` onto each Candidate.
+  // persisted `track.primary_genre` (plus its embedding, always present on a
+  // Candidate) so `genreScopeCompatible` can compare it to the bucket's
+  // genre scope. An absent/undefined primaryGenre is coerced to null.
+  // Satisfied today by `loadCandidates`, which projects `track.primary_genre`
+  // onto each Candidate.
   candidates: readonly Candidate[];
   refillBar: number;
   cap: number;
-  buckets: { id: number; primaryGenre: string | null; memberTrackIds: readonly number[] }[];
+  buckets: {
+    id: number;
+    primaryGenre: string | null;
+    centroid: number[];
+    memberTrackIds: readonly number[];
+  }[];
   dislikes: readonly RatedTrack[];
   refillConfig: RefillConfig;
   refillVersionId: number;
@@ -244,11 +256,14 @@ async function runRefillPhase(db: Database, input: RefillPhaseInput): Promise<Re
 
   // Score every candidate against every refillable bucket. A candidate is a
   // refill winner for a bucket when its keep-similarity clears the refill bar
-  // (the spawn_threshold family) AND it passes the primary-genre gate (the
-  // LAB-45 JOIN/MERGE rule, null===null matches). Off-genre / below-bar
-  // candidates stay scored in the pool (Constraint #2) but never win. A
-  // candidate eligible for several buckets is assigned to the bucket where its
-  // refill score (keep_sim − λ·dislike_sim) is highest.
+  // (the spawn_threshold family) AND it passes the genre gate the SCORING
+  // VERSION's config selects (LAB-36: 'slot-overlap'; legacy versions:
+  // 'exact' — mirroring the JOIN gate in assign.ts so membership and
+  // surfacing share one rule). Gate-incompatible / below-bar candidates stay
+  // scored in the pool (Constraint #2) but never win. A candidate eligible
+  // for several buckets is assigned to the bucket where its refill score
+  // (keep_sim − λ·dislike_sim) is highest.
+  const genreGate = refillGenreGate(refillConfig);
   const bestByTrack = new Map<number, { scored: ScoredCandidate; bucketId: number }>();
   const poolByBucket = new Map<number, ScoredCandidate[]>();
 
@@ -261,7 +276,15 @@ async function runRefillPhase(db: Database, input: RefillPhaseInput): Promise<Re
     for (const s of pool) {
       const keepSim = s.subScores.keepSim ?? 0;
       if (keepSim < refillBar) continue;
-      if (!sameGenreScope(s.candidate.primaryGenre, targetBucket.primaryGenre)) continue;
+      if (
+        !genreScopeCompatible(
+          genreGate,
+          { primaryGenre: s.candidate.primaryGenre, embedding: s.candidate.embedding },
+          { primaryGenre: targetBucket.primaryGenre, centroid: targetBucket.centroid },
+        )
+      ) {
+        continue;
+      }
       const existing = bestByTrack.get(s.candidate.trackId);
       if (!existing || s.score > existing.scored.score) {
         bestByTrack.set(s.candidate.trackId, { scored: s, bucketId: targetBucket.id });
@@ -404,29 +427,46 @@ async function unratedSurfacedCount(db: Database): Promise<number> {
 
 async function loadRefillableBuckets(
   db: Database,
-): Promise<{ id: number; primaryGenre: string | null; memberTrackIds: number[] }[]> {
+): Promise<
+  { id: number; primaryGenre: string | null; centroid: number[]; memberTrackIds: number[] }[]
+> {
   // LAB-61 — only keep-anchor origins count as the bucket's keep-set. Today
   // that is every origin (post-backfill, every member is a seed or a keep);
   // the explicit filter keeps a future non-anchor origin from silently
   // anchoring refill. Mirrored in the counterfactual replay's
   // loadKeepsByBucket so live and replayed keep-sets stay symmetric.
+  // The centroid feeds the LAB-36 slot-overlap winner gate (bucket-side
+  // genre mass).
   const rows = await db
     .select({
       id: bucket.id,
       primaryGenre: bucket.primaryGenre,
+      centroid: bucket.centroid,
       trackId: bucketMember.trackId,
     })
     .from(bucket)
     .innerJoin(bucketMember, eq(bucketMember.bucketId, bucket.id))
     .where(inArray(bucketMember.origin, [...KEEP_ANCHOR_ORIGINS]));
-  const grouped = new Map<number, { primaryGenre: string | null; memberTrackIds: number[] }>();
+  const grouped = new Map<
+    number,
+    { primaryGenre: string | null; centroid: number[]; memberTrackIds: number[] }
+  >();
   for (const r of rows) {
-    const entry = grouped.get(r.id) ?? { primaryGenre: r.primaryGenre, memberTrackIds: [] };
+    const entry = grouped.get(r.id) ?? {
+      primaryGenre: r.primaryGenre,
+      centroid: r.centroid,
+      memberTrackIds: [],
+    };
     entry.memberTrackIds.push(r.trackId);
     grouped.set(r.id, entry);
   }
   return [...grouped.entries()]
-    .map(([id, v]) => ({ id, primaryGenre: v.primaryGenre, memberTrackIds: v.memberTrackIds }))
+    .map(([id, v]) => ({
+      id,
+      primaryGenre: v.primaryGenre,
+      centroid: v.centroid,
+      memberTrackIds: v.memberTrackIds,
+    }))
     .sort((a, b) => a.id - b.id);
 }
 
