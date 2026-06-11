@@ -29,10 +29,33 @@ export type FeatureKey = (typeof FEATURE_KEYS)[number];
 /**
  * Coarse genre taxonomy. Each slot has a list of keywords matched as
  * contiguous token subsequences of normalized genre tags. Multi-hot:
- * one track may set multiple slots (e.g. "indie rock" sets `rock` and `indie`).
+ * one track may set multiple slots (e.g. "indie rock" sets `indie`).
+ *
+ * LAB-47 — `blockedByTokens`: a slot whose keyword is a broad genre-family
+ * token (e.g. bare "rock", shared by metal/hard-rock) is suppressed for any
+ * single tag that ALSO carries a cross-family qualifier token. "pop rock" and
+ * "indie rock" are pop/indie tracks that happen to borrow the rock idiom — they
+ * belong in the pop/indie lane, not the rock-vs-metal lane that "hard rock",
+ * "classic rock", "punk rock" and bare "rock" share. Without this, substring-ish
+ * token-subsequence matching lit the bare `rock` slot for "pop rock"/"indie rock",
+ * creating spurious cross-genre affinity (e.g. a pop-rock act overlapping the
+ * metal bucket via the shared `rock` slot). The block is per-TAG: a track tagged
+ * both "pop rock" and bare "rock" still lights `rock` from the bare tag — only
+ * the qualified tag is suppressed. The qualifier still lights its own slot
+ * (`pop` / `indie`), so the genre signal is not lost, just routed correctly.
  */
-const GENRE_SLOT_DEFS: readonly { slot: string; keywords: readonly string[] }[] = [
-  { slot: "rock", keywords: ["rock"] },
+type GenreSlotDef = {
+  slot: string;
+  keywords: readonly string[];
+  /**
+   * Tokens that, when present in the SAME tag as a matched keyword, suppress
+   * this slot for that tag (route it to the qualifier's lane instead).
+   */
+  blockedByTokens?: readonly string[];
+};
+
+const GENRE_SLOT_DEFS: readonly GenreSlotDef[] = [
+  { slot: "rock", keywords: ["rock"], blockedByTokens: ["pop", "indie"] },
   { slot: "indie", keywords: ["indie"] },
   { slot: "alternative", keywords: ["alternative", "alt rock"] },
   { slot: "punk", keywords: ["punk"] },
@@ -161,6 +184,23 @@ function tokensContain(haystack: readonly string[], needle: readonly string[]): 
   return false;
 }
 
+/**
+ * Whether a single tag's normalized tokens match a slot keyword and survive
+ * the slot's `blockedByTokens` guard. Returns the matched keyword (so callers
+ * can break ties on keyword specificity) or null. Shared by
+ * {@link genresToHotVector} and {@link derivePrimaryGenre} so the multi-hot
+ * vector and the primary-genre label can never disagree on what a tag matches.
+ */
+function tagMatchedKeyword(tagTokens: readonly string[], def: GenreSlotDef): string | null {
+  for (const kw of def.keywords) {
+    if (!tokensContain(tagTokens, kw.split(/\s+/))) continue;
+    // LAB-47 — a cross-family qualifier in the SAME tag routes it elsewhere.
+    if (def.blockedByTokens?.some((t) => tagTokens.includes(t))) continue;
+    return kw;
+  }
+  return null;
+}
+
 /** Multi-hot 58-dim genre vector. Each slot is 1 iff any input genre matches it. */
 export function genresToHotVector(genres: readonly string[]): number[] {
   const vec: number[] = Array.from({ length: GENRE_DIM }, () => 0);
@@ -169,8 +209,7 @@ export function genresToHotVector(genres: readonly string[]): number[] {
   for (let i = 0; i < GENRE_SLOT_DEFS.length; i++) {
     const def = GENRE_SLOT_DEFS[i];
     if (!def) continue;
-    const kwTokens = def.keywords.map((k) => k.split(/\s+/));
-    if (tokenized.some((tks) => kwTokens.some((kw) => tokensContain(tks, kw)))) {
+    if (tokenized.some((tks) => tagMatchedKeyword(tks, def) !== null)) {
       vec[i] = 1;
     }
   }
@@ -187,11 +226,9 @@ export function derivePrimaryGenre(genres: readonly string[]): string | null {
   const tokenized = genres.map(normalizeGenreString);
   let best: { slot: string; len: number } | null = null;
   for (const def of GENRE_SLOT_DEFS) {
-    for (const kw of def.keywords) {
-      const kwTokens = kw.split(/\s+/);
-      if (tokenized.some((tks) => tokensContain(tks, kwTokens))) {
-        if (!best || kw.length > best.len) best = { slot: def.slot, len: kw.length };
-      }
+    for (const tks of tokenized) {
+      const kw = tagMatchedKeyword(tks, def);
+      if (kw !== null && (!best || kw.length > best.len)) best = { slot: def.slot, len: kw.length };
     }
   }
   if (best) return best.slot;
