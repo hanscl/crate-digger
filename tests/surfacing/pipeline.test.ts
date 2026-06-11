@@ -657,10 +657,13 @@ describe("runSurfacingBatch — refill genre winner-eligibility gate (LAB-45, co
   });
 
   it("slot-overlap config: a cross-lane candidate sharing a slot CAN win a refill slot (impossible under LAB-45 exact)", async () => {
-    // Rock-primary bucket; indie-primary candidate whose "indie rock" tag
+    // Rock-primary bucket; blues-primary candidate whose "blues rock" tag
     // shares the rock slot. The bootstrap refill config is the LAB-36 one
     // (slot-overlap), so the candidate is winner-eligible across the lane —
     // membership (JOIN) and surfacing (winner gate) move together.
+    // LAB-47 — "blues rock" is a GENUINE rock subgenre that still shares the
+    // bare rock slot but derives a blues PRIMARY (longest matched keyword);
+    // "indie rock" would no longer share that slot and could not win here.
     const rockSeed = await insertTrack({
       title: "Rock seed",
       audioFeatures: audio({ tempo: 128, energy: 0.7 }),
@@ -672,13 +675,13 @@ describe("runSurfacingBatch — refill genre winner-eligibility gate (LAB-45, co
     });
     expect(seedAssign.primaryGenre).toBe("rock");
 
-    const indieCand = await insertTrack({
-      title: "Indie rock candidate",
+    const bluesCand = await insertTrack({
+      title: "Blues rock candidate",
       audioFeatures: audio({ tempo: 127, energy: 0.69 }),
-      genres: ["indie rock"],
+      genres: ["blues rock"],
     });
-    const candidates = await Promise.all([indieCand].map(asCandidate));
-    expect(candidates[0]?.primaryGenre).toBe("indie");
+    const candidates = await Promise.all([bluesCand].map(asCandidate));
+    expect(candidates[0]?.primaryGenre).toBe("blues");
 
     const result = await runSurfacingBatch(db, {
       candidates,
@@ -691,7 +694,7 @@ describe("runSurfacingBatch — refill genre winner-eligibility gate (LAB-45, co
     const event = (await db.select().from(schema.surfaceEvent))[0]!;
     expect(event.rankerKind).toBe("refill");
     expect(event.bucketId).toBe(seedAssign.bucketId);
-    expect(event.trackId).toBe(indieCand.id);
+    expect(event.trackId).toBe(bluesCand.id);
   });
 
   it("legacy exact config: the SAME cross-lane candidate cannot win — the version's genreGate drives the gate", async () => {
@@ -712,12 +715,14 @@ describe("runSurfacingBatch — refill genre winner-eligibility gate (LAB-45, co
     });
     expect(seedAssign.primaryGenre).toBe("rock");
 
-    const indieCand = await insertTrack({
-      title: "Indie rock candidate",
+    // Same "blues rock" cross-lane candidate as the sibling slot-overlap test
+    // (LAB-47-safe); under the exact gate its blues primary excludes it.
+    const bluesCand = await insertTrack({
+      title: "Blues rock candidate",
       audioFeatures: audio({ tempo: 127, energy: 0.69 }),
-      genres: ["indie rock"],
+      genres: ["blues rock"],
     });
-    const candidates = await Promise.all([indieCand].map(asCandidate));
+    const candidates = await Promise.all([bluesCand].map(asCandidate));
 
     const result = await runSurfacingBatch(db, {
       candidates,

@@ -36,14 +36,25 @@ describe("genreScopeCompatible — 'exact' (LAB-45 rule)", () => {
 describe("genreScopeCompatible — 'slot-overlap' (LAB-36 rule)", () => {
   it("compatible iff ≥1 shared slot between track slots and bucket centroid mass", () => {
     const rockBucket = { primaryGenre: "rock", centroid: emb(["rock"]) };
-    // Cross-lane: indie-primary track sharing the rock slot.
+    // Cross-lane: blues-primary track that genuinely shares the rock slot
+    // ("blues rock" is a true rock subgenre — no cross-family qualifier — and
+    // derives a blues PRIMARY because "blues" is its longest matched keyword).
+    expect(
+      genreScopeCompatible(
+        "slot-overlap",
+        { primaryGenre: "blues", embedding: emb(["blues rock"]) },
+        rockBucket,
+      ),
+    ).toBe(true);
+    // LAB-47 — "indie rock" no longer bleeds into the bare rock slot, so an
+    // indie-primary track is NOT pulled into the rock-vs-metal lane.
     expect(
       genreScopeCompatible(
         "slot-overlap",
         { primaryGenre: "indie", embedding: emb(["indie rock"]) },
         rockBucket,
       ),
-    ).toBe(true);
+    ).toBe(false);
     // Disjoint slots: jazz vs rock.
     expect(
       genreScopeCompatible(
