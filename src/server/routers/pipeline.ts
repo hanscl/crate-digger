@@ -28,6 +28,10 @@ export const pipelineRouter = router({
       surfacedCount: result.output.surfacedCount,
       excludedDecidedCount: result.output.excludedDecidedCount,
       excludedPendingCount: result.output.excludedPendingCount,
+      // LAB-73 — artist-diversity counters for the Console run summary.
+      similarArtistCappedCount: result.output.similarArtistCappedCount,
+      similarFamiliarSkippedCount: result.output.similarFamiliarSkippedCount,
+      artistQuotaDeferredCount: result.output.artistQuotaDeferredCount,
     };
   }),
 

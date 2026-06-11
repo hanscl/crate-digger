@@ -32,7 +32,7 @@ try {
   }
   if (result.refillConfigUpgraded) {
     console.log(
-      "bucket reconcile: LAB-36 refill config upgraded (slot-overlap gate + audio-weighted cosine)",
+      "bucket reconcile: refill config upgraded (slot-overlap gate + audio-weighted cosine + familiarity penalty)",
     );
   }
 } catch (err) {

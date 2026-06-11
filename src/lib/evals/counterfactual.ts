@@ -16,10 +16,12 @@ import { scoreRefill } from "@/lib/ranking/refill";
 import {
   type Candidate,
   type RatedTrack,
+  refillFamiliarityPenalty,
   refillGenreGate,
   type ScoredCandidate,
 } from "@/lib/ranking/types";
 import { configFromVersion, getModelVersion } from "@/lib/ranking/version";
+import { loadFamiliarArtists } from "@/lib/surfacing/pipeline";
 
 /**
  * Counterfactual replay. Given a target `model_version_id`, walk historical
@@ -154,6 +156,8 @@ export async function counterfactualReplay(
             embedding: track.embedding,
             primaryGenre: track.primaryGenre,
             audioFeatures: track.audioFeatures,
+            // LAB-73 — needed by the refill familiarity penalty during replay.
+            artist: track.artist,
           })
           .from(track)
           .where(inArray(track.id, [...trackIdsToHydrate]));
@@ -181,6 +185,16 @@ export async function counterfactualReplay(
   // set; that drift is ACCEPTED — we're answering "what would the new ranker
   // do TODAY against this pool" rather than reconstructing past state.
   const dislikes = targetKind === "refill" ? await loadGlobalDislikes(db) : [];
+  // LAB-73 — the refill familiarity set (keep-rated artists), reconstructed the
+  // SAME way the live pipeline builds it, with the same accepted drift as
+  // `dislikes` (and, unlike a surface-event window, no self-reference — see
+  // loadFamiliarArtists). Only loaded when the target refill version's frozen
+  // penalty is non-zero, so legacy/penalty-0 replays stay byte-exact.
+  const familiarArtists =
+    targetKind === "refill" &&
+    refillFamiliarityPenalty(config as ReturnType<typeof configFromVersion<"refill">>) > 0
+      ? await loadFamiliarArtists(db)
+      : undefined;
 
   const eventRatings = await loadEventRatings(
     db,
@@ -235,7 +249,13 @@ export async function counterfactualReplay(
     } else {
       const keeps = event.bucketId !== null ? (keepsByBucket.get(event.bucketId) ?? []) : [];
       scored = candidates.map((c) =>
-        scoreRefill(c, keeps, dislikes, config as ReturnType<typeof configFromVersion<"refill">>),
+        scoreRefill(
+          c,
+          keeps,
+          dislikes,
+          config as ReturnType<typeof configFromVersion<"refill">>,
+          familiarArtists,
+        ),
       );
     }
 
@@ -319,6 +339,7 @@ function poolToCandidates(
       embedding: number[] | null;
       primaryGenre: string | null;
       audioFeatures: { tempo: number } | null;
+      artist: string;
     }
   >,
 ): Candidate[] {
@@ -330,6 +351,7 @@ function poolToCandidates(
       trackId: entry.trackId,
       embedding: t.embedding,
       primaryGenre: t.primaryGenre,
+      artist: t.artist,
       audioFeatures: t.audioFeatures ? (t.audioFeatures as Candidate["audioFeatures"]) : null,
     });
   }

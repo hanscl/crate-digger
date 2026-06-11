@@ -1,13 +1,15 @@
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { appConfig } from "@/db/schema";
+import { familiarityPenaltyFromNovelty } from "@/lib/ranking/types";
 import { bumpModelVersion, getActiveConfig } from "@/lib/ranking/version";
 import { protectedProcedure, router } from "../trpc-base";
 
 /**
  * Params router — backs the Console screen (#04). The Console is the only
  * surface that mutates `app_config`; the deterministic core elsewhere reads
- * it. Any change to `refillLambda` or `audioWeight` (LAB-36) bumps the refill
+ * it. Any change to `refillLambda` or `audioWeight` (LAB-36) — or `novelty`
+ * (LAB-73, which scales the frozen familiarity penalty) — bumps the refill
  * model_version (Constraint #3) so subsequent ratings tag the new chain —
  * that's how the Analyzer can later compare "before tightening lambda" vs
  * "after."
@@ -32,6 +34,12 @@ const PARAMS_INPUT = z.object({
   trendingLimitPerSource: z.number().int().min(0).max(25).optional(),
   similarLimitPerSource: z.number().int().min(0).max(25).optional(),
   similarSeedBuckets: z.number().int().min(0).max(15).optional(),
+  // LAB-73 — artist-diversity knobs (live config; no model_version bump).
+  // similarArtistCap / surfaceArtistCap are caps (≥1); familiarArtistKeepThreshold
+  // allows 0 to disable the pull-side familiar-artist skip.
+  similarArtistCap: z.number().int().min(1).max(25).optional(),
+  familiarArtistKeepThreshold: z.number().int().min(0).max(25).optional(),
+  surfaceArtistCap: z.number().int().min(1).max(25).optional(),
 });
 
 export const paramsRouter = router({
@@ -64,6 +72,10 @@ export const paramsRouter = router({
       update.similarLimitPerSource = input.similarLimitPerSource;
     if (input.similarSeedBuckets !== undefined)
       update.similarSeedBuckets = input.similarSeedBuckets;
+    if (input.similarArtistCap !== undefined) update.similarArtistCap = input.similarArtistCap;
+    if (input.familiarArtistKeepThreshold !== undefined)
+      update.familiarArtistKeepThreshold = input.familiarArtistKeepThreshold;
+    if (input.surfaceArtistCap !== undefined) update.surfaceArtistCap = input.surfaceArtistCap;
     if (Object.keys(update).length === 0) {
       return { ok: true, bumped: false, refillVersionId: null };
     }
@@ -79,14 +91,16 @@ export const paramsRouter = router({
       const [prior] = await tx.select().from(appConfig).for("update").limit(1);
       const priorLambda = prior?.refillLambda;
       const priorAudioWeight = prior?.audioWeight;
+      const priorNovelty = prior?.novelty;
 
       await tx
         .insert(appConfig)
         .values({ id: 1, ...update })
         .onConflictDoUpdate({ target: appConfig.id, set: update });
 
-      // LAB-36 — audioWeight is version-frozen like lambda. A single update
-      // touching both knobs mints ONE version carrying both changes.
+      // LAB-36/73 — audioWeight (and now the novelty-scaled familiarity penalty)
+      // are version-frozen like lambda. A single update touching several of
+      // these knobs mints ONE refill version carrying all the changes.
       const lambdaChanged =
         input.refillLambda !== undefined &&
         priorLambda !== undefined &&
@@ -95,15 +109,20 @@ export const paramsRouter = router({
         input.audioWeight !== undefined &&
         priorAudioWeight !== undefined &&
         input.audioWeight !== priorAudioWeight;
+      // LAB-73 — novelty scales the frozen refill familiarity penalty, so a
+      // novelty change is a refill scoring-config change (Constraint #3).
+      const noveltyChanged =
+        input.novelty !== undefined && priorNovelty !== undefined && input.novelty !== priorNovelty;
 
       let bumpedVersionId: number | null = null;
-      if (lambdaChanged || audioWeightChanged) {
+      if (lambdaChanged || audioWeightChanged || noveltyChanged) {
         const config = await getActiveConfig(tx, "refill");
         const notes: string[] = [];
         if (lambdaChanged) notes.push(`lambda update: ${priorLambda} → ${input.refillLambda}`);
         if (audioWeightChanged) {
           notes.push(`audioWeight update: ${priorAudioWeight} → ${input.audioWeight}`);
         }
+        if (noveltyChanged) notes.push(`novelty update: ${priorNovelty} → ${input.novelty}`);
         const newVersion = await bumpModelVersion(
           tx,
           "refill",
@@ -111,6 +130,9 @@ export const paramsRouter = router({
             ...config,
             ...(lambdaChanged ? { lambda: input.refillLambda as number } : {}),
             ...(audioWeightChanged ? { audioWeight: input.audioWeight as number } : {}),
+            ...(noveltyChanged
+              ? { familiarityPenalty: familiarityPenaltyFromNovelty(input.novelty as number) }
+              : {}),
           },
           { note: notes.join("; ") },
         );

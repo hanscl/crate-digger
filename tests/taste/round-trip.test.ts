@@ -270,6 +270,60 @@ describe("taste profile export/import (Constraint #8)", () => {
     const [cfg] = await db.select().from(schema.appConfig).limit(1);
     expect(cfg?.audioWeight).toBe(3.5);
   });
+
+  it("imports a pre-LAB-73 config block that lacks the artist-diversity knobs (defaults applied)", async () => {
+    // Backward-compat (LAB-73): a taste export produced before the
+    // artist-diversity knobs existed carries a config block without them. It
+    // must still import; the knobs fall back to the app_config column defaults.
+    const payload = {
+      version: 1 as const,
+      exportedAt: new Date().toISOString(),
+      config: {
+        novelty: 0.4,
+        sourceMix: 0.6,
+        queueCeiling: 42,
+        spawnThreshold: 0.7,
+        refillLambda: 0.3,
+        mergeThreshold: 0.92,
+        splitDislikeRate: 0.5,
+        trendingLimitPerSource: 3,
+        similarLimitPerSource: 3,
+        similarSeedBuckets: 5,
+        // no similarArtistCap / familiarArtistKeepThreshold / surfaceArtistCap
+      },
+      buckets: [],
+      ratings: [],
+    };
+    await importTaste(db, payload); // must not throw on the missing knobs
+
+    const [cfg] = await db.select().from(schema.appConfig).limit(1);
+    expect(cfg?.queueCeiling).toBe(42); // provided field applied
+    expect(cfg?.similarArtistCap).toBe(2); // DB default
+    expect(cfg?.familiarArtistKeepThreshold).toBe(3); // DB default
+    expect(cfg?.surfaceArtistCap).toBe(1); // DB default
+  });
+
+  it("round-trips the artist-diversity knobs in the config block (LAB-73)", async () => {
+    await db.insert(schema.appConfig).values({
+      id: 1,
+      similarArtistCap: 1,
+      familiarArtistKeepThreshold: 5,
+      surfaceArtistCap: 2,
+    });
+    const exportPayload = await exportTaste(db);
+    expect(exportPayload.config?.similarArtistCap).toBe(1);
+    expect(exportPayload.config?.familiarArtistKeepThreshold).toBe(5);
+    expect(exportPayload.config?.surfaceArtistCap).toBe(2);
+
+    const wire = JSON.parse(JSON.stringify(exportPayload));
+    await wipe();
+    await importTaste(db, wire);
+
+    const [cfg] = await db.select().from(schema.appConfig).limit(1);
+    expect(cfg?.similarArtistCap).toBe(1);
+    expect(cfg?.familiarArtistKeepThreshold).toBe(5);
+    expect(cfg?.surfaceArtistCap).toBe(2);
+  });
 });
 
 describe("taste profile — LAB-61 membership origin round-trip", () => {
