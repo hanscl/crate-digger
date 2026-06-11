@@ -252,16 +252,22 @@ function BucketDetail({
 }) {
   const { bucket: b, members } = data;
   const [editing, setEditing] = useState(false);
-  // LAB-62 — per-row overflow menu; holds the trackId whose menu is open.
-  const [menuFor, setMenuFor] = useState<number | null>(null);
+  // LAB-62 — per-row overflow menu. Anchored via fixed positioning captured
+  // from the trigger's rect at open time: the members table scrolls inside
+  // an overflow-auto container that would clip an absolutely-positioned
+  // menu on rows near its bottom edge.
+  const [menuFor, setMenuFor] = useState<{ trackId: number; top: number; right: number } | null>(
+    null,
+  );
   const [draftName, setDraftName] = useState(b.name);
   const [draftColor, setDraftColor] = useState(b.color ?? "#22d3ee");
 
-  // Reset the draft when the user picks a different bucket.
+  // Reset the draft (and any open row menu) when the user picks a different bucket.
   useEffect(() => {
     setDraftName(b.name);
     setDraftColor(b.color ?? "#22d3ee");
     setEditing(false);
+    setMenuFor(null);
   }, [b.id, b.name, b.color]);
 
   const dislikeRate = b.memberCount > 0 ? b.dislikeCount / b.memberCount : 0;
@@ -339,7 +345,10 @@ function BucketDetail({
       </div>
 
       <div className="cap text-ink-3 mb-2">members</div>
-      <div className="border border-line rounded-2 max-h-[18rem] overflow-auto">
+      <div
+        className="border border-line rounded-2 max-h-[18rem] overflow-auto"
+        onScroll={() => setMenuFor(null)}
+      >
         <table className="w-full text-xs">
           <thead className="text-ink-3 cap text-[10px]">
             <tr>
@@ -380,17 +389,31 @@ function BucketDetail({
                     <span className="text-ink-4">—</span>
                   )}
                 </td>
-                <td className="p-2 text-right relative">
+                <td className="p-2 text-right">
                   <button
                     type="button"
                     className="btn ghost sm px-1"
                     aria-label={`actions for ${m.title}`}
-                    onClick={() => setMenuFor(menuFor === m.trackId ? null : m.trackId)}
+                    onClick={(e) => {
+                      if (menuFor?.trackId === m.trackId) {
+                        setMenuFor(null);
+                        return;
+                      }
+                      const r = e.currentTarget.getBoundingClientRect();
+                      setMenuFor({
+                        trackId: m.trackId,
+                        top: r.bottom + 4,
+                        right: window.innerWidth - r.right,
+                      });
+                    }}
                   >
                     ⋯
                   </button>
-                  {menuFor === m.trackId ? (
-                    <div className="absolute right-2 top-7 z-10 bg-bg-3 border border-line-strong rounded-2 shadow-lg min-w-[7rem]">
+                  {menuFor?.trackId === m.trackId ? (
+                    <div
+                      className="fixed z-10 bg-bg-3 border border-line-strong rounded-2 shadow-lg min-w-[7rem]"
+                      style={{ top: menuFor.top, right: menuFor.right }}
+                    >
                       <button
                         type="button"
                         className="block w-full text-left px-3 py-1.5 text-xs text-ink-2 hover:text-ink-1 hover:bg-bg-2"
