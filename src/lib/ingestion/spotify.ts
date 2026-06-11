@@ -165,28 +165,33 @@ export function spotifyTrackToCandidate(t: SpotifyTrack): RawCandidate {
 
 /**
  * Field-scoped `/search` for a single artist+title pair, returning the RAW
- * top hit (or null) so the caller can confidence-check before trusting it.
- * Used by the ingest-time spotify-id resolution pass (LAB-46) to stamp a
- * `spotifyId` onto Last.fm-only candidates. Reuses `spotifyGet`, which
- * already returns null on auth/rate-limit/non-200 — no separate fetch path.
+ * top hits (possibly empty) so the caller can confidence-check before
+ * trusting any of them. Used by the ingest-time spotify-id resolution pass
+ * (LAB-46) to stamp a `spotifyId` onto Last.fm-only candidates. Reuses
+ * `spotifyGet`, which already returns null on auth/rate-limit/non-200 — no
+ * separate fetch path.
+ *
+ * Returns several hits (LAB-62): Spotify ranks by its own relevance, so the
+ * top hit for a classic-catalog track is often a dash-suffixed reissue
+ * ("… - 2016 Remaster") while the better-matching plain version sits a few
+ * slots down. The caller scores each hit and keeps the best.
  */
 export async function searchSpotifyTrack(
   artist: string,
   title: string,
   env: Env,
-): Promise<SpotifyTrack | null> {
+): Promise<SpotifyTrack[]> {
   // Raw Last.fm strings can contain double-quotes (e.g. `"Weird Al" Yankovic`),
   // which would terminate the field-scoped phrase early and malform the query.
   // Strip quotes (and collapse the resulting whitespace) before interpolation.
   const clean = (s: string): string => s.replace(/"/g, " ").replace(/\s+/g, " ").trim();
   const q = `artist:"${clean(artist)}" track:"${clean(title)}"`;
-  // Only the top hit is ever inspected, so cap the payload at one result.
   const data = await spotifyGet<{ tracks: { items: SpotifyTrack[] } }>(
     "/search",
-    { q, type: "track", limit: 1 },
+    { q, type: "track", limit: 5 },
     env,
   );
-  return data?.tracks?.items?.[0] ?? null;
+  return data?.tracks?.items ?? [];
 }
 
 /**

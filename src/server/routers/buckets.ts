@@ -21,7 +21,8 @@ import { protectedProcedure, router } from "../trpc-base";
 /**
  * Buckets router — backs the Buckets screen (#02). Read-mostly per
  * Constraint #7; the only writes are rename, recommendation accept/dismiss,
- * and an explicit recompute trigger. Merge/split is recommendation-driven.
+ * an explicit recompute trigger, and single-member removal (LAB-62 manual
+ * curation). Merge/split is recommendation-driven.
  */
 
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
@@ -148,6 +149,49 @@ export const bucketsRouter = router({
         .returning({ id: bucket.id });
       if (!updated) throw new TRPCError({ code: "NOT_FOUND", message: "bucket not found" });
       return { ok: true };
+    }),
+
+  /**
+   * LAB-62 — manual curation: drop a single membership and recompute the
+   * bucket's derived geometry from the remaining members. The track row and
+   * any rating rows are untouched (membership and rating are independent
+   * dimensions — same rule as the LAB-61 cleanup). Removing the last member
+   * prunes the bucket (recomputeBucketStats handles that).
+   */
+  removeMember: protectedProcedure
+    .input(
+      z.object({
+        bucketId: z.number().int().positive(),
+        trackId: z.number().int().positive(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      return ctx.db.transaction(async (tx) => {
+        const deleted = await tx
+          .delete(bucketMember)
+          .where(
+            and(eq(bucketMember.bucketId, input.bucketId), eq(bucketMember.trackId, input.trackId)),
+          )
+          .returning({ id: bucketMember.id });
+        if (deleted.length === 0) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "membership not found" });
+        }
+        // Pending recommendations were computed against the old membership —
+        // prune any referencing this bucket (mirrors merge-accept's
+        // dangling-ref cleanup; the next evaluation rebuilds from current
+        // geometry).
+        await tx.delete(bucketRecommendation).where(
+          sql`${bucketRecommendation.status} = 'pending'
+            AND ${input.bucketId} = ANY(${bucketRecommendation.bucketIds})`,
+        );
+        await recomputeBucketStats(tx, input.bucketId);
+        const [still] = await tx
+          .select({ id: bucket.id })
+          .from(bucket)
+          .where(eq(bucket.id, input.bucketId))
+          .limit(1);
+        return { ok: true, bucketPruned: !still };
+      });
     }),
 
   recommendations: protectedProcedure.query(async ({ ctx }) => {

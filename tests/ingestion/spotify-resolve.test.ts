@@ -111,21 +111,21 @@ afterEach(() => {
 });
 
 describe("searchSpotifyTrack", () => {
-  it("returns the first SpotifyTrack from a /search payload", async () => {
+  it("returns the SpotifyTrack items from a /search payload in order", async () => {
     const hit = spotifyTrack();
     stubFetch([hit, spotifyTrack({ id: "sp-other", name: "Other" })]);
     const out = await searchSpotifyTrack("Radiohead", "Reckoner", envWithCreds());
-    expect(out?.id).toBe("sp-reckoner");
+    expect(out.map((t) => t.id)).toEqual(["sp-reckoner", "sp-other"]);
   });
 
-  it("returns null on empty items", async () => {
+  it("returns [] on empty items", async () => {
     stubFetch([]);
-    expect(await searchSpotifyTrack("Radiohead", "Reckoner", envWithCreds())).toBeNull();
+    expect(await searchSpotifyTrack("Radiohead", "Reckoner", envWithCreds())).toEqual([]);
   });
 
-  it("returns null and does not throw on a 404 from /search", async () => {
+  it("returns [] and does not throw on a 404 from /search", async () => {
     stubFetch(null);
-    await expect(searchSpotifyTrack("Radiohead", "Reckoner", envWithCreds())).resolves.toBeNull();
+    await expect(searchSpotifyTrack("Radiohead", "Reckoner", envWithCreds())).resolves.toEqual([]);
   });
 
   it("sanitizes embedded double-quotes in the field-scoped query (fix 2)", async () => {
@@ -133,7 +133,7 @@ describe("searchSpotifyTrack", () => {
     // A `"Weird Al" Yankovic`-style artist must not throw or malform the query;
     // the stubbed /search must still be reached and return the hit.
     const out = await searchSpotifyTrack('"Weird Al" Yankovic', 'Foil "parody"', envWithCreds());
-    expect(out?.id).toBe("sp-reckoner");
+    expect(out[0]?.id).toBe("sp-reckoner");
     const searchCall = fn.mock.calls.find(([input]) => String(input).includes("/v1/search"));
     expect(searchCall).toBeDefined();
     // No raw double-quote should survive inside the q value's field phrases.
@@ -204,6 +204,35 @@ describe("resolveSpotifyId", () => {
     const out = await resolveSpotifyId(lastfmCandidate(), envWithCreds());
     expect(out.spotifyId).toBeNull();
     expect(out.isrc).toBeNull();
+  });
+
+  it("stamps a dash-suffixed remaster of the same recording (LAB-62)", async () => {
+    // The live failure case: Spotify's only/top hit for a classic-catalog
+    // track carries a " - YYYY Remaster" suffix. Same recording → must stamp.
+    stubFetch([spotifyTrack({ id: "sp-remaster", name: "Reckoner - 2016 Remaster" })]);
+    const out = await resolveSpotifyId(lastfmCandidate(), envWithCreds());
+    expect(out.spotifyId).toBe("sp-remaster");
+  });
+
+  it("does NOT stamp a dash-suffixed live take (different recording)", async () => {
+    stubFetch([spotifyTrack({ id: "sp-live", name: "Reckoner - Live at Glastonbury" })]);
+    const out = await resolveSpotifyId(lastfmCandidate(), envWithCreds());
+    expect(out.spotifyId).toBeNull();
+  });
+
+  it("picks the best-scoring hit when Spotify ranks a wrong version first (LAB-62)", async () => {
+    // Spotify relevance order puts a karaoke cover on top; the genuine track
+    // sits second. Best-of-N scoring must stamp the genuine one.
+    stubFetch([
+      spotifyTrack({
+        id: "sp-karaoke",
+        name: "Reckoner",
+        artists: [{ id: "z", name: "Ameritz Karaoke Standards" }],
+      }),
+      spotifyTrack(),
+    ]);
+    const out = await resolveSpotifyId(lastfmCandidate(), envWithCreds());
+    expect(out.spotifyId).toBe("sp-reckoner");
   });
 
   it("does not overwrite an already-set isrc with the hit's isrc", async () => {
