@@ -26,10 +26,24 @@ export type ResolveResult = {
   matchedBy: MatchedBy;
 };
 
+/**
+ * Spotify suffixes version metadata onto titles with " - " (" - 2016
+ * Remaster", " - Single Version", " - Radio Edit") — a convention Last.fm
+ * doesn't share, so a dash-suffixed canonical hit scores ~0.7 against the
+ * bare candidate title and dies at the 0.9 gate (LAB-62 finding: "Another
+ * Day in Paradise - 2016 Remaster"). Strip the trailing dash segment ONLY
+ * when it is clearly version metadata of the same recording — never
+ * live/acoustic/demo/instrumental/karaoke takes, where a confident stamp
+ * would point the player at a different recording.
+ */
+const VERSION_DASH_SUFFIX =
+  /\s-\s(?![^-]*\b(?:live|acoustic|demo|instrumental|karaoke)\b)[^-]*\b(?:remaster(?:ed)?|version|edit|mix|mono|stereo|re-?recorded)\b[^-]*$/i;
+
 function normalize(s: string): string {
   return s
     .toLowerCase()
     .replace(/\(.*?\)|\[.*?\]/g, "")
+    .replace(VERSION_DASH_SUFFIX, "")
     .replace(/feat\.?\s+[^,&-]+/gi, "")
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
@@ -59,9 +73,10 @@ export async function resolveSpotifyId(candidate: RawCandidate, env: Env): Promi
   // Mirror `spotifyAdapter.isAvailable`: no creds → no-op (Constraint #1).
   if (!env.SPOTIFY_CLIENT_ID || !env.SPOTIFY_CLIENT_SECRET) return candidate;
   try {
-    const hit = await searchSpotifyTrack(candidate.artist, candidate.title, env);
-    if (!hit) return candidate;
-    const hitArtist = hit.artists.map((a) => a.name).join(", ");
+    const hits = await searchSpotifyTrack(candidate.artist, candidate.title, env);
+    // Score every returned hit and keep the best (LAB-62): Spotify's own
+    // relevance order frequently puts a reissue or wrong version first.
+    //
     // `useSellers: false` forces full-string Damerau-Levenshtein instead of
     // fast-fuzzy's default Sellers substring scoring. With substring scoring a
     // suffix-form cover/karaoke/tribute whose artist CONTAINS the original
@@ -70,16 +85,20 @@ export async function resolveSpotifyId(candidate: RawCandidate, env: Env): Promi
     // the whole string instead makes that pair score far below threshold while
     // legitimate accent-fold variants (e.g. "Sigur Rós"/"Sigur Ros" ≈ 0.90)
     // still pass, so `RESOLVE_SEARCH_THRESHOLD` stays at 0.9.
-    const score = fuzzy(
-      fuzzyKey({ artist: candidate.artist, title: candidate.title }),
-      fuzzyKey({ artist: hitArtist, title: hit.name }),
-      { useSellers: false },
-    );
-    if (score < RESOLVE_SEARCH_THRESHOLD) return candidate; // low confidence → leave null
+    const candidateKey = fuzzyKey({ artist: candidate.artist, title: candidate.title });
+    let best: { hit: (typeof hits)[number]; score: number } | null = null;
+    for (const hit of hits) {
+      const hitArtist = hit.artists.map((a) => a.name).join(", ");
+      const score = fuzzy(candidateKey, fuzzyKey({ artist: hitArtist, title: hit.name }), {
+        useSellers: false,
+      });
+      if (!best || score > best.score) best = { hit, score };
+    }
+    if (!best || best.score < RESOLVE_SEARCH_THRESHOLD) return candidate; // low confidence → leave null
     return {
       ...candidate,
-      spotifyId: hit.id,
-      isrc: candidate.isrc ?? hit.external_ids?.isrc?.trim().toUpperCase() ?? null,
+      spotifyId: best.hit.id,
+      isrc: candidate.isrc ?? best.hit.external_ids?.isrc?.trim().toUpperCase() ?? null,
     };
   } catch {
     return candidate; // never crash ingest (Constraint #1)

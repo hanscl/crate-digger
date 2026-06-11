@@ -68,6 +68,20 @@ export function BucketsScreen({ selectedId }: { selectedId?: number }) {
       void utils.buckets.detail.invalidate();
     },
   });
+  const removeMember = trpc.buckets.removeMember.useMutation({
+    onSuccess: (result) => {
+      void utils.buckets.list.invalidate();
+      void utils.buckets.recommendations.invalidate();
+      // Removing the last member prunes the bucket — drop the selection so
+      // the detail query doesn't 404 against the deleted id.
+      if (result.bucketPruned) {
+        setInternalSelected(null);
+        if (selectedId !== undefined) setLocation("/buckets");
+      } else {
+        void utils.buckets.detail.invalidate();
+      }
+    },
+  });
 
   return (
     <div className="p-8 max-w-7xl">
@@ -132,6 +146,9 @@ export function BucketsScreen({ selectedId }: { selectedId?: number }) {
               data={detail.data}
               onRename={(name, color) =>
                 rename.mutate({ id: detail.data!.bucket.id, name, color: color ?? null })
+              }
+              onRemoveMember={(trackId) =>
+                removeMember.mutate({ bucketId: detail.data!.bucket.id, trackId })
               }
             />
           ) : (
@@ -227,12 +244,16 @@ export function BucketsScreen({ selectedId }: { selectedId?: number }) {
 function BucketDetail({
   data,
   onRename,
+  onRemoveMember,
 }: {
   data: BucketDetailData;
   onRename: (name: string, color: string | null | undefined) => void;
+  onRemoveMember: (trackId: number) => void;
 }) {
   const { bucket: b, members } = data;
   const [editing, setEditing] = useState(false);
+  // LAB-62 — per-row overflow menu; holds the trackId whose menu is open.
+  const [menuFor, setMenuFor] = useState<number | null>(null);
   const [draftName, setDraftName] = useState(b.name);
   const [draftColor, setDraftColor] = useState(b.color ?? "#22d3ee");
 
@@ -326,7 +347,8 @@ function BucketDetail({
               <th className="text-left p-2">artist</th>
               <th className="text-left p-2">primary</th>
               <th className="text-right p-2">sim</th>
-              <th className="text-right p-2">decision</th>
+              <th className="text-right p-2">signal</th>
+              <th className="p-2 w-8" aria-label="actions" />
             </tr>
           </thead>
           <tbody>
@@ -350,9 +372,37 @@ function BucketDetail({
                     >
                       {m.latestDecision}
                     </span>
+                  ) : m.origin !== "discovery_keep" ? (
+                    // LAB-62 — a member with no rating is a cold-start seed
+                    // (post-LAB-61 invariant); say so instead of a blank dash.
+                    <span className="chip mono">seed</span>
                   ) : (
                     <span className="text-ink-4">—</span>
                   )}
+                </td>
+                <td className="p-2 text-right relative">
+                  <button
+                    type="button"
+                    className="btn ghost sm px-1"
+                    aria-label={`actions for ${m.title}`}
+                    onClick={() => setMenuFor(menuFor === m.trackId ? null : m.trackId)}
+                  >
+                    ⋯
+                  </button>
+                  {menuFor === m.trackId ? (
+                    <div className="absolute right-2 top-7 z-10 bg-bg-3 border border-line-strong rounded-2 shadow-lg min-w-[7rem]">
+                      <button
+                        type="button"
+                        className="block w-full text-left px-3 py-1.5 text-xs text-ink-2 hover:text-ink-1 hover:bg-bg-2"
+                        onClick={() => {
+                          setMenuFor(null);
+                          onRemoveMember(m.trackId);
+                        }}
+                      >
+                        remove
+                      </button>
+                    </div>
+                  ) : null}
                 </td>
               </tr>
             ))}

@@ -2,11 +2,40 @@
 
 Phase tracker. Update at the end of every phase. Newest at the top.
 
+## LAB-62 — Post-merge QA fixes for the LAB-60/61/36 stack
+
+- **Status:** in progress
+- **Branch:** `lab-62-post-merge-qa-decisions-for-the-lab-606136-surfacing`
+- **Context:** PRs #26/#27 had stack-base branches, so their "merges" never
+  landed on `main`; PR #28 re-landed the combined LAB-61+36 delta. The dev DB
+  already carried migration 0011 (backfill verified: 106 seed_track /
+  13 discovery_keep across 29 buckets); 0012 + the LAB-36 refill version mint
+  (v7, slot-overlap, W=2.5) applied via `pnpm db:migrate`. The LAB-60 manual
+  zombie-cleanup SQL (recorded below) was run: 11 decided zombies + 5
+  duplicate pending cards deleted (rows backed up first), queue 23 → 7.
+- **QA fixes landed:**
+  - Buckets member table: `decision` column renamed `signal`; members with no
+    rating show a neutral `seed` chip (origin-keyed) instead of a dash.
+  - Spotify-id resolution (LAB-46 follow-up): `normalize()` strips
+    dash-suffixed version metadata (`- 2016 Remaster`, `- Radio Edit`, …;
+    never live/acoustic/demo/instrumental/karaoke), and `resolveSpotifyId`
+    scores Spotify's top-5 hits instead of trusting the relevance-ranked
+    first. Fixed the "Another Day in Paradise" miss; one-off backfill stamped
+    the id + audio features + embedding. Remaining miss (collab-embedded
+    title) tracked as LAB-72.
+  - `buckets.removeMember` (manual curation): per-row `⋯` → remove on the
+    Buckets screen. Deletes the membership in a transaction, prunes pending
+    recommendations referencing the bucket, recomputes centroid/stats
+    (bucket pruned when last member removed). Track + rating rows untouched.
+- **Spawned tickets:** LAB-72 (collab-title resolver fallback), LAB-73
+  (artist diversity: pull throttle + surfacing quota + novelty-scaled
+  familiarity penalty — no diversity mechanism exists anywhere today).
+
 ## LAB-36 — Cross-lane bucket membership: slot-overlap genre gate + audio-weighted cosine
 
-- **Status:** review
+- **Status:** merged
 - **Branch:** `lab-36-rework-bucket-membership-pre-filter-so-audio-dims-can-pull`
-- **PR:** _pending_ (stacked on LAB-61)
+- **PR:** [#27](https://github.com/hanscl/crate-digger/pull/27) (stack-base merge), re-landed on `main` via [#28](https://github.com/hanscl/crate-digger/pull/28)
 - **Problem:** `computeBucketDecision` pre-filtered candidate buckets by EXACT
   `bucket.primary_genre = track.primary_genre` before any cosine, and the 6
   audio dims carry only ~9% of the 64-dim embedding mass — so audio had zero
@@ -105,9 +134,9 @@ Phase tracker. Update at the end of every phase. Newest at the top.
 
 ## LAB-61 — Bucket-member provenance (origin) + legacy eager-join cleanup
 
-- **Status:** review
+- **Status:** merged
 - **Branch:** `lab-61-bucket-member-provenance-origin-backfillcleanup-of-legacy`
-- **PR:** _pending_ (based on `main`; see the LAB-60 migration-collision note below)
+- **PR:** [#26](https://github.com/hanscl/crate-digger/pull/26) (stack-base merge), re-landed on `main` via [#28](https://github.com/hanscl/crate-digger/pull/28)
 - **Scope landed:** `bucket_member.origin` enum
   (`seed_playlist | seed_track | seed_manual | discovery_keep`; `seed_manual`
   reserved — no live path yet) records membership provenance. Pre-LAB-52 the
@@ -185,9 +214,9 @@ Phase tracker. Update at the end of every phase. Newest at the top.
 
 ## LAB-60 — Surfacing eligibility gate (no re-queue of decided tracks)
 
-- **Status:** review
+- **Status:** merged
 - **Branch:** `lab-60-surfacing-re-queues-already-rated-tracks-no-rated-track`
-- **PR:** _pending_
+- **PR:** [#25](https://github.com/hanscl/crate-digger/pull/25)
 - **Scope landed:** A track rated on a prior run could reappear in the Rating
   Queue as a fresh unrated card — LAB-39's similar pull legitimately re-pulls
   tracks near bucket centroids, and nothing excluded already-rated ones.
