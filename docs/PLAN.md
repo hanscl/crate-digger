@@ -445,8 +445,9 @@ guard catches refactors that accidentally violate documented constraints.
   (Constraint #5, amended LAB-53): ingestion captures all candidates; surfacing emits every
   candidate that clears its ranker's quality bar, bounded only by the queue ceiling
   (`max(0, queueCeiling − unrated)`). The per-run pull size (LAB-51) is the throttle.
-  Keep/dislike-decided and pending-unrated tracks are excluded at surfacing entry (amended
-  LAB-60); defer re-surfaces. Artist diversity (amended LAB-73): the similar pull is capped
+  Keep/dislike/neutral-decided and pending-unrated tracks are excluded at surfacing entry (amended
+  LAB-60/LAB-76); defer re-surfaces (`neutral` settles the track but carries zero taste signal).
+  Artist diversity (amended LAB-73): the similar pull is capped
   per-artist (+ skips artists with ≥N keeps), and surfacing emits at most N tracks per artist
   per run; overflow stays enriched-but-unsurfaced. Novelty scales the refill familiarity
   penalty and is version-frozen (Constraint #6, amended LAB-73 — a novelty change bumps the

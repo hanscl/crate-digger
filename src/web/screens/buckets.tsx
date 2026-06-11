@@ -5,6 +5,12 @@ import { trpc } from "../trpc";
 import type { RouterOutputs } from "../types";
 import { Radar } from "../components/primitives/radar";
 import { LEDMeter } from "../components/primitives/led-meter";
+import {
+  bucketRefLabel,
+  formatRecommendationReason,
+  orderRecommendations,
+  recInvolvesBucket,
+} from "./buckets-recs";
 
 type BucketDetailData = RouterOutputs["buckets"]["detail"];
 
@@ -201,37 +207,74 @@ export function BucketsScreen({ selectedId }: { selectedId?: number }) {
               <div className="text-ink-3 text-xs italic">No pending recommendations.</div>
             ) : (
               <div className="flex flex-col gap-2">
-                {(recs.data ?? []).map((r) => (
-                  <div key={r.id} className="border border-line rounded-2 p-2">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className={clsx("chip", r.kind === "merge" ? "accent" : "warn")}>
-                        {r.kind}
-                      </span>
-                      <span className="text-ink-3 text-[11px] mono">{r.bucketIds.join(" + ")}</span>
+                {orderRecommendations(recs.data ?? [], id).map((r) => {
+                  const involvesSelected = recInvolvesBucket(r, id);
+                  return (
+                    <div
+                      key={r.id}
+                      className={clsx(
+                        "border rounded-2 p-2",
+                        involvesSelected ? "border-accent bg-accent-soft" : "border-line",
+                      )}
+                    >
+                      <div className="flex items-center justify-between gap-2 mb-1">
+                        <span className={clsx("chip", r.kind === "merge" ? "accent" : "warn")}>
+                          {r.kind}
+                        </span>
+                        <div className="flex flex-wrap items-center justify-end gap-1 min-w-0">
+                          {r.buckets.map((ref, i) => (
+                            <span key={ref.id} className="inline-flex items-center gap-1">
+                              {i > 0 ? <span className="text-ink-4 text-[11px]">+</span> : null}
+                              <button
+                                type="button"
+                                className={clsx(
+                                  "text-[11px] mono truncate max-w-[8rem] hover:text-ink-1",
+                                  ref.id === id ? "text-accent" : "text-ink-3",
+                                )}
+                                title={`select ${bucketRefLabel(ref)}`}
+                                onClick={() => {
+                                  setInternalSelected(ref.id);
+                                  setLocation(`/buckets/${ref.id}`);
+                                }}
+                              >
+                                {bucketRefLabel(ref)}
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="text-ink-2 text-xs leading-snug">
+                        {formatRecommendationReason(r)}
+                      </div>
+                      <details className="mt-1">
+                        <summary className="text-ink-4 text-[10px] cursor-pointer select-none hover:text-ink-3">
+                          raw
+                        </summary>
+                        <pre className="text-ink-3 text-[10px] mono whitespace-pre-wrap break-all mt-1">
+                          {JSON.stringify(r.reason, null, 2)}
+                        </pre>
+                      </details>
+                      <div className="flex gap-1 mt-2">
+                        <button
+                          type="button"
+                          className="btn primary sm"
+                          onClick={() => accept.mutate({ recommendationId: r.id })}
+                          disabled={accept.isPending}
+                        >
+                          accept
+                        </button>
+                        <button
+                          type="button"
+                          className="btn ghost sm"
+                          onClick={() => dismiss.mutate({ recommendationId: r.id })}
+                          disabled={dismiss.isPending}
+                        >
+                          dismiss
+                        </button>
+                      </div>
                     </div>
-                    <pre className="text-ink-3 text-[10px] mono whitespace-pre-wrap break-all">
-                      {JSON.stringify(r.reason, null, 2)}
-                    </pre>
-                    <div className="flex gap-1 mt-2">
-                      <button
-                        type="button"
-                        className="btn primary sm"
-                        onClick={() => accept.mutate({ recommendationId: r.id })}
-                        disabled={accept.isPending}
-                      >
-                        accept
-                      </button>
-                      <button
-                        type="button"
-                        className="btn ghost sm"
-                        onClick={() => dismiss.mutate({ recommendationId: r.id })}
-                        disabled={dismiss.isPending}
-                      >
-                        dismiss
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

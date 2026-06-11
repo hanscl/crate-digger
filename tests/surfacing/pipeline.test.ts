@@ -849,6 +849,54 @@ describe("runSurfacingBatch — decided/pending eligibility gate (LAB-60)", () =
     expect(events[0]?.trackId).toBe(fresh.id);
   });
 
+  it("a neutral-rated track is excluded at surfacing entry — neutral settles it (LAB-76)", async () => {
+    // LAB-76 — neutral is "seen it, indifferent": it settles the track like a
+    // keep/dislike (never re-surfaces) but carries zero taste signal. Here it
+    // is excluded at entry exactly like the disliked track above; the control
+    // surfaces. The neutral decision contributes no bucket/dislike/λ side
+    // effect — only the surfacing-eligibility behavior changes.
+    const neutral = await insertTrack({
+      title: "Neutral",
+      audioFeatures: audio({ energy: 0.3 }),
+      genres: ["rock"],
+    });
+    const control = await insertTrack({
+      title: "Control",
+      audioFeatures: audio({ energy: 0.6 }),
+      genres: ["rock"],
+    });
+    const broadVer = await ensureActiveModelVersion(db, "broad");
+    await db.insert(schema.rating).values({
+      trackId: neutral.id,
+      decision: "neutral",
+      modelVersionId: broadVer.id,
+    });
+
+    const result = await runSurfacingBatch(db, {
+      candidates: await Promise.all([neutral, control].map(asCandidate)),
+      noveltyOverride: 1,
+      queueCeilingOverride: 50,
+    });
+
+    expect(result.excludedDecidedCount).toBe(1);
+    expect(result.excludedPendingCount).toBe(0);
+    expect(result.surfaced).toHaveLength(1);
+    expect(result.surfaced[0]?.candidate.trackId).toBe(control.id);
+
+    const events = await db.select().from(schema.surfaceEvent);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.trackId).toBe(control.id);
+    // Excluded BEFORE scoring — the neutral track never enters the pool.
+    const poolIds = events[0]!.candidatePool.map((p: CandidatePoolEntry) => p.trackId);
+    expect(poolIds).not.toContain(neutral.id);
+    expect(poolIds).toContain(control.id);
+
+    // Neutral leaves the taste model untouched: no bucket membership spawned,
+    // no dislike counter bumped.
+    expect(await db.select().from(schema.bucket)).toHaveLength(0);
+    expect(await db.select().from(schema.bucketMember)).toHaveLength(0);
+  });
+
   it("a previously-deferred track re-surfaces — defer means later, not no", async () => {
     const t = await insertTrack({ title: "Deferred", audioFeatures: audio(), genres: ["rock"] });
     const cand = await asCandidate(t);

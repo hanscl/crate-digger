@@ -38,8 +38,10 @@ current state.** Then proceed.
    not at ingestion. Ingest captures everything; surfacing emits every candidate that clears its
    ranker's quality bar (refill = keep-similarity; broad = classifier P(keep)), bounded only by the
    queue ceiling (`max(0, queueCeiling − unrated)`). Below-bar tracks stay enriched but unsurfaced.
-   The per-run pull size (LAB-51) is the throttle. Keep/dislike-decided and pending-unrated tracks
-   are excluded at surfacing entry (amended LAB-60); defer re-surfaces. **Artist diversity**
+   The per-run pull size (LAB-51) is the throttle. Keep/dislike/neutral-decided and pending-unrated
+   tracks are excluded at surfacing entry (amended LAB-60/LAB-76); defer re-surfaces. (`neutral` =
+   "seen it, indifferent" — settles the track but carries zero taste signal: no bucket commit,
+   dislike counter, or λ-penalty.) **Artist diversity**
    (amended LAB-73): the similar pull is capped per-artist and skips artists with ≥N keeps, and
    surfacing emits at most N tracks per artist per run — overflow stays enriched-but-unsurfaced
    (defer-not-discard, like below-bar tracks; full pool still logged per Constraint #2).
