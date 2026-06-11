@@ -21,6 +21,22 @@ const schema = z.object({
   DISCOGS_KEY: z.string().optional().default(""),
   DISCOGS_SECRET: z.string().optional().default(""),
   VIBERATE_API_KEY: z.string().optional().default(""),
+  // Chartmetric (LAB-19) — DEFAULT TikTok-velocity provider. Usage-based
+  // (~$0.01/credit, free trial), so the cost-effective choice for a single-user
+  // install. This is the long-lived REFRESH token (exchanged for a ~1h bearer);
+  // absent it, the adapter falls back to Soundcharts, then to unavailable
+  // (system runs on Spotify + Last.fm — Constraint #1).
+  CHARTMETRIC_REFRESH_TOKEN: z.string().optional().default(""),
+  // TikTok chart territory (ISO Alpha-2). Defaults to US.
+  CHARTMETRIC_TIKTOK_COUNTRY: z.string().optional().default("US"),
+  // Soundcharts (LAB-19) — ALTERNATIVE TikTok-velocity provider ($250/mo floor;
+  // live-verified). BOTH the app id and api key are required; the public sandbox
+  // creds are `soundcharts` / `soundcharts` (fixed demo data).
+  SOUNDCHARTS_APP_ID: z.string().optional().default(""),
+  SOUNDCHARTS_API_KEY: z.string().optional().default(""),
+  // Which TikTok chart to pull (Soundcharts slug). Defaults to the US
+  // "Breakout" velocity chart; e.g. tiktok-breakout-gb, tiktok-breakout-de.
+  SOUNDCHARTS_TIKTOK_CHART_SLUG: z.string().optional().default("tiktok-breakout-us"),
   PORT: z.coerce.number().int().positive().default(3000),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   CRON_DISABLED: z.string().optional().default(""),

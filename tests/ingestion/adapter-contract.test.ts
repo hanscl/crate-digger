@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { _resetChartmetricTokenCache } from "@/lib/ingestion/chartmetric";
 import { _resetSpotifyTokenCache } from "@/lib/ingestion/spotify";
 import { allAdapters } from "@/lib/ingestion";
 import type { Env } from "@/server/env";
@@ -16,6 +17,11 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     DISCOGS_KEY: "",
     DISCOGS_SECRET: "",
     VIBERATE_API_KEY: "",
+    CHARTMETRIC_REFRESH_TOKEN: "",
+    CHARTMETRIC_TIKTOK_COUNTRY: "US",
+    SOUNDCHARTS_APP_ID: "",
+    SOUNDCHARTS_API_KEY: "",
+    SOUNDCHARTS_TIKTOK_CHART_SLUG: "tiktok-breakout-us",
     PORT: 3000,
     NODE_ENV: "test",
     CRON_DISABLED: "",
@@ -27,10 +33,13 @@ const credsByAdapter: Record<string, Partial<Env>> = {
   spotify: { SPOTIFY_CLIENT_ID: "id", SPOTIFY_CLIENT_SECRET: "secret" },
   lastfm: { LASTFM_API_KEY: "key" },
   viberate: { VIBERATE_API_KEY: "key" },
+  // Exercises the default (Chartmetric) provider; Soundcharts is the fallback.
+  tiktok: { CHARTMETRIC_REFRESH_TOKEN: "refresh-token" },
 };
 
 beforeEach(() => {
   _resetSpotifyTokenCache();
+  _resetChartmetricTokenCache();
   vi.spyOn(console, "error").mockImplementation(() => undefined);
 });
 
@@ -40,9 +49,9 @@ afterEach(() => {
 });
 
 describe("source adapter contract", () => {
-  it("registers at least the three documented adapters", () => {
+  it("registers at least the documented adapters", () => {
     const ids = allAdapters.map((a) => a.id).sort();
-    expect(ids).toEqual(["lastfm", "spotify", "viberate"]);
+    expect(ids).toEqual(["lastfm", "spotify", "tiktok", "viberate"]);
   });
 
   for (const adapter of allAdapters) {
