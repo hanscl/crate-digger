@@ -60,17 +60,57 @@ describe("embedding — genre multi-hot", () => {
     expect(v[idx]).toBe(1);
   });
 
-  it("sets multiple slots when a tag combines genres", () => {
-    const v = genresToHotVector(["indie rock"]);
+  it("sets multiple slots when a tag combines independent genres", () => {
+    // "punk rock" is a genuine rock subgenre (no cross-family qualifier), so
+    // it lights both the rock-family slot and the punk slot.
+    const v = genresToHotVector(["punk rock"]);
     expect(v[GENRE_SLOTS.indexOf("rock")]).toBe(1);
-    expect(v[GENRE_SLOTS.indexOf("indie")]).toBe(1);
+    expect(v[GENRE_SLOTS.indexOf("punk")]).toBe(1);
   });
 
   it("matches multi-token slots via contiguous-token subsequence", () => {
     const v = genresToHotVector(["post-rock"]);
     expect(v[GENRE_SLOTS.indexOf("post-rock")]).toBe(1);
-    // "post-rock" should also light "rock" — the literal token "rock" is present.
+    // "post-rock" should also light "rock" — the literal token "rock" is
+    // present and "post" is not a cross-family qualifier.
     expect(v[GENRE_SLOTS.indexOf("rock")]).toBe(1);
+  });
+
+  it("LAB-47: pop/indie qualifiers do NOT bleed into the bare rock slot", () => {
+    const rock = GENRE_SLOTS.indexOf("rock");
+    const pop = GENRE_SLOTS.indexOf("pop");
+    const indie = GENRE_SLOTS.indexOf("indie");
+
+    // "pop rock" routes to pop, NOT to the metal/hard-rock-shared rock slot.
+    const popRock = genresToHotVector(["pop rock"]);
+    expect(popRock[rock]).toBe(0);
+    expect(popRock[pop]).toBe(1);
+
+    // "indie rock" routes to indie, not rock.
+    const indieRock = genresToHotVector(["indie rock"]);
+    expect(indieRock[rock]).toBe(0);
+    expect(indieRock[indie]).toBe(1);
+
+    // "indie pop rock" lights indie + pop, never the bare rock slot.
+    const indiePopRock = genresToHotVector(["indie pop rock"]);
+    expect(indiePopRock[rock]).toBe(0);
+    expect(indiePopRock[indie]).toBe(1);
+    expect(indiePopRock[pop]).toBe(1);
+  });
+
+  it("LAB-47: genuine rock-family tags still light the bare rock slot", () => {
+    const rock = GENRE_SLOTS.indexOf("rock");
+    for (const tag of ["rock", "hard rock", "classic rock", "punk rock", "rock & roll"]) {
+      expect(genresToHotVector([tag])[rock], `${tag} should light rock`).toBe(1);
+    }
+  });
+
+  it("LAB-47: the block is per-tag — a bare 'rock' tag still lights rock alongside 'pop rock'", () => {
+    // A track tagged BOTH "pop rock" and bare "rock" is still rock: the
+    // suppression only applies to the qualified tag, not the whole track.
+    const v = genresToHotVector(["pop rock", "rock"]);
+    expect(v[GENRE_SLOTS.indexOf("rock")]).toBe(1);
+    expect(v[GENRE_SLOTS.indexOf("pop")]).toBe(1);
   });
 
   it("matches alias keywords (dnb → drum-and-bass)", () => {
@@ -92,6 +132,15 @@ describe("embedding — derivePrimaryGenre", () => {
   it("prefers the most specific (longest-keyword) slot match", () => {
     expect(derivePrimaryGenre(["post-rock"])).toBe("post-rock");
     expect(derivePrimaryGenre(["synth pop"])).toBe("synth-pop");
+  });
+
+  it("breaks ties on the LONGEST keyword within a multi-keyword slot", () => {
+    // `rnb` lists keywords shortest-first (["r b", "rnb", "rhythm and blues"]).
+    // A tag matching both the short "r b" (len 3) and the long "rhythm and blues"
+    // (len 15) must contribute len 15 to the most-specific-wins tie-break, else a
+    // weaker slot (here "blues", len 5, riding inside "rhythm and blues") would
+    // wrongly steal the primary genre.
+    expect(derivePrimaryGenre(["r&b rhythm and blues"])).toBe("rnb");
   });
 
   it("falls back to a normalized raw genre when no slot matches", () => {
@@ -190,10 +239,11 @@ describe("embedding — weightedCosine (LAB-36)", () => {
 
 describe("embedding — genre slot helpers (LAB-36)", () => {
   it("genreSlotsFromVector recovers a track's multi-hot slots from the full embedding", () => {
-    const embedding = buildEmbedding({ audioFeatures: null, genres: ["indie rock"] });
+    // "punk rock" lights two independent slots (rock-family + punk).
+    const embedding = buildEmbedding({ audioFeatures: null, genres: ["punk rock"] });
     const slots = genreSlotsFromVector(embedding);
     expect(slots.has(GENRE_SLOTS.indexOf("rock"))).toBe(true);
-    expect(slots.has(GENRE_SLOTS.indexOf("indie"))).toBe(true);
+    expect(slots.has(GENRE_SLOTS.indexOf("punk"))).toBe(true);
     expect(slots.size).toBe(2);
   });
 
@@ -213,11 +263,17 @@ describe("embedding — genre slot helpers (LAB-36)", () => {
     const none = genreSlotsFromVector(buildEmbedding({ audioFeatures: null, genres: [] }));
     expect(none.size).toBe(0);
     const rock = genreSlotsFromVector(buildEmbedding({ audioFeatures: null, genres: ["rock"] }));
+    // LAB-47 — "indie rock" no longer shares the bare rock slot; "punk rock"
+    // (a true rock subgenre) still does.
     const indieRock = genreSlotsFromVector(
       buildEmbedding({ audioFeatures: null, genres: ["indie rock"] }),
     );
+    const punkRock = genreSlotsFromVector(
+      buildEmbedding({ audioFeatures: null, genres: ["punk rock"] }),
+    );
     const jazz = genreSlotsFromVector(buildEmbedding({ audioFeatures: null, genres: ["jazz"] }));
-    expect(hasSlotOverlap(rock, indieRock)).toBe(true);
+    expect(hasSlotOverlap(rock, indieRock)).toBe(false);
+    expect(hasSlotOverlap(rock, punkRock)).toBe(true);
     expect(hasSlotOverlap(rock, jazz)).toBe(false);
     expect(hasSlotOverlap(rock, none)).toBe(false);
   });

@@ -29,9 +29,11 @@ import { DEFAULT_AUDIO_WEIGHT } from "@/lib/ranking/types";
  *     CASE C — The Shins and Band of Horses converge.
  *
  *   CONTROL (audioWeight=1, exact gate — pre-LAB-36 behavior): the replay
- *   reproduces the dev DB's 32-bucket geometry and the OLD outcomes (MTW
- *   metal-locked WITH the banger; SMG/Extrabreit apart; Shins/BoH apart) —
- *   the config toggle alone drives the delta.
+ *   reproduces the dev DB's geometry and the OLD outcomes (MTW metal-locked
+ *   WITH the banger; SMG/Extrabreit apart; Shins/BoH apart) — the config
+ *   toggle alone drives the delta. (LAB-47 nudged the exact-gate bucket count
+ *   32 → 33: one alt-rnb track lost a spurious `rock` slot and no longer
+ *   clears 0.7 against its old `alternative` lane — see the CONTROL assertion.)
  *
  * SANITY GUARDS (permanent — they separate this design from cluster
  * dissolution): bucket count in [8, 40]; max-bucket share bounded;
@@ -214,9 +216,18 @@ describe("LAB-36 reassignment replay — cohort fixture, spawnThreshold 0.7", ()
     expect(bucketOf(SMG)).not.toBe(bucketOf(EXTRABREIT));
     expect(bucketOf(SHINS)).not.toBe(bucketOf(BOH));
 
-    // The exact-gate replay reproduces the dev DB's 32-bucket geometry.
+    // The exact-gate replay reproduces the dev DB's geometry. LAB-47 tightened
+    // genre-slot matching so "indie rock"/"pop rock" no longer light the bare
+    // `rock` slot. In this cohort exactly ONE track changes — "Malcolm Todd —
+    // Earrings" (alt-rnb/indie/funk/soul), whose ONLY rock signal was the
+    // "indie rock" tag. Dropping that spurious `rock` slot lowers its plain
+    // cosine to the rock-heavy `alternative` lane it previously joined below
+    // the 0.7 spawn threshold, so it now spawns its own `alternative` bucket:
+    // 32 → 33. This is the fix working (the old 32-count was a property of the
+    // buggy embeddings); the qualitative CONTROL invariants above (MTW metal-
+    // locked, SMG/Extrabreit apart, Shins/BoH apart) are unchanged.
     const buckets = await db.select().from(schema.bucket);
-    expect(buckets).toHaveLength(32);
+    expect(buckets).toHaveLength(33);
   }, 120_000);
 
   it("identical-audio disjoint-slot pair (jazz vs classical) still spawns apart under the NEW config", async () => {

@@ -200,10 +200,15 @@ describe("assignTrack — spawn-or-join contract", () => {
   });
 
   it("joins across primary_genre lanes when a slot is shared and weighted cosine clears threshold", async () => {
-    // LAB-36 headline behavior: a rock-primary seed and an indie-primary
-    // candidate live in different LAB-45 lanes, but the candidate's "indie
-    // rock" tag shares the rock slot — with matching audio the weighted
-    // cosine clears the threshold and the track joins across the lane.
+    // LAB-36 headline behavior: a rock-primary seed and a blues-primary
+    // candidate live in different LAB-45 lanes, but the candidate's "blues
+    // rock" tag genuinely shares the rock slot — with matching audio the
+    // weighted cosine clears the threshold and the track joins across the
+    // lane. (LAB-47 — "blues rock" is a true rock subgenre that still bridges;
+    // "indie rock"/"pop rock" no longer bleed into the rock slot. "blues rock"
+    // derives a blues PRIMARY because "blues" is the longest matched keyword,
+    // so the exact gate would still force a spawn — proving it's the shared
+    // slot, not a shared primary genre, that lets it join.)
     const seedAudio = audio({ tempo: 128, energy: 0.7 });
     const rockId = await insertTrack({
       title: "Rock seed",
@@ -217,21 +222,21 @@ describe("assignTrack — spawn-or-join contract", () => {
     });
     expect(rockResult.primaryGenre).toBe("rock");
 
-    const indieId = await insertTrack({
-      title: "Indie rock candidate",
+    const bluesId = await insertTrack({
+      title: "Blues rock candidate",
       audioFeatures: seedAudio,
-      genres: ["indie rock"],
+      genres: ["blues rock"],
     });
-    const indieResult = await assignTrack(db, indieId, {
+    const bluesResult = await assignTrack(db, bluesId, {
       origin: "seed_track",
       spawnThreshold: SPAWN_THRESHOLD,
       genreGate: "slot-overlap",
     });
     // Different primary genre — the exact gate would have forced a spawn.
-    expect(indieResult.primaryGenre).toBe("indie");
-    expect(indieResult.spawned).toBe(false);
-    expect(indieResult.bucketId).toBe(rockResult.bucketId);
-    expect(indieResult.similarity).toBeGreaterThanOrEqual(SPAWN_THRESHOLD);
+    expect(bluesResult.primaryGenre).toBe("blues");
+    expect(bluesResult.spawned).toBe(false);
+    expect(bluesResult.bucketId).toBe(rockResult.bucketId);
+    expect(bluesResult.similarity).toBeGreaterThanOrEqual(SPAWN_THRESHOLD);
   });
 
   it("Welford: bucket centroid after N joins matches the batch mean of the embeddings", async () => {
