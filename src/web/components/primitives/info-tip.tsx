@@ -38,7 +38,6 @@ export function InfoTip({ text, label = "more info" }: InfoTipProps) {
         type="button"
         aria-label={label}
         aria-describedby={tipId}
-        aria-expanded={open}
         onFocus={() => setOpen(true)}
         onBlur={() => setOpen(false)}
         className={clsx(
@@ -56,11 +55,17 @@ export function InfoTip({ text, label = "more info" }: InfoTipProps) {
         role="tooltip"
         aria-hidden={!open}
         className={clsx(
-          "pointer-events-none absolute left-1/2 bottom-full z-20 mb-2 -translate-x-1/2",
+          "absolute left-1/2 bottom-full z-20 mb-2 -translate-x-1/2",
+          // Invisible bridge across the mb-2 gap so sliding the cursor from the
+          // trigger onto the tip never crosses a dead-zone that would fire the
+          // wrapper's onMouseLeave and close the tip mid-transit.
+          "before:absolute before:inset-x-0 before:top-full before:h-2 before:content-['']",
           "w-52 rounded-2 border border-line-strong bg-bg-3 px-3 py-2",
           "text-left text-xs leading-snug text-ink-2 normal-case tracking-normal font-sans",
           "shadow-[var(--shadow-2)] transition-opacity duration-100",
-          open ? "opacity-100" : "opacity-0",
+          // While collapsed the tip is invisible and inert (matches aria-hidden);
+          // while open it captures pointer events so the cursor can rest on it.
+          open ? "opacity-100" : "pointer-events-none opacity-0",
         )}
       >
         {text}
