@@ -8,7 +8,7 @@ import type { Database } from "@/db/client";
 import type { BucketMemberOrigin } from "@/db/schema";
 import type { RawCandidate } from "@/lib/ingestion/types";
 import type { Env } from "@/server/env";
-import { assignTrack, type AssignResult } from "./assign";
+import { assignTrack, type AssignResult, loadAssignConfig } from "./assign";
 
 /**
  * Aggregate result of seeding the bucket space from a list of tracks.
@@ -42,8 +42,11 @@ export async function seedBucketsFromTrackIds(
   const spawned = new Set<number>();
   const joined = new Set<number>();
 
+  // Config is stable across a seeding run — load it once instead of letting
+  // assignTrack re-read app_config + model_version for every track.
+  const config = await loadAssignConfig(db);
   for (const id of trackIds) {
-    const result = await assignTrack(db, id, { origin, coldStartSeed: true });
+    const result = await assignTrack(db, id, { origin, coldStartSeed: true, ...config });
     assignments.push(result);
     if (result.alreadyAssigned) continue;
     if (result.spawned) spawned.add(result.bucketId);

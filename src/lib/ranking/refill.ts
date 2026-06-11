@@ -45,7 +45,7 @@ export function scoreRefill(
   dislikes: readonly RatedTrack[],
   config: RefillConfig,
 ): ScoredCandidate {
-  const audioWeight = (candidate.audioFeatures ?? null) === null ? 1 : refillAudioWeight(config);
+  const audioWeight = candidate.audioFeatures ? refillAudioWeight(config) : 1;
   const keepSim = meanWeightedCosine(candidate.embedding, keeps, audioWeight);
   const dislikeSim = meanWeightedCosine(candidate.embedding, dislikes, audioWeight);
   const score = keepSim - config.lambda * dislikeSim;
