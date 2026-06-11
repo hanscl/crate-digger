@@ -134,6 +134,15 @@ describe("embedding — derivePrimaryGenre", () => {
     expect(derivePrimaryGenre(["synth pop"])).toBe("synth-pop");
   });
 
+  it("breaks ties on the LONGEST keyword within a multi-keyword slot", () => {
+    // `rnb` lists keywords shortest-first (["r b", "rnb", "rhythm and blues"]).
+    // A tag matching both the short "r b" (len 3) and the long "rhythm and blues"
+    // (len 15) must contribute len 15 to the most-specific-wins tie-break, else a
+    // weaker slot (here "blues", len 5, riding inside "rhythm and blues") would
+    // wrongly steal the primary genre.
+    expect(derivePrimaryGenre(["r&b rhythm and blues"])).toBe("rnb");
+  });
+
   it("falls back to a normalized raw genre when no slot matches", () => {
     expect(derivePrimaryGenre(["completely made up genre"])).toBe("completely made up genre");
   });

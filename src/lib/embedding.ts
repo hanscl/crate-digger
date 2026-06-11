@@ -186,19 +186,23 @@ function tokensContain(haystack: readonly string[], needle: readonly string[]): 
 
 /**
  * Whether a single tag's normalized tokens match a slot keyword and survive
- * the slot's `blockedByTokens` guard. Returns the matched keyword (so callers
- * can break ties on keyword specificity) or null. Shared by
- * {@link genresToHotVector} and {@link derivePrimaryGenre} so the multi-hot
+ * the slot's `blockedByTokens` guard. Returns the LONGEST matched keyword (so
+ * callers can break ties on keyword specificity) or null. Returning the longest
+ * — not the first — keeps {@link derivePrimaryGenre}'s most-specific-wins tie-break
+ * faithful for slots whose keyword list isn't ordered longest-first (e.g. `rnb`
+ * lists `"r b"` before `"rhythm and blues"`). Shared by {@link genresToHotVector}
+ * (which uses it only as a boolean) and {@link derivePrimaryGenre} so the multi-hot
  * vector and the primary-genre label can never disagree on what a tag matches.
  */
 function tagMatchedKeyword(tagTokens: readonly string[], def: GenreSlotDef): string | null {
+  let best: string | null = null;
   for (const kw of def.keywords) {
     if (!tokensContain(tagTokens, kw.split(/\s+/))) continue;
     // LAB-47 — a cross-family qualifier in the SAME tag routes it elsewhere.
     if (def.blockedByTokens?.some((t) => tagTokens.includes(t))) continue;
-    return kw;
+    if (best === null || kw.length > best.length) best = kw;
   }
-  return null;
+  return best;
 }
 
 /** Multi-hot 58-dim genre vector. Each slot is 1 iff any input genre matches it. */
