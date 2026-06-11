@@ -5,9 +5,10 @@ import { enrichGenresFromMusicBrainz } from "@/lib/enrichment/musicbrainz";
 import { enrichAudioFeaturesForTracks } from "@/lib/enrichment/reccobeats";
 import { type SpotifyTrack, spotifyGet, spotifyTrackToCandidate } from "@/lib/ingestion/spotify";
 import type { Database } from "@/db/client";
+import type { BucketMemberOrigin } from "@/db/schema";
 import type { RawCandidate } from "@/lib/ingestion/types";
 import type { Env } from "@/server/env";
-import { assignTrack, type AssignOptions, type AssignResult } from "./assign";
+import { assignTrack, type AssignResult, loadAssignConfig } from "./assign";
 
 /**
  * Aggregate result of seeding the bucket space from a list of tracks.
@@ -24,24 +25,28 @@ export type ColdStartResult = {
   assignments: AssignResult[];
 };
 
-const COLD_START_OPTIONS: AssignOptions = { coldStartSeed: true };
-
 /**
  * Run a list of already-resolved track IDs through bucket assignment with
- * `is_cold_start_seed=true` for any newly-spawned bucket. Idempotent: tracks
- * already in a bucket are returned with `alreadyAssigned=true` and don't
- * mutate state.
+ * `is_cold_start_seed=true` for any newly-spawned bucket. `origin` records
+ * WHICH seeding flow created the memberships (LAB-61 provenance) — the
+ * playlist and track-paste entry points pass their own label. Idempotent:
+ * tracks already in a bucket are returned with `alreadyAssigned=true` and
+ * don't mutate state (the existing row's origin is left untouched).
  */
 export async function seedBucketsFromTrackIds(
   db: Database,
   trackIds: readonly number[],
+  origin: BucketMemberOrigin,
 ): Promise<ColdStartResult> {
   const assignments: AssignResult[] = [];
   const spawned = new Set<number>();
   const joined = new Set<number>();
 
+  // Config is stable across a seeding run — load it once instead of letting
+  // assignTrack re-read app_config + model_version for every track.
+  const config = await loadAssignConfig(db);
   for (const id of trackIds) {
-    const result = await assignTrack(db, id, COLD_START_OPTIONS);
+    const result = await assignTrack(db, id, { origin, coldStartSeed: true, ...config });
     assignments.push(result);
     if (result.alreadyAssigned) continue;
     if (result.spawned) spawned.add(result.bucketId);
@@ -126,7 +131,7 @@ export async function seedBucketsFromSpotifyPlaylist(
   await enrichGenresFromMusicBrainz(db, env, trackIds);
   await enrichGenresFromDiscogs(db, env, trackIds);
 
-  return seedBucketsFromTrackIds(db, trackIds);
+  return seedBucketsFromTrackIds(db, trackIds, "seed_playlist");
 }
 
 /**
@@ -172,5 +177,5 @@ export async function seedBucketsFromSpotifyTrackIds(
   await enrichGenresFromMusicBrainz(db, env, trackIds);
   await enrichGenresFromDiscogs(db, env, trackIds);
 
-  return seedBucketsFromTrackIds(db, trackIds);
+  return seedBucketsFromTrackIds(db, trackIds, "seed_track");
 }

@@ -39,6 +39,34 @@ export const recommendationStatusEnum = pgEnum("bucket_recommendation_status", [
 
 export const sourceKindEnum = pgEnum("source_kind", ["spotify", "lastfm", "viberate"]);
 
+// LAB-61 — provenance of a bucket membership. Pre-LAB-52, discovery tracks
+// eager-joined buckets, so "member without a rating" was ambiguous between a
+// deliberate cold-start seed and eager-join cruft. `origin` makes the intent
+// explicit: `seed_playlist` / `seed_track` come from the Setup-screen seeding
+// flows, `discovery_keep` is the LAB-52 approval path (keep rating commits the
+// join). `seed_manual` is reserved for a future manual-add flow — no live code
+// path stamps it today. Refill anchoring treats every origin as a keep-set
+// member; the value exists so future non-anchor origins can be excluded.
+export const bucketMemberOriginEnum = pgEnum("bucket_member_origin", [
+  "seed_playlist",
+  "seed_track",
+  "seed_manual",
+  "discovery_keep",
+]);
+
+/**
+ * LAB-61 — origins whose members count as keep-anchors for refill scoring and
+ * counterfactual replay. Currently all four (every member is a seed or a
+ * keep, the post-backfill invariant); listed explicitly so a future origin
+ * doesn't silently anchor refill just by existing in the enum.
+ */
+export const KEEP_ANCHOR_ORIGINS = [
+  "seed_playlist",
+  "seed_track",
+  "seed_manual",
+  "discovery_keep",
+] as const satisfies readonly BucketMemberOrigin[];
+
 export const track = pgTable(
   "track",
   {
@@ -59,11 +87,12 @@ export const track = pgTable(
     embedding: vector("embedding", { dimensions: EMBEDDING_DIM }),
     // LAB-52 — candidate bucket assignment, computed at discovery-ingest time
     // WITHOUT joining. `candidate_bucket_id` is the bucket this track would
-    // join on approval (a keep rating) and `candidate_score` its cosine; a
-    // NULL `candidate_bucket_id` means "no same-genre bucket cleared the
-    // threshold — a keep spawns a new bucket." Both are cleared when the track
-    // actually joins a bucket. Discovery never inserts a bucket_member or moves
-    // a centroid; only an approval (ingestRating keep) does.
+    // join on approval (a keep rating) and `candidate_score` its weighted
+    // cosine (LAB-36, see `weightedCosine`); a NULL `candidate_bucket_id`
+    // means "no gate-compatible bucket cleared the threshold — a keep spawns
+    // a new bucket." Both are cleared when the track actually joins a bucket.
+    // Discovery never inserts a bucket_member or moves a centroid; only an
+    // approval (ingestRating keep) does.
     candidateBucketId: integer("candidate_bucket_id").references(() => bucket.id, {
       onDelete: "set null",
     }),
@@ -126,6 +155,11 @@ export const bucket = pgTable(
     memberCount: integer("member_count").notNull().default(0),
     dislikeCount: integer("dislike_count").notNull().default(0),
     isColdStartSeed: boolean("is_cold_start_seed").notNull().default(false),
+    // LAB-36 — the seed track's primary genre. Demoted to a naming/display
+    // hint and the MERGE gate's conservative key: under the slot-overlap JOIN
+    // gate a bucket may legitimately hold cross-genre members, so this is no
+    // longer a membership invariant. The 'exact' gate (legacy versions, and
+    // the zero-slot fallback) still matches against it.
     primaryGenre: text("primary_genre"),
     // LAB-25 drift-tracking: member count and centroid snapshot at the moment
     // of the last successful agent naming. Null on rows that still carry the
@@ -155,6 +189,10 @@ export const bucketMember = pgTable(
       .notNull()
       .references(() => track.id, { onDelete: "cascade" }),
     similarityAtJoin: doublePrecision("similarity_at_join"),
+    // LAB-61 — membership provenance. Deliberately NO column default: every
+    // insert site must stamp an origin explicitly, so a new join path failing
+    // to decide provenance is a compile error, not silently-defaulted data.
+    origin: bucketMemberOriginEnum("origin").notNull(),
     addedAt: timestamp("added_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -298,6 +336,12 @@ export const appConfig = pgTable(
     retrainCadence: text("retrain_cadence").notNull().default("daily"),
     spawnThreshold: doublePrecision("spawn_threshold").notNull().default(0.7),
     refillLambda: doublePrecision("refill_lambda").notNull().default(0.3),
+    // LAB-36 — comparison-time scale on the 6 audio embedding dims (see
+    // weightedCosine). Live knob like refillLambda: changes bump the refill
+    // model_version and freeze into its config. Default must stay in lock-step
+    // with DEFAULT_AUDIO_WEIGHT (src/lib/ranking/types.ts), chosen from the
+    // scripts/lab36-grid.ts sweep.
+    audioWeight: doublePrecision("audio_weight").notNull().default(2.5),
     mergeThreshold: doublePrecision("merge_threshold").notNull().default(0.92),
     splitDislikeRate: doublePrecision("split_dislike_rate").notNull().default(0.5),
     sourcesEnabled: jsonb("sources_enabled")
@@ -336,6 +380,7 @@ export type CandidatePoolEntry = {
 };
 
 export type RatingDecision = (typeof ratingDecisionEnum.enumValues)[number];
+export type BucketMemberOrigin = (typeof bucketMemberOriginEnum.enumValues)[number];
 export type RecommendationKind = (typeof recommendationKindEnum.enumValues)[number];
 export type RecommendationStatus = (typeof recommendationStatusEnum.enumValues)[number];
 

@@ -9,7 +9,7 @@ import {
   type RatingDecision,
   surfaceEvent,
 } from "@/db/schema";
-import { commitAssignmentInTx, loadSpawnThreshold } from "@/lib/bucketing/assign";
+import { commitAssignmentInTx, loadAssignConfig } from "@/lib/bucketing/assign";
 import { ensureActiveModelVersionInTx } from "@/lib/ranking/version";
 
 /**
@@ -133,10 +133,15 @@ export async function ingestRating(
     if (input.decision === "keep") {
       // LAB-52 — approval commits the track into a bucket. Re-derive fresh
       // (not the stored candidate id) so it handles the would-spawn case and
-      // any same-genre bucket created since the flag. Idempotent for tracks
-      // that are already members (e.g. cold-start seeds).
-      const threshold = await loadSpawnThreshold(tx);
-      const assigned = await commitAssignmentInTx(tx, input.trackId, threshold, false);
+      // any gate-compatible bucket created since the flag. Idempotent for tracks
+      // that are already members (e.g. cold-start seeds — their origin stays
+      // whatever the seeding flow stamped; LAB-61).
+      const assignConfig = await loadAssignConfig(tx);
+      const assigned = await commitAssignmentInTx(tx, input.trackId, assignConfig.spawnThreshold, {
+        origin: "discovery_keep",
+        coldStartSeed: false,
+        gate: { audioWeight: assignConfig.audioWeight, genreGate: assignConfig.genreGate },
+      });
       committedBucketId = assigned.alreadyAssigned ? null : assigned.bucketId;
     }
 

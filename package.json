@@ -19,7 +19,7 @@
     "test:watch": "vitest",
     "db:init": "tsx --env-file-if-exists=.env src/db/init-extension.ts && pnpm db:generate && pnpm db:migrate",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate",
+    "db:migrate": "drizzle-kit migrate && tsx --env-file-if-exists=.env src/db/reconcile-buckets.ts",
     "db:studio": "drizzle-kit studio",
     "prepare": "lefthook install"
   },

@@ -94,6 +94,19 @@ export async function importTaste(db: Database, raw: unknown): Promise<TasteImpo
       return result.id;
     };
 
+    // LAB-61 — keep-inference fallback for pre-LAB-61 exports whose members
+    // carry no origin, mirroring the FULL 0011 backfill mapping: a member
+    // whose track was kept in this same export imports as 'discovery_keep';
+    // a member whose track was rated but never kept is legacy eager-join
+    // cruft and is SKIPPED (0011 deletes those membership rows — importing
+    // them as seeds would re-anchor refill on a disliked track); a member
+    // with no rating at all imports as the generic 'seed_track'. Ratings
+    // themselves always import (the eval substrate keeps every decision).
+    const keptTrackKeys = new Set(
+      data.ratings.filter((r) => r.decision === "keep").map((r) => trackKey(r.track)),
+    );
+    const ratedTrackKeys = new Set(data.ratings.map((r) => trackKey(r.track)));
+
     for (const exportedBucket of data.buckets) {
       const seedCentroid = Array.from({ length: 64 }, () => 0);
       const seed: NewBucket = {
@@ -113,6 +126,14 @@ export async function importTaste(db: Database, raw: unknown): Promise<TasteImpo
       let stats: FeatureStats = emptyFeatureStats();
       let memberCount = 0;
       for (const memberRef of exportedBucket.members) {
+        let origin = memberRef.origin;
+        if (!origin) {
+          const key = trackKey(memberRef);
+          if (keptTrackKeys.has(key)) origin = "discovery_keep";
+          else if (ratedTrackKeys.has(key))
+            continue; // rated-but-never-kept: 0011 delete arm
+          else origin = "seed_track";
+        }
         const trackId = await resolveTrack(memberRef);
         const [t] = await tx.select().from(track).where(eq(track.id, trackId)).limit(1);
         if (!t) continue;
@@ -126,7 +147,9 @@ export async function importTaste(db: Database, raw: unknown): Promise<TasteImpo
         // *after* the insert succeeds, otherwise a skipped row would leave a
         // phantom member counted in the bucket's stats.
         try {
-          await tx.insert(bucketMember).values({ bucketId: row.id, trackId, similarityAtJoin: 1 });
+          await tx
+            .insert(bucketMember)
+            .values({ bucketId: row.id, trackId, similarityAtJoin: 1, origin });
         } catch (err) {
           if (!isUniqueViolation(err)) throw err;
           continue;

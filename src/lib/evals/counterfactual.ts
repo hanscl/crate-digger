@@ -4,15 +4,21 @@ import {
   bucket,
   bucketMember,
   type CandidatePoolEntry,
+  KEEP_ANCHOR_ORIGINS,
   rating,
   surfaceEvent,
   type SurfaceEvent,
   track,
 } from "@/db/schema";
-import { sameGenreScope } from "@/lib/bucketing/genre-scope";
+import { genreScopeCompatible } from "@/lib/bucketing/genre-scope";
 import { scoreBroad } from "@/lib/ranking/broad";
 import { scoreRefill } from "@/lib/ranking/refill";
-import type { Candidate, RatedTrack, ScoredCandidate } from "@/lib/ranking/types";
+import {
+  type Candidate,
+  type RatedTrack,
+  refillGenreGate,
+  type ScoredCandidate,
+} from "@/lib/ranking/types";
 import { configFromVersion, getModelVersion } from "@/lib/ranking/version";
 
 /**
@@ -162,10 +168,13 @@ export async function counterfactualReplay(
     }
   }
   const keepsByBucket = await loadKeepsByBucket(db, [...refillBucketIds]);
-  // Sibling lookup: the bucket's primary genre keyed by id, so the refill
-  // winner pick can apply the same same-genre eligibility gate the live
-  // surfacing pipeline uses (assign.ts is the canonical JOIN gate).
-  const genreByBucket = await loadGenreByBucket(db, [...refillBucketIds]);
+  // Sibling lookup: the bucket's genre scope (primary genre + centroid genre
+  // mass) keyed by id, so the refill winner pick can apply the SAME
+  // genre-eligibility gate the live surfacing pipeline uses — selected by the
+  // TARGET version's config (LAB-36): legacy versions replay under 'exact',
+  // slot-overlap versions under 'slot-overlap'. assign.ts stays the
+  // canonical JOIN gate.
+  const scopeByBucket = await loadBucketScopes(db, [...refillBucketIds]);
 
   // Dislikes for refill scoring use whatever the user has currently rated
   // 'dislike'. The original surface time may have seen a different dislike
@@ -233,20 +242,26 @@ export async function counterfactualReplay(
     // Tie-break by trackId (matches surfacing pipeline) so replay is
     // deterministic given identical scores.
     scored.sort((a, b) => b.score - a.score || a.candidate.trackId - b.candidate.trackId);
-    // Refill winner selection mirrors the live pipeline's primary-genre
-    // eligibility gate (assign.ts is the canonical JOIN gate): only a
-    // same-genre candidate can win the slot. Off-genre candidates stay in
-    // `scored`/`replayedPool` (Constraint #2) but are never the replay winner.
-    // Broad events have no bucket scope, so every candidate is eligible.
-    const eligible =
-      targetKind === "refill"
-        ? scored.filter((s) =>
-            sameGenreScope(
-              s.candidate.primaryGenre,
-              event.bucketId !== null ? (genreByBucket.get(event.bucketId) ?? null) : null,
-            ),
-          )
-        : scored;
+    // Refill winner selection mirrors the live pipeline's genre-eligibility
+    // gate, selected by the target version's config (assign.ts is the
+    // canonical JOIN gate): only a gate-compatible candidate can win the
+    // slot. Incompatible candidates stay in `scored`/`replayedPool`
+    // (Constraint #2) but are never the replay winner. Broad events have no
+    // bucket scope, so every candidate is eligible.
+    let eligible: ScoredCandidate[];
+    if (targetKind === "refill") {
+      const gate = refillGenreGate(config as ReturnType<typeof configFromVersion<"refill">>);
+      const scope = event.bucketId !== null ? scopeByBucket.get(event.bucketId) : undefined;
+      eligible = scored.filter((s) =>
+        genreScopeCompatible(
+          gate,
+          { primaryGenre: s.candidate.primaryGenre, embedding: s.candidate.embedding },
+          scope ?? { primaryGenre: null, centroid: [] },
+        ),
+      );
+    } else {
+      eligible = scored;
+    }
     const winner = eligible[0];
     if (!winner) {
       skippedEventIds.push(event.id);
@@ -326,6 +341,10 @@ async function loadKeepsByBucket(
   bucketIds: readonly number[],
 ): Promise<Map<number, RatedTrack[]>> {
   if (bucketIds.length === 0) return new Map();
+  // LAB-61 — same keep-anchor origin filter as the live pipeline's
+  // loadRefillableBuckets, so replay scores against the keep-set the live
+  // ranker would see (a no-op today — every origin anchors — but a future
+  // non-anchor origin must be excluded on both sides or replay diverges).
   const rows = await db
     .select({
       bucketId: bucketMember.bucketId,
@@ -334,7 +353,12 @@ async function loadKeepsByBucket(
     })
     .from(bucketMember)
     .innerJoin(track, eq(track.id, bucketMember.trackId))
-    .where(inArray(bucketMember.bucketId, [...bucketIds]));
+    .where(
+      and(
+        inArray(bucketMember.bucketId, [...bucketIds]),
+        inArray(bucketMember.origin, [...KEEP_ANCHOR_ORIGINS]),
+      ),
+    );
   const out = new Map<number, RatedTrack[]>();
   for (const r of rows) {
     if (r.embedding === null) continue;
@@ -346,25 +370,28 @@ async function loadKeepsByBucket(
 }
 
 /**
- * Primary genre keyed by bucket id, for the refill replay eligibility gate.
- * Every id passed here is a refill event's non-null `bucketId`. Because
- * `surface_event.bucket_id` is an FK with ON DELETE SET NULL, a non-null
- * bucketId always references a still-live bucket — so this query returns a
- * row for every id, and a `.get()` miss never happens. (A bucket deleted or
- * merged away nulls the event's bucketId instead; the caller skips those
- * events upstream before the gate.) A live bucket whose primaryGenre is null
- * maps to null — the valid null===null scope.
+ * Genre scope (primary genre + CURRENT centroid) keyed by bucket id, for the
+ * refill replay eligibility gate. Every id passed here is a refill event's
+ * non-null `bucketId`. Because `surface_event.bucket_id` is an FK with ON
+ * DELETE SET NULL, a non-null bucketId always references a still-live bucket
+ * — so this query returns a row for every id, and a `.get()` miss never
+ * happens. (A bucket deleted or merged away nulls the event's bucketId
+ * instead; the caller skips those events upstream before the gate.) A live
+ * bucket whose primaryGenre is null maps to null — the valid null===null
+ * scope. The centroid is the bucket-side genre mass for the LAB-36
+ * slot-overlap gate; like the keep-set, it is the CURRENT geometry — same
+ * accepted drift as `loadKeepsByBucket`.
  */
-async function loadGenreByBucket(
+async function loadBucketScopes(
   db: Database,
   bucketIds: readonly number[],
-): Promise<Map<number, string | null>> {
+): Promise<Map<number, { primaryGenre: string | null; centroid: number[] }>> {
   if (bucketIds.length === 0) return new Map();
   const rows = await db
-    .select({ id: bucket.id, primaryGenre: bucket.primaryGenre })
+    .select({ id: bucket.id, primaryGenre: bucket.primaryGenre, centroid: bucket.centroid })
     .from(bucket)
     .where(inArray(bucket.id, [...bucketIds]));
-  return new Map(rows.map((r) => [r.id, r.primaryGenre]));
+  return new Map(rows.map((r) => [r.id, { primaryGenre: r.primaryGenre, centroid: r.centroid }]));
 }
 
 async function loadGlobalDislikes(db: Database): Promise<RatedTrack[]> {

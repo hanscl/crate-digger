@@ -48,3 +48,6 @@ const requireAuth = t.middleware(({ ctx, next }) => {
 });
 
 export const protectedProcedure = t.procedure.use(requireAuth);
+
+/** Server-side caller factory — used by tests to invoke routers without HTTP. */
+export const createCallerFactory = t.createCallerFactory;

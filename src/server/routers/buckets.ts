@@ -1,8 +1,16 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, count, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
-import { bucket, bucketMember, bucketRecommendation, rating, track } from "@/db/schema";
-import { addFeatureSample, emptyFeatureStats } from "@/lib/bucketing/centroid";
+import {
+  bucket,
+  bucketMember,
+  type BucketMemberOrigin,
+  bucketMemberOriginEnum,
+  bucketRecommendation,
+  rating,
+  track,
+} from "@/db/schema";
+import { recomputeBucketStats } from "@/lib/bucketing/recompute";
 import {
   evaluateBucketRecommendations,
   listPendingRecommendations,
@@ -21,6 +29,17 @@ const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
 export const bucketsRouter = router({
   list: protectedProcedure.query(async ({ ctx }) => {
     const rows = await ctx.db.select().from(bucket).orderBy(desc(bucket.memberCount), bucket.id);
+    // LAB-61 — provenance tallies for every bucket in one GROUP BY.
+    const originRows = await ctx.db
+      .select({ bucketId: bucketMember.bucketId, origin: bucketMember.origin, n: count() })
+      .from(bucketMember)
+      .groupBy(bucketMember.bucketId, bucketMember.origin);
+    const originsByBucket = new Map<number, OriginCounts>();
+    for (const r of originRows) {
+      const entry = originsByBucket.get(r.bucketId) ?? emptyOriginCounts();
+      entry[r.origin] = Number(r.n);
+      originsByBucket.set(r.bucketId, entry);
+    }
     return rows.map((b) => ({
       id: b.id,
       name: b.name,
@@ -31,6 +50,7 @@ export const bucketsRouter = router({
       isColdStartSeed: b.isColdStartSeed,
       centroid: b.centroid,
       featureStats: b.featureStats,
+      originCounts: originsByBucket.get(b.id) ?? emptyOriginCounts(),
       createdAt: b.createdAt,
       updatedAt: b.updatedAt,
     }));
@@ -50,6 +70,7 @@ export const bucketsRouter = router({
           primaryGenre: track.primaryGenre,
           audioFeatures: track.audioFeatures,
           similarityAtJoin: bucketMember.similarityAtJoin,
+          origin: bucketMember.origin,
           addedAt: bucketMember.addedAt,
         })
         .from(bucketMember)
@@ -74,6 +95,10 @@ export const bucketsRouter = router({
         if (decisionByTrack.has(r.trackId)) continue;
         decisionByTrack.set(r.trackId, r.decision);
       }
+      // LAB-61 — provenance tallies; derived from the member rows we already
+      // fetched rather than a second query.
+      const originCounts = emptyOriginCounts();
+      for (const m of members) originCounts[m.origin] += 1;
       return {
         bucket: {
           id: b.id,
@@ -85,6 +110,7 @@ export const bucketsRouter = router({
           isColdStartSeed: b.isColdStartSeed,
           centroid: b.centroid,
           featureStats: b.featureStats,
+          originCounts,
           createdAt: b.createdAt,
           updatedAt: b.updatedAt,
         },
@@ -211,6 +237,15 @@ export const bucketsRouter = router({
             .set({ bucketId: keepId })
             .where(eq(bucketMember.bucketId, mergeId));
           await tx.delete(bucket).where(eq(bucket.id, mergeId));
+          // `bucket_recommendation.bucket_ids` is a plain int[] with no FK —
+          // other pending recommendations referencing the merged-away bucket
+          // would dangle forever, so prune them here. The row being accepted
+          // is resolved below and keeps its audit trail.
+          await tx.delete(bucketRecommendation).where(
+            sql`${bucketRecommendation.status} = 'pending'
+              AND ${bucketRecommendation.id} <> ${rec.id}
+              AND ${mergeId} = ANY(${bucketRecommendation.bucketIds})`,
+          );
           // Recompute the merged bucket's centroid + counts from current members.
           await recomputeBucketStats(tx, keepId);
         }
@@ -248,65 +283,9 @@ export const bucketsRouter = router({
     }),
 });
 
-type Tx = Parameters<Parameters<import("@/db/client").Database["transaction"]>[0]>[0];
+/** LAB-61 — per-bucket membership provenance tallies, keyed by origin value. */
+type OriginCounts = Record<BucketMemberOrigin, number>;
 
-async function recomputeBucketStats(tx: Tx, bucketId: number): Promise<void> {
-  const members = await tx
-    .select({
-      embedding: track.embedding,
-      audioFeatures: track.audioFeatures,
-    })
-    .from(bucketMember)
-    .innerJoin(track, eq(track.id, bucketMember.trackId))
-    .where(eq(bucketMember.bucketId, bucketId));
-
-  if (members.length === 0) {
-    await tx.delete(bucket).where(eq(bucket.id, bucketId));
-    return;
-  }
-
-  // Derive the centroid dimension from the first member that actually has an
-  // embedding — `members[0]` may have `embedding = null`, which would force
-  // the fallback dim and silently truncate later real embeddings.
-  const firstEmbedding = members.find((m) => m.embedding && m.embedding.length > 0)?.embedding;
-  const dim = firstEmbedding?.length ?? 64;
-  const centroid = Array.from({ length: dim }, () => 0);
-  let n = 0;
-  for (const m of members) {
-    if (!m.embedding) continue;
-    for (let i = 0; i < dim; i++) centroid[i]! += m.embedding[i] ?? 0;
-    n += 1;
-  }
-  if (n > 0) {
-    for (let i = 0; i < dim; i++) centroid[i] = centroid[i]! / n;
-  }
-  // We rebuild Welford from scratch since the merge changes the population.
-  // Cheap at our scale (a bucket holds tens of members at most).
-  let stats = emptyFeatureStats();
-  for (const m of members) {
-    if (!m.audioFeatures) continue;
-    stats = addFeatureSample(stats, m.audioFeatures);
-  }
-
-  // dislike_count is the number of distinct tracks currently in this bucket
-  // that have at least one dislike rating. Recompute it from the union of
-  // members so the merged bucket's purity LED reflects inherited dislikes
-  // instead of just the surviving bucket's pre-merge tally.
-  const [dislikeRow] = await tx
-    .select({ dislikes: sql<number>`count(distinct ${rating.trackId})::int` })
-    .from(bucketMember)
-    .innerJoin(rating, eq(rating.trackId, bucketMember.trackId))
-    .where(and(eq(bucketMember.bucketId, bucketId), eq(rating.decision, "dislike")));
-  const dislikeCount = Number(dislikeRow?.dislikes ?? 0);
-
-  await tx
-    .update(bucket)
-    .set({
-      centroid,
-      featureStats: stats,
-      memberCount: members.length,
-      dislikeCount,
-      updatedAt: sql`NOW()`,
-    })
-    .where(eq(bucket.id, bucketId));
+function emptyOriginCounts(): OriginCounts {
+  return Object.fromEntries(bucketMemberOriginEnum.enumValues.map((o) => [o, 0])) as OriginCounts;
 }

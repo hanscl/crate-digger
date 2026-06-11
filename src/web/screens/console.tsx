@@ -31,6 +31,7 @@ export function ConsoleScreen() {
     queueCeiling: number;
     spawnThreshold: number;
     refillLambda: number;
+    audioWeight: number;
     mergeThreshold: number;
     splitDislikeRate: number;
     refillQualityBar: number;
@@ -48,6 +49,7 @@ export function ConsoleScreen() {
         queueCeiling: params.data.queueCeiling,
         spawnThreshold: params.data.spawnThreshold,
         refillLambda: params.data.refillLambda,
+        audioWeight: params.data.audioWeight,
         mergeThreshold: params.data.mergeThreshold,
         splitDislikeRate: params.data.splitDislikeRate,
         refillQualityBar: params.data.refillQualityBar,
@@ -113,6 +115,15 @@ export function ConsoleScreen() {
                 step={0.05}
                 onChange={(v) => setDraft({ ...draft, refillLambda: v })}
                 onCommit={(v) => update.mutate({ refillLambda: v })}
+              />
+              <Knob
+                label="audio wt"
+                value={draft.audioWeight}
+                min={1}
+                max={8}
+                step={0.25}
+                onChange={(v) => setDraft({ ...draft, audioWeight: v })}
+                onCommit={(v) => update.mutate({ audioWeight: v })}
               />
               <Knob
                 label="spawn"
