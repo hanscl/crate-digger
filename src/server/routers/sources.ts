@@ -12,14 +12,14 @@ import { protectedProcedure, router } from "../trpc-base";
  * daily pipeline.
  */
 
-const SOURCE_ID = z.enum(["spotify", "lastfm", "viberate"]) satisfies z.ZodType<SourceId>;
+const SOURCE_ID = z.enum(["spotify", "lastfm", "viberate", "tiktok"]) satisfies z.ZodType<SourceId>;
 const PULL_MODE = z.enum(["trending", "similar", "search"]) satisfies z.ZodType<PullMode>;
 
 // ReccoBeats is an enrichment provider, not a `SourceAdapter` (it does not
 // pull candidates), so it is not a `SourceId`. The toggle still writes the
 // same `sources_enabled` jsonb, so its enum is widened to include it;
 // `testFetch` keeps the narrow `SOURCE_ID` (search_run.source is enum-typed).
-const TOGGLE_ID = z.enum(["spotify", "lastfm", "viberate", "reccobeats"]);
+const TOGGLE_ID = z.enum(["spotify", "lastfm", "viberate", "tiktok", "reccobeats"]);
 
 export const sourcesRouter = router({
   list: protectedProcedure.query(async ({ ctx }) => {

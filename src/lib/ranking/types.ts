@@ -16,7 +16,7 @@ export type Candidate = {
   trackId: number;
   embedding: readonly number[];
   /** Used by `surfacedReason` text and source-mix bookkeeping; rankers ignore. */
-  source?: "spotify" | "lastfm" | "viberate";
+  source?: "spotify" | "lastfm" | "viberate" | "tiktok";
   /** Used by the refill winner-eligibility gate and human-readable explanations. */
   primaryGenre?: string | null;
   /**

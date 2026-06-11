@@ -2,6 +2,82 @@
 
 Phase tracker. Update at the end of every phase. Newest at the top.
 
+## LAB-19 — TikTok-velocity source adapter (Chartmetric default + Soundcharts)
+
+- **Status:** in review
+- **Branch:** `lab-19-tiktok-velocity-source-adapter-chartmetric-soundcharts`
+- **Scope landed:** A `tiktok` `SourceAdapter` (`src/lib/ingestion/tiktok.ts`) adds
+  TikTok-trending songs as a first-class discovery signal. TikTok velocity is
+  paid-only across vendors, so the adapter wraps each behind a thin internal
+  `TikTokTrendingProvider` interface and selects by which credentials are
+  present — precedence **Chartmetric → Soundcharts** (first configured wins).
+  - **Chartmetric (`chartmetric.ts`) = DEFAULT** on cost: usage-based (~$0.01/
+    credit, free trial) vs Soundcharts' $250/mo floor. Refresh-token →
+    short-lived bearer (cached in-process, 60s early-expiry, in-flight dedupe,
+    `_resetChartmetricTokenCache` test hook). Pulls `GET /api/charts/tiktok?
+type=tracks&interval=weekly&country_code=…`. **Response field NAMES are
+    modelled from the docs, NOT live-verified** (Chartmetric has no open
+    sandbox) — `parseChartEntries` accepts `{obj:[…]}|{obj:{data}}|[]|{data}`
+    and the field extractors try documented + conventional keys; degrades to
+    "no candidates" on a shape mismatch (same posture as `reccobeats.ts`). The
+    raw entry is stashed on `rawPayload` so the live shape is inspectable on
+    `track_source.raw_payload` after the first real run.
+  - **Soundcharts (`soundcharts.ts`) = fallback**, but **live-verified** against
+    the public sandbox (`soundcharts`/`soundcharts`): pulls the TikTok
+    **"Breakout"** velocity chart (`GET /api/v2/chart/song/{slug}/ranking/
+latest`), then `GET /api/v2/song/{uuid}` per row for ISRC (chart rows carry
+    none). Static `x-app-id`/`x-api-key` headers (no token exchange).
+  - Both emit `source:"tiktok"` `RawCandidate`s with ISRC when available (so
+    `resolve.ts` dedupes ISRC-first against Spotify/Last.fm; fuzzy fallback
+    otherwise), `spotifyId` left for `resolveSpotifyId` to fill via search, and
+    a typed velocity object (`{rank/position, …}`) on `rawPayload` — which
+    persists durably to `track_source.raw_payload` (a bonus over the ticket's
+    minimum). Never-throw contract honoured (try/catch → `[]`).
+- **Wiring:** migration `0014_violet_leader` (`ALTER TYPE source_kind ADD VALUE
+'tiktok'` + `sources_enabled` default gains `"tiktok":false` + a `||`-merge
+  backfill of the existing singleton row, mirroring 0003 — off-by-default on new
+  AND existing installs). `tiktokAdapter` registered in `allAdapters` (so it
+  auto-joins the trending sweep, the Sources screen list, and `testFetch` with
+  no further UI edits — all data-driven). Touchpoints: `SourceId` enum, the two
+  Zod source enums in `sources.ts`, `Candidate.source` union, `SourcePill`
+  label, env (`CHARTMETRIC_REFRESH_TOKEN`, `CHARTMETRIC_TIKTOK_COUNTRY`,
+  `SOUNDCHARTS_APP_ID/API_KEY`, `SOUNDCHARTS_TIKTOK_CHART_SLUG`), `.env.example`.
+- **Surfacing reality (honest):** TikTok tracks are pure explore → they flow
+  through the **broad** ranker and surface when they clear `broad_quality_bar`
+  (P(keep) ≥ 0.5), throttled by `trending_limit_per_source` (default 3/run) like
+  any source. NOTE: `loadCandidates` (`pipeline-steps.ts`) never populates
+  `Candidate.source`, so the surfacing **source-mix is currently inert** for
+  ALL sources (every candidate competes as "unknown" on score) — adding "tiktok"
+  to the union is forward-looking, but a guaranteed TikTok share would need
+  source attribution wired into `loadCandidates` (an all-sources change, out of
+  scope). Documented; candidate for a follow-up.
+- **Tests (332 total green):** `adapter-contract.test.ts` runs over `tiktok`
+  automatically (now exercises the Chartmetric default; its 500/network cases
+  stay fast — `fetchWithRetry` returns null immediately on 500, and the
+  network-throw case uses a mode that short-circuits before any fetch). New
+  `chartmetric.test.ts` (token exchange + bearer, defensive parsing, velocity,
+  token caching, country override, **precedence over Soundcharts when both
+  configured**) and `tiktok.test.ts` (the Soundcharts path: Breakout chart →
+  ISRC + velocity, song-meta-failure fallback, slug override). Fixtures mirror
+  the real captured shapes.
+- **Decisions locked:**
+  - **Chartmetric is the default provider** (cost). Soundcharts kept as the
+    live-verified reference/fallback rather than deleted — the abstraction's
+    point, and zero marginal maintenance.
+  - **`tiktok` (not `tiktok-velocity`) as the enum value** — simpler, matches
+    the platform; the "velocity" aspect lives in the chart choice + rawPayload.
+  - **`isPaidSourceConfigured` left viberate-only** — the Sources list already
+    surfaces availability via `isAvailable`; no Setup-screen flag needed.
+- **Notes / follow-ups (human-only first run):**
+  - **Verify Chartmetric live** with a $5-trial refresh token: confirm the
+    `/charts/tiktok` response field names against `parseChartEntries`/the
+    extractors (inspect `track_source.raw_payload`), adjust if they differ,
+    then enable the source on the Sources screen. The defensive parser should
+    survive reasonable shapes, but coverage is unverified until this is done.
+  - **Ranking integration (deferred, per the ticket):** velocity → an explicit
+    broad-classifier feature, and persisting it into
+    `surface_event.features_at_decision`, once there's rating data.
+
 ## LAB-73 — Artist diversity in discovery (all 3 levers)
 
 - **Status:** in review
