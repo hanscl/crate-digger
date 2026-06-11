@@ -1,6 +1,10 @@
 # Progress
 
-Phase tracker. Update at the end of every phase. Newest at the top.
+> **Retired 2026-06-11.** Project tracking moved to Linear (team Product Lab, project Crate
+> Digger) — the source of record. This file is frozen for historical reference and is **no longer
+> updated**; do not add entries. See `CLAUDE.md` → "Tracking — Linear is the source of record".
+
+_Historical phase tracker (newest at top). Frozen below._
 
 ## LAB-19 — TikTok-velocity source adapter (Chartmetric default + Soundcharts)
 

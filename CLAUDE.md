@@ -3,8 +3,9 @@
 Self-hosted music discovery agent. Two modes: bucket-refill (exploit) + broad discovery
 (explore). TypeScript + Mastra. Open-source. Single-command bootstrap.
 
-**Read `docs/PLAN.md` for the full architecture and phase plan. Read `docs/PROGRESS.md` for
-current state.** Then proceed.
+**Read `docs/PLAN.md` for the full architecture and phase plan.** For current state — what's
+done, in progress, and next — **check Linear** (team **Product Lab**, project **Crate Digger**)
+via the **`linear-crosby33`** skill. Then proceed.
 
 ## Stack
 
@@ -57,11 +58,26 @@ current state.** Then proceed.
 10. **`DATABASE_URL` is a single env var swap** across local docker-compose, Neon, Supabase,
     RDS, Fly Postgres — no code changes.
 
+## Tracking — Linear is the source of record
+
+- **Linear is the single source of record** for what's planned, in progress, decided, and done.
+  Team **Product Lab** (`LAB`), project **Crate Digger**. The repo (code, git history, PR
+  descriptions) records _how_; Linear records _what_ and _why_ — scope, decisions, follow-ups.
+- **Always go through the `linear-crosby33` skill** to read or write Linear — resolving
+  team/project/workflow-state, creating/updating issues, posting decisions or handovers. Never
+  hand-roll Linear MCP calls or guess team/project/status IDs. (The skill is defined in the
+  global user profile.)
+- **Every PR references its LAB issue.** Branch from the issue's Linear `gitBranchName`; cite
+  `LAB-NN` in the PR title/body. Net-new work without an issue is the exception — create the
+  issue first (via the skill), then branch.
+- **Decisions and implementation rationale live in the issue (or its PR), not a separate in-repo
+  log.** `docs/PROGRESS.md` is retired — frozen for history, never appended to.
+
 ## Working agreement
 
-- Phase-per-PR. Branch: `phase-N-<slug>`. Open PR to `main`. Wait for review. Address feedback.
-  Squash-merge. Update `docs/PROGRESS.md`.
-- After each merged PR: `/clear`. Fresh session reads `CLAUDE.md` (this file), `docs/PLAN.md`,
-  and `docs/PROGRESS.md`, then starts the next phase.
+- One issue per PR. Branch from the LAB issue's Linear `gitBranchName`. Open PR to `main`, citing
+  `LAB-NN`. Wait for review. Address feedback. Squash-merge.
+- After each merged PR: `/clear`. A fresh session reads `CLAUDE.md` (this file) + `docs/PLAN.md`,
+  then checks Linear (via `linear-crosby33`) for current state and the next issue.
 - Use `/compact` mid-phase if context grows large.
 - Standards: greenfield TS defaults (Drizzle, Zod, oxlint, etc). Confirm before deviating.
