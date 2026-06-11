@@ -100,8 +100,10 @@ async function scGet<T>(path: string, env: Env): Promise<T | null> {
 }
 
 function chartSlug(env: Env): string {
-  const configured = env.SOUNDCHARTS_TIKTOK_CHART_SLUG?.trim();
-  return configured && configured.length > 0 ? configured : DEFAULT_TIKTOK_CHART_SLUG;
+  // Zod fills the default only when the key is ABSENT; an explicitly-empty
+  // `SOUNDCHARTS_TIKTOK_CHART_SLUG=` still reaches the `|| DEFAULT` fallback.
+  const configured = env.SOUNDCHARTS_TIKTOK_CHART_SLUG.trim();
+  return configured.length > 0 ? configured : DEFAULT_TIKTOK_CHART_SLUG;
 }
 
 function normalizeIsrc(raw: string | null | undefined): string | null {
@@ -175,19 +177,23 @@ async function pullTrending(limit: number, env: Env): Promise<RawCandidate[]> {
     `/api/v2/chart/song/${encodeURIComponent(slug)}/ranking/latest?offset=0&limit=${rows}`,
     env,
   );
-  const items = data?.items ?? [];
-  const out: RawCandidate[] = [];
-  for (const item of items) {
+  // Keep only rows with a usable id + title, then fetch each song's ISRC
+  // metadata concurrently. The shared rate limiter still paces the actual
+  // requests, so this overlaps response latency rather than bursting.
+  const valid = (data?.items ?? []).flatMap((item) => {
     const uuid = item.song?.uuid;
     const title = item.song?.name?.trim();
-    if (!uuid || !title) continue;
-    const meta = await fetchSongMeta(uuid, env);
-    const candidate = toCandidate(item, uuid, title, slug, meta);
+    return uuid && title ? [{ item, uuid, title }] : [];
+  });
+  const metas = await Promise.all(valid.map(({ uuid }) => fetchSongMeta(uuid, env)));
+  const out: RawCandidate[] = [];
+  valid.forEach(({ item, uuid, title }, i) => {
+    const candidate = toCandidate(item, uuid, title, slug, metas[i] ?? null);
     // Unresolvable junk: no ISRC AND no artist means neither ISRC nor fuzzy
     // resolution can place it. Drop rather than insert an orphan.
-    if (!candidate.isrc && candidate.artist.length === 0) continue;
+    if (!candidate.isrc && candidate.artist.length === 0) return;
     out.push(candidate);
-  }
+  });
   return out;
 }
 

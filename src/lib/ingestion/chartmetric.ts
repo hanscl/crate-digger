@@ -116,7 +116,9 @@ async function cmGet<T>(path: string, env: Env): Promise<T | null> {
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
-  return !!v && typeof v === "object";
+  // Exclude arrays: `typeof [] === "object"`, but an array is not an `{name}`-style
+  // record, so e.g. an array element in `artist_names` must NOT pass this guard.
+  return !!v && typeof v === "object" && !Array.isArray(v);
 }
 
 /** Walk the plausible Chartmetric chart envelopes down to the entry array. */
@@ -219,7 +221,9 @@ function toCandidate(e: Record<string, unknown>, country: string): RawCandidate 
 }
 
 async function pullTrending(limit: number, env: Env): Promise<RawCandidate[]> {
-  const country = env.CHARTMETRIC_TIKTOK_COUNTRY?.trim() || DEFAULT_TIKTOK_COUNTRY;
+  // Zod fills the default only when the key is ABSENT; an explicitly-empty
+  // `CHARTMETRIC_TIKTOK_COUNTRY=` still reaches the `|| DEFAULT` fallback.
+  const country = env.CHARTMETRIC_TIKTOK_COUNTRY.trim() || DEFAULT_TIKTOK_COUNTRY;
   const rows = Math.max(1, Math.min(limit, MAX_CHART_ROWS));
   // `date` is intentionally omitted so the endpoint returns the latest chart
   // for the interval (avoids guessing whether today's chart is computed yet).
