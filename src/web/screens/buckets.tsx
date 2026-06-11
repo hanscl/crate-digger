@@ -68,6 +68,20 @@ export function BucketsScreen({ selectedId }: { selectedId?: number }) {
       void utils.buckets.detail.invalidate();
     },
   });
+  const removeMember = trpc.buckets.removeMember.useMutation({
+    onSuccess: (result) => {
+      void utils.buckets.list.invalidate();
+      void utils.buckets.recommendations.invalidate();
+      // Removing the last member prunes the bucket — drop the selection so
+      // the detail query doesn't 404 against the deleted id.
+      if (result.bucketPruned) {
+        setInternalSelected(null);
+        if (selectedId !== undefined) setLocation("/buckets");
+      } else {
+        void utils.buckets.detail.invalidate();
+      }
+    },
+  });
 
   return (
     <div className="p-8 max-w-7xl">
@@ -132,6 +146,9 @@ export function BucketsScreen({ selectedId }: { selectedId?: number }) {
               data={detail.data}
               onRename={(name, color) =>
                 rename.mutate({ id: detail.data!.bucket.id, name, color: color ?? null })
+              }
+              onRemoveMember={(trackId) =>
+                removeMember.mutate({ bucketId: detail.data!.bucket.id, trackId })
               }
             />
           ) : (
@@ -227,20 +244,30 @@ export function BucketsScreen({ selectedId }: { selectedId?: number }) {
 function BucketDetail({
   data,
   onRename,
+  onRemoveMember,
 }: {
   data: BucketDetailData;
   onRename: (name: string, color: string | null | undefined) => void;
+  onRemoveMember: (trackId: number) => void;
 }) {
   const { bucket: b, members } = data;
   const [editing, setEditing] = useState(false);
+  // LAB-62 — per-row overflow menu. Anchored via fixed positioning captured
+  // from the trigger's rect at open time: the members table scrolls inside
+  // an overflow-auto container that would clip an absolutely-positioned
+  // menu on rows near its bottom edge.
+  const [menuFor, setMenuFor] = useState<{ trackId: number; top: number; right: number } | null>(
+    null,
+  );
   const [draftName, setDraftName] = useState(b.name);
   const [draftColor, setDraftColor] = useState(b.color ?? "#22d3ee");
 
-  // Reset the draft when the user picks a different bucket.
+  // Reset the draft (and any open row menu) when the user picks a different bucket.
   useEffect(() => {
     setDraftName(b.name);
     setDraftColor(b.color ?? "#22d3ee");
     setEditing(false);
+    setMenuFor(null);
   }, [b.id, b.name, b.color]);
 
   const dislikeRate = b.memberCount > 0 ? b.dislikeCount / b.memberCount : 0;
@@ -318,7 +345,10 @@ function BucketDetail({
       </div>
 
       <div className="cap text-ink-3 mb-2">members</div>
-      <div className="border border-line rounded-2 max-h-[18rem] overflow-auto">
+      <div
+        className="border border-line rounded-2 max-h-[18rem] overflow-auto"
+        onScroll={() => setMenuFor(null)}
+      >
         <table className="w-full text-xs">
           <thead className="text-ink-3 cap text-[10px]">
             <tr>
@@ -326,7 +356,8 @@ function BucketDetail({
               <th className="text-left p-2">artist</th>
               <th className="text-left p-2">primary</th>
               <th className="text-right p-2">sim</th>
-              <th className="text-right p-2">decision</th>
+              <th className="text-right p-2">signal</th>
+              <th className="p-2 w-8" aria-label="actions" />
             </tr>
           </thead>
           <tbody>
@@ -350,9 +381,51 @@ function BucketDetail({
                     >
                       {m.latestDecision}
                     </span>
+                  ) : m.origin !== "discovery_keep" ? (
+                    // LAB-62 — a member with no rating is a cold-start seed
+                    // (post-LAB-61 invariant); say so instead of a blank dash.
+                    <span className="chip mono">seed</span>
                   ) : (
                     <span className="text-ink-4">—</span>
                   )}
+                </td>
+                <td className="p-2 text-right">
+                  <button
+                    type="button"
+                    className="btn ghost sm px-1"
+                    aria-label={`actions for ${m.title}`}
+                    onClick={(e) => {
+                      if (menuFor?.trackId === m.trackId) {
+                        setMenuFor(null);
+                        return;
+                      }
+                      const r = e.currentTarget.getBoundingClientRect();
+                      setMenuFor({
+                        trackId: m.trackId,
+                        top: r.bottom + 4,
+                        right: window.innerWidth - r.right,
+                      });
+                    }}
+                  >
+                    ⋯
+                  </button>
+                  {menuFor?.trackId === m.trackId ? (
+                    <div
+                      className="fixed z-10 bg-bg-3 border border-line-strong rounded-2 shadow-lg min-w-[7rem]"
+                      style={{ top: menuFor.top, right: menuFor.right }}
+                    >
+                      <button
+                        type="button"
+                        className="block w-full text-left px-3 py-1.5 text-xs text-ink-2 hover:text-ink-1 hover:bg-bg-2"
+                        onClick={() => {
+                          setMenuFor(null);
+                          onRemoveMember(m.trackId);
+                        }}
+                      >
+                        remove
+                      </button>
+                    </div>
+                  ) : null}
                 </td>
               </tr>
             ))}
