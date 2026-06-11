@@ -25,6 +25,10 @@ const PullEnrichResult = z.object({
   pulledCount: z.number().int().nonnegative(),
   /** Subset of `pulledCount` pulled by the taste-seeded Last.fm similar pass (LAB-39). */
   similarPulledCount: z.number().int().nonnegative(),
+  /** LAB-73 — similar-pull candidates dropped by the per-artist cap (lever 1). */
+  similarArtistCappedCount: z.number().int().nonnegative(),
+  /** LAB-73 — similar-pull candidates skipped for an already-kept artist (lever 1). */
+  similarFamiliarSkippedCount: z.number().int().nonnegative(),
   resolvedTrackIds: z.array(z.number().int()),
   audioFeaturesUpdated: z.number().int().nonnegative(),
   genresUpdated: z.number().int().nonnegative(),
@@ -67,6 +71,8 @@ const SurfaceResult = z.object({
   effectiveCap: z.number().int().nonnegative(),
   excludedDecidedCount: z.number().int().nonnegative(),
   excludedPendingCount: z.number().int().nonnegative(),
+  /** LAB-73 — above-bar candidates the per-artist surfacing quota held back (lever 2). */
+  artistQuotaDeferredCount: z.number().int().nonnegative(),
 });
 
 export const DailyPipelineInput = z.object({
@@ -112,6 +118,8 @@ const pullStep = createStep({
       ...inputData,
       pulledCount: result.pulledCount,
       similarPulledCount: result.similarPulledCount,
+      similarArtistCappedCount: result.similarArtistCappedCount,
+      similarFamiliarSkippedCount: result.similarFamiliarSkippedCount,
       resolvedTrackIds: result.resolvedTrackIds,
       audioFeaturesUpdated: result.audioFeaturesUpdated,
       genresUpdated: result.genresUpdated,
@@ -207,6 +215,8 @@ const surfaceWorkflowStep = createStep({
       limitPerSource: inputData.limitPerSource,
       pulledCount: inputData.pulledCount ?? 0,
       similarPulledCount: inputData.similarPulledCount ?? 0,
+      similarArtistCappedCount: inputData.similarArtistCappedCount ?? 0,
+      similarFamiliarSkippedCount: inputData.similarFamiliarSkippedCount ?? 0,
       resolvedTrackIds: inputData.resolvedTrackIds ?? [],
       audioFeaturesUpdated: inputData.audioFeaturesUpdated ?? 0,
       genresUpdated: inputData.genresUpdated ?? 0,
@@ -229,6 +239,7 @@ const surfaceWorkflowStep = createStep({
       effectiveCap: result.effectiveCap,
       excludedDecidedCount: result.excludedDecidedCount,
       excludedPendingCount: result.excludedPendingCount,
+      artistQuotaDeferredCount: result.artistQuotaDeferredCount,
     };
   },
 });

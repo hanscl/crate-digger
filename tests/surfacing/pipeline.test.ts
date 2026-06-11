@@ -82,16 +82,29 @@ async function insertTrack(opts: {
   title: string;
   audioFeatures: AudioFeatures | null;
   genres: string[];
-}): Promise<{ id: number; embedding: number[]; audio: AudioFeatures | null; genres: string[] }> {
+  /**
+   * LAB-73 — defaults to a UNIQUE per-title artist so the surfacing diversity
+   * quota (≤1/artist, default on) never accidentally binds in tests that aren't
+   * about it. Pass a shared `artist` explicitly to exercise the quota.
+   */
+  artist?: string;
+}): Promise<{
+  id: number;
+  embedding: number[];
+  audio: AudioFeatures | null;
+  genres: string[];
+  artist: string;
+}> {
   const embedding = buildEmbedding({
     audioFeatures: opts.audioFeatures,
     genres: opts.genres,
   });
+  const artist = opts.artist ?? `Artist of ${opts.title}`;
   const [row] = await db
     .insert(schema.track)
     .values({
       title: opts.title,
-      artist: "Test Artist",
+      artist,
       audioFeatures: opts.audioFeatures,
       genres: opts.genres,
       embedding,
@@ -101,7 +114,7 @@ async function insertTrack(opts: {
     })
     .returning({ id: schema.track.id });
   if (!row) throw new Error("track insert returned no rows");
-  return { id: row.id, embedding, audio: opts.audioFeatures, genres: opts.genres };
+  return { id: row.id, embedding, audio: opts.audioFeatures, genres: opts.genres, artist };
 }
 
 async function asCandidate(t: {
@@ -109,6 +122,7 @@ async function asCandidate(t: {
   embedding: number[];
   audio: AudioFeatures | null;
   genres: string[];
+  artist: string;
 }): Promise<Candidate> {
   return {
     trackId: t.id,
@@ -117,6 +131,7 @@ async function asCandidate(t: {
     // Mirror the derived primary genre so the refill winner-eligibility gate
     // (same primary genre as the target bucket) matches in-genre candidates.
     primaryGenre: derivePrimaryGenre(t.genres),
+    artist: t.artist,
     source: "spotify",
   };
 }
@@ -1191,5 +1206,191 @@ describe("runSurfacingBatch — LAB-61 keep-anchor cleanup", () => {
     // …and strictly below the two-member mean the legacy self-anchor (cos=1
     // against itself) would have produced.
     expect(entry?.subScores?.keepSim ?? 1).toBeLessThan((simToSurvivor + 1) / 2);
+  });
+});
+
+describe("runSurfacingBatch — artist-diversity quota (LAB-73 lever 2)", () => {
+  const artistsOf = (cands: { candidate: Candidate }[]) => cands.map((s) => s.candidate.artist);
+
+  it("broad: surfaces at most ONE track per artist, deferring the rest (pool still logs all)", async () => {
+    // Pure broad (no bucket → no refill). Two tracks share an artist; with the
+    // default cap of 1 only one of them reaches the queue, the other is
+    // quota-deferred. Constraint #2: every event's pool still carries all 3.
+    const t1 = await insertTrack({
+      title: "Repeat A",
+      audioFeatures: audio(),
+      genres: ["rock"],
+      artist: "Repeat Artist",
+    });
+    const t2 = await insertTrack({
+      title: "Repeat B",
+      audioFeatures: audio({ energy: 0.3 }),
+      genres: ["rock"],
+      artist: "Repeat Artist",
+    });
+    const t3 = await insertTrack({
+      title: "Solo",
+      audioFeatures: audio({ energy: 0.7 }),
+      genres: ["rock"],
+      artist: "Solo Artist",
+    });
+    const candidates = await Promise.all([t1, t2, t3].map(asCandidate));
+
+    const result = await runSurfacingBatch(db, {
+      candidates,
+      noveltyOverride: 1,
+      broadBarOverride: 0.5,
+      queueCeilingOverride: 50,
+      surfaceArtistCapOverride: 1,
+    });
+
+    expect(result.surfaced).toHaveLength(2);
+    expect(new Set(artistsOf(result.surfaced))).toEqual(new Set(["Repeat Artist", "Solo Artist"]));
+    expect(result.artistQuotaDeferredCount).toBe(1);
+    // Constraint #2 — the deferred track stays scored in every event's pool.
+    const events = await db.select().from(schema.surfaceEvent);
+    expect(events).toHaveLength(2);
+    for (const e of events) expect(e.candidatePool).toHaveLength(3);
+  });
+
+  it("a high cap effectively disables the quota — same-artist tracks all surface", async () => {
+    const t1 = await insertTrack({
+      title: "Repeat A",
+      audioFeatures: audio(),
+      genres: ["rock"],
+      artist: "Repeat Artist",
+    });
+    const t2 = await insertTrack({
+      title: "Repeat B",
+      audioFeatures: audio({ energy: 0.3 }),
+      genres: ["rock"],
+      artist: "Repeat Artist",
+    });
+    const t3 = await insertTrack({
+      title: "Solo",
+      audioFeatures: audio({ energy: 0.7 }),
+      genres: ["rock"],
+      artist: "Solo Artist",
+    });
+    const candidates = await Promise.all([t1, t2, t3].map(asCandidate));
+
+    const result = await runSurfacingBatch(db, {
+      candidates,
+      noveltyOverride: 1,
+      broadBarOverride: 0.5,
+      queueCeilingOverride: 50,
+      surfaceArtistCapOverride: 5,
+    });
+
+    expect(result.surfaced).toHaveLength(3);
+    expect(result.artistQuotaDeferredCount).toBe(0);
+  });
+
+  it("refill: the quota holds within the refill phase too", async () => {
+    const seed = await insertTrack({
+      title: "Metal Anchor",
+      audioFeatures: audio({ tempo: 160, energy: 0.95 }),
+      genres: ["heavy metal"],
+    });
+    await assignTrack(db, seed.id, { origin: "seed_track", spawnThreshold: 0.7 });
+
+    const t1 = await insertTrack({
+      title: "Dup A",
+      audioFeatures: audio({ tempo: 158, energy: 0.93 }),
+      genres: ["heavy metal"],
+      artist: "Dup Artist",
+    });
+    const t2 = await insertTrack({
+      title: "Dup B",
+      audioFeatures: audio({ tempo: 150, energy: 0.85 }),
+      genres: ["heavy metal"],
+      artist: "Dup Artist",
+    });
+    const t3 = await insertTrack({
+      title: "Solo",
+      audioFeatures: audio({ tempo: 159, energy: 0.9 }),
+      genres: ["heavy metal"],
+      artist: "Solo Artist",
+    });
+    const candidates = await Promise.all([t1, t2, t3].map(asCandidate));
+
+    const result = await runSurfacingBatch(db, {
+      candidates,
+      noveltyOverride: 0,
+      refillBarOverride: 0, // all three clear the refill bar (genre-compatible metal)
+      broadBarOverride: 1, // broad never fills
+      queueCeilingOverride: 50,
+      surfaceArtistCapOverride: 1,
+    });
+
+    expect(result.surfaced).toHaveLength(2);
+    for (const s of result.surfaced) expect(s.rankerKind).toBe("refill");
+    expect(new Set(artistsOf(result.surfaced))).toEqual(new Set(["Dup Artist", "Solo Artist"]));
+    expect(result.artistQuotaDeferredCount).toBe(1);
+  });
+
+  it("cross-phase: a refill winner's artist blocks the SAME artist from a broad slot", async () => {
+    // Metal bucket. A metal track by "Dup Artist" refills; an indie track by
+    // the SAME artist is slot-disjoint (can't refill) and would win a broad
+    // slot — but the per-artist cap, shared across phases, defers it. A
+    // distinct-artist indie track fills the freed headroom instead.
+    const seed = await insertTrack({
+      title: "Metal Anchor",
+      audioFeatures: audio({ tempo: 160, energy: 0.95 }),
+      genres: ["heavy metal"],
+    });
+    const seedAssign = await assignTrack(db, seed.id, {
+      origin: "seed_track",
+      spawnThreshold: 0.7,
+    });
+
+    const metalDup = await insertTrack({
+      title: "Metal by Dup",
+      audioFeatures: audio({ tempo: 158, energy: 0.93 }),
+      genres: ["heavy metal"],
+      artist: "Dup Artist",
+    });
+    const indieDup = await insertTrack({
+      title: "Indie by Dup",
+      audioFeatures: audio({ energy: 0.4 }),
+      genres: ["indie"],
+      artist: "Dup Artist",
+    });
+    const indieSolo = await insertTrack({
+      title: "Indie by Solo",
+      audioFeatures: audio({ energy: 0.5 }),
+      genres: ["indie"],
+      artist: "Solo Artist",
+    });
+    const candidates = await Promise.all([metalDup, indieDup, indieSolo].map(asCandidate));
+
+    const result = await runSurfacingBatch(db, {
+      candidates,
+      noveltyOverride: 0,
+      refillBarOverride: 0,
+      broadBarOverride: 0.5,
+      queueCeilingOverride: 50,
+      surfaceArtistCapOverride: 1,
+    });
+
+    // Refill surfaced the metal "Dup Artist" track; broad surfaced "Solo Artist".
+    const refill = result.surfaced.filter((s) => s.rankerKind === "refill");
+    const broad = result.surfaced.filter((s) => s.rankerKind === "broad");
+    expect(refill.map((s) => s.candidate.trackId)).toEqual([metalDup.id]);
+    expect(broad.map((s) => s.candidate.trackId)).toEqual([indieSolo.id]);
+    // "Dup Artist" appears exactly once across the COMBINED surfaced set.
+    expect(artistsOf(result.surfaced).filter((a) => a === "Dup Artist")).toHaveLength(1);
+    // The same-artist indie track was the one quota-deferred.
+    expect(result.artistQuotaDeferredCount).toBe(1);
+    expect(result.surfaced.map((s) => s.candidate.trackId)).not.toContain(indieDup.id);
+    // Constraint #2 — the deferred indie track is still scored in the broad
+    // pool (the broad event logs every scored candidate).
+    const broadEvent = (await db.select().from(schema.surfaceEvent)).find(
+      (e) => e.bucketId === null,
+    );
+    expect(
+      broadEvent?.candidatePool.some((p: CandidatePoolEntry) => p.trackId === indieDup.id),
+    ).toBe(true);
+    expect(seedAssign.primaryGenre).toBe("metal");
   });
 });

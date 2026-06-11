@@ -2,6 +2,93 @@
 
 Phase tracker. Update at the end of every phase. Newest at the top.
 
+## LAB-73 — Artist diversity in discovery (all 3 levers)
+
+- **Status:** in review
+- **Branch:** `lab-73-artist-diversity-in-discovery-pull-side-artist-throttle`
+- **PR:** _pending_
+- **Problem (LAB-62 QA):** the queue was dominated by repeat artists (Killers/
+  Megaherz ×3, Olivia Rodrigo/Sting ×2). No artist-diversity mechanism existed
+  anywhere — Last.fm `getSimilar` is same-artist biased, refill keep-similarity
+  rewards same-artist embeddings, and LAB-36's W=2.5 amplified it. All three
+  levers shipped together (overriding the ticket's "1+2 now, 3 later").
+- **Scope landed:**
+  - **Lever 1 — pull-side artist throttle** (`pipeline-steps.ts`, deterministic,
+    no version bump — LAB-51 family). Pure `throttleSimilarByArtist` caps the
+    LAB-39 similar pull at `similar_artist_cap` (default 2) tracks per artist
+    per run (counts across seeds via a running map) and skips artists already
+    represented by ≥`familiar_artist_keep_threshold` keeps (default 3; 0
+    disables). Applied BEFORE resolution. `similarPulled` still counts what the
+    API returned (the `pulledCount === Σ perSource.pulled` invariant holds); the
+    drops surface as `similarArtistCapped` / `similarFamiliarSkipped` — no
+    silent truncation (acceptance criterion).
+  - **Lever 2 — surfacing diversity quota** (`surfacing/pipeline.ts`,
+    eligibility shaping, no version bump — LAB-60 precedent). `dedupeByArtist`
+    enforces ≤`surface_artist_cap` (default 1) surfaced tracks per artist across
+    the COMBINED refill+broad winners (the count map is shared cross-phase and
+    seeded from the tracks refill ACTUALLY surfaced, so a ceiling-cut refill
+    winner never blocks broad). Refill dedups before the ceiling slice so
+    distinct artists backfill the cap. Overflow stays in every event's
+    `candidate_pool` (Constraint #2); reported as `artistQuotaDeferredCount`
+    (its quota footprint — above-bar candidates the quota held back, ceiling-
+    independent). `Candidate` gained an optional `artist`; `loadCandidates`
+    (surfacing) + `poolToCandidates` (replay) project it.
+  - **Lever 3 — soft familiarity penalty in refill** (versioned — Constraint
+    #3). `RefillConfig.familiarityPenalty` (optional; absent → 0 → byte-
+    identical legacy replay, mirroring `audioWeight`) is the EFFECTIVE penalty,
+    `novelty × FAMILIARITY_PENALTY_AT_FULL_NOVELTY` (0.2), **frozen into the
+    refill `model_version`**. `scoreRefill` subtracts it from the composite
+    score (NOT keepSim — it never crosses the bar) for keep-familiar artists —
+    same soft-downweight shape as the dislike term (Constraint #4). The
+    **novelty knob now bumps the refill version** (params router), freezing the
+    recomputed penalty; this is novelty's first scoring job (Constraint #6).
+    Bootstrap + `getActiveConfig` fallback fill it; the LAB-36 cross-lane
+    upgrade was generalized to `mintRefillConfigUpgradeInTx` (fires when
+    audioWeight OR genreGate OR familiarityPenalty is absent — so a post-LAB-36
+    install picks up the penalty via one reconcile bump). `counterfactualReplay`
+    reconstructs the familiar set identically.
+  - **Familiar set is KEEPS-ONLY** (deliberate deviation from the ticket's
+    "keeps/recent surface events"). A surface-event window would make an artist
+    familiar via the very run being scored — penalized at replay (events exist)
+    but not at live-score time (the set loads before this run writes its
+    events) — silently depressing `agreementRate` (caught by the adversarial
+    review). Keeps are stable/pre-existing for both paths (same accepted drift
+    as dislikes, no self-reference). Cross-run surfaced-repetition is handled
+    deterministically and outside the replayed ranker by levers 1+2 + LAB-60.
+  - **Migration `0013`**: three `app_config` columns (`similar_artist_cap` 2,
+    `familiar_artist_keep_threshold` 3, `surface_artist_cap` 1) — single clean
+    `ADD COLUMN … NOT NULL DEFAULT`. Wired through the params router (zod
+    ranges), taste profile (Constraint #8, optional + back-compat), and the
+    Console (artist cap under surfacing; similar-cap + familiar-skip under
+    ingestion; run-summary counters). Lever 3 needs NO column — it reuses
+    `novelty` and lives in `model_version.config`.
+- **Tests (317 green; +27 new):** refill familiarity penalty + byte-exactness +
+  `isRefillConfig` bound; pure `throttleSimilarByArtist` (cap + keep-skip +
+  cross-seed accumulation); surfacing quota (broad / refill / cross-phase, pool
+  still logged, deferred count); counterfactual replay applies the frozen
+  penalty + legacy replays at 0; reconcile familiarity backfill; params
+  novelty→refill bump; taste pre-LAB-73 back-compat + round-trip. The surfacing
+  harness now defaults to a UNIQUE per-title artist so the quota only binds when
+  a test sets a shared artist.
+- **Decisions locked:**
+  - Novelty is now a **versioned** ranking parameter (frozen into refill
+    config; novelty change bumps refill), not a live knob — the only
+    Constraint-#3-correct way to make the penalty replay-deterministic.
+  - Lever 3 is **refill-only**: the LAB-62 symptom is a refill keep-similarity
+    artifact (root cause #2); lever 2 already caps broad to 1/artist/run.
+  - The penalty downweights the composite score (reorders under the ceiling/
+    quota), never the keepSim bar — soft, Constraint #4 intact.
+- **Notes for future phases:**
+  - `db:migrate` on an existing install mints ONE refill config-upgrade version
+    (familiarity backfill) — verify the reconcile log + a bumped refill version
+    on first deploy. The familiarity penalty only takes effect after that
+    upgrade (or any novelty/λ/audioWeight bump).
+  - `FAMILIARITY_PENALTY_AT_FULL_NOVELTY` (0.2) is a code constant (YAGNI to
+    surface; novelty is the operator lever). Tune it if a few runs show the
+    penalty too weak/strong.
+  - If a future eval ever diffs original-vs-replayed `subScores` field-by-field,
+    treat a missing `familiarityPenalty` key on pre-LAB-73 events as absent (not 0) — `subScores` is a sparse map by design.
+
 ## LAB-62 — Post-merge QA fixes for the LAB-60/61/36 stack
 
 - **Status:** in progress

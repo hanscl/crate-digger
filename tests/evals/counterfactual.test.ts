@@ -9,7 +9,11 @@ import * as schema from "@/db/schema";
 import { assignTrack } from "@/lib/bucketing/assign";
 import { buildEmbedding, derivePrimaryGenre } from "@/lib/embedding";
 import { counterfactualReplay } from "@/lib/evals/counterfactual";
-import { bumpModelVersion, getActiveModelVersion } from "@/lib/ranking/version";
+import {
+  bumpModelVersion,
+  ensureActiveModelVersion,
+  getActiveModelVersion,
+} from "@/lib/ranking/version";
 import { runSurfacingBatch } from "@/lib/surfacing/pipeline";
 import type { Candidate } from "@/lib/ranking/types";
 
@@ -69,16 +73,19 @@ async function seed(opts: {
   title: string;
   audio: schema.AudioFeatures;
   genres: string[];
-}): Promise<{ id: number; embedding: number[]; genres: string[] }> {
+  /** LAB-73 — defaults to "x" (existing tests share it harmlessly). */
+  artist?: string;
+}): Promise<{ id: number; embedding: number[]; genres: string[]; artist: string }> {
   const embedding = buildEmbedding({
     audioFeatures: opts.audio,
     genres: opts.genres,
   });
+  const artist = opts.artist ?? "x";
   const [row] = await db
     .insert(schema.track)
     .values({
       title: opts.title,
-      artist: "x",
+      artist,
       audioFeatures: opts.audio,
       genres: opts.genres,
       embedding,
@@ -86,13 +93,14 @@ async function seed(opts: {
     })
     .returning({ id: schema.track.id });
   if (!row) throw new Error("track insert returned no rows");
-  return { id: row.id, embedding, genres: opts.genres };
+  return { id: row.id, embedding, genres: opts.genres, artist };
 }
 
 async function asCand(t: {
   id: number;
   embedding: number[];
   genres: string[];
+  artist: string;
 }): Promise<Candidate> {
   // Carry the derived primary genre so the refill winner-eligibility gate
   // (same primary genre as the target bucket) lets in-genre candidates win.
@@ -100,6 +108,7 @@ async function asCand(t: {
     trackId: t.id,
     embedding: t.embedding,
     primaryGenre: derivePrimaryGenre(t.genres),
+    artist: t.artist,
     source: "spotify",
   };
 }
@@ -507,5 +516,83 @@ describe("counterfactualReplay — refill genre gate (LAB-45, config-selected pe
     expect(replay.replayedEventCount).toBe(0);
     expect(replay.skippedEventIds).toContain(after.id);
     expect(replay.perEvent).toHaveLength(0);
+  });
+});
+
+describe("counterfactualReplay — refill familiarity penalty (LAB-73)", () => {
+  it("replay reconstructs the familiar set and applies the frozen penalty; a legacy config does not", async () => {
+    // A keep on a "FamiliarBand" track makes that artist familiar; the
+    // surfacing run freezes the novelty-scaled penalty (0.1) into the active
+    // refill version. Replay must reproduce live: the familiar candidate is
+    // penalized, a never-surfaced/never-kept candidate is not, and a legacy
+    // (no-penalty) config replays the SAME event with zero penalty.
+    const broadV = await ensureActiveModelVersion(db, "broad");
+    const fam = await seed({
+      title: "Their Old Hit",
+      audio: audio({ tempo: 120 }),
+      genres: ["rock"],
+      artist: "FamiliarBand",
+    });
+    await db
+      .insert(schema.rating)
+      .values({ trackId: fam.id, decision: "keep", modelVersionId: broadV.id });
+
+    // Rock bucket anchor.
+    const anchor = await seed({
+      title: "Anchor",
+      audio: audio({ tempo: 130, energy: 0.7 }),
+      genres: ["rock"],
+      artist: "Anchor Band",
+    });
+    await assignTrack(db, anchor.id, { origin: "seed_track", spawnThreshold: 0.7 });
+
+    // candFamiliar (rock) surfaces and is familiar; candFresh (indie) is
+    // slot-disjoint so it's scored into the pool but never surfaces — so its
+    // artist stays unfamiliar.
+    const candFamiliar = await seed({
+      title: "Their New One",
+      audio: audio({ tempo: 131, energy: 0.7 }),
+      genres: ["rock"],
+      artist: "FamiliarBand",
+    });
+    const candFresh = await seed({
+      title: "A Stranger",
+      audio: audio({ tempo: 129, energy: 0.7 }),
+      genres: ["indie"],
+      artist: "FreshBand",
+    });
+    const candidates = await Promise.all([candFamiliar, candFresh].map(asCand));
+
+    const surfacing = await runSurfacingBatch(db, {
+      candidates,
+      noveltyOverride: 0,
+      refillBarOverride: 0,
+      broadBarOverride: 1, // broad never fills — only the rock candidate surfaces (refill)
+      surfaceArtistCapOverride: 5, // don't let the quota interfere
+      queueCeilingOverride: 50,
+    });
+    expect(surfacing.events.length).toBeGreaterThan(0);
+
+    const active = await getActiveModelVersion(db, "refill");
+    if (!active) throw new Error("expected active refill version");
+    expect((active.config as { familiarityPenalty?: number }).familiarityPenalty).toBe(0.1);
+
+    // Replay under the penalty version: the familiar candidate is penalized,
+    // the fresh one is not, and the full pool is preserved (Constraint #2).
+    const penaltyReplay = await counterfactualReplay(db, active.id);
+    const penEvt = penaltyReplay.perEvent[0]!;
+    const penFam = penEvt.replayedPool.find((p) => p.trackId === candFamiliar.id)!;
+    const penFresh = penEvt.replayedPool.find((p) => p.trackId === candFresh.id)!;
+    expect(penFam.subScores.familiarityPenalty).toBe(0.1);
+    expect(penFresh.subScores.familiarityPenalty).toBe(0);
+    // The penalty is subtracted off the composite score (no dislikes here).
+    expect(penFam.score).toBeCloseTo((penFam.subScores.keepSim ?? 0) - 0.1, 10);
+
+    // Replay the SAME event under a legacy {lambda}-only config → no penalty.
+    const legacy = await bumpModelVersion(db, "refill", { lambda: 0.3 }, { note: "legacy pin" });
+    const legacyReplay = await counterfactualReplay(db, legacy.id);
+    const legEvt = legacyReplay.perEvent[0]!;
+    const legFam = legEvt.replayedPool.find((p) => p.trackId === candFamiliar.id)!;
+    expect(legFam.subScores.familiarityPenalty).toBe(0);
   });
 });

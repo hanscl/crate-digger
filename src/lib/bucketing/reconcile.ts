@@ -3,7 +3,7 @@ import type { Database } from "@/db/client";
 import { bucket, bucketMember, bucketRecommendation } from "@/db/schema";
 import {
   bumpModelVersionCarryForwardInTx,
-  mintRefillCrossLaneUpgradeInTx,
+  mintRefillConfigUpgradeInTx,
 } from "@/lib/ranking/version";
 import { evaluateBucketRecommendations } from "./recommendations";
 import { recomputeBucketStats } from "./recompute";
@@ -40,17 +40,18 @@ import { recomputeBucketStats } from "./recompute";
  * stale references, repairs nothing, and therefore bumps nothing and leaves
  * recommendations untouched.
  *
- * LAB-36 — a second idempotent step runs AFTER the membership repair: when
- * the ACTIVE refill version's config is missing either cross-lane field
- * (existing install upgrading across LAB-36, including one whose Console
- * audioWeight knob was bumped before this sweep ran), mint ONE refill
- * version carrying lambda — and any already-frozen audioWeight — forward
- * and filling in the missing fields (slot-overlap gate + audio-weighted
- * cosine; see `mintRefillCrossLaneUpgradeInTx`). Composition with the
- * membership-gated bump above: separate version rows, separate notes — a
- * drifted install minting both gets `repair → upgrade` chained in that
- * order. Both steps are no-ops on re-run, so `db:migrate` stays
- * exactly-once. Fresh installs never fire it (their bootstrap mints the
+ * LAB-36/73 — a second idempotent step runs AFTER the membership repair: when
+ * the ACTIVE refill version's config is missing any later config field
+ * (audioWeight / genreGate from LAB-36, or the LAB-73 novelty-scaled
+ * familiarityPenalty), mint ONE refill version carrying the present fields
+ * forward and filling in the missing ones (slot-overlap gate + audio-weighted
+ * cosine + familiarity penalty from `app_config.novelty`; see
+ * `mintRefillConfigUpgradeInTx`). A post-LAB-36 install already carries
+ * audioWeight+genreGate, so this is what lights up the LAB-73 penalty on it.
+ * Composition with the membership-gated bump above: separate version rows,
+ * separate notes — a drifted install minting both gets `repair → upgrade`
+ * chained in that order. Both steps are no-ops on re-run, so `db:migrate`
+ * stays exactly-once. Fresh installs never fire it (their bootstrap mints the
  * full config directly).
  */
 export type ReconcileBucketsResult = {
@@ -64,7 +65,7 @@ export type ReconcileBucketsResult = {
   recommendationsRebuilt: boolean;
   /** True when the refill model_version was bumped (membership changed AND an active pointer was set). */
   refillVersionBumped: boolean;
-  /** LAB-36 — true when the active refill config was upgraded with audioWeight/genreGate this run. */
+  /** LAB-36/73 — true when the active refill config was upgraded with a missing field (audioWeight/genreGate/familiarityPenalty) this run. */
   refillConfigUpgraded: boolean;
   /** True when anything at all was repaired this run (config upgrade excluded — it is not a repair). */
   repaired: boolean;
@@ -134,11 +135,11 @@ export async function reconcileBuckets(db: Database): Promise<ReconcileBucketsRe
       }
     }
 
-    // LAB-36 — config upgrade for existing installs, AFTER the membership
-    // step so a drifted upgrade chains repair → upgrade. Self-gating and
-    // lock-serialized; null means "already upgraded or nothing to upgrade".
-    const upgraded = await mintRefillCrossLaneUpgradeInTx(tx, {
-      note: "LAB-36: cross-lane membership — slot-overlap gate + audio-weighted cosine",
+    // LAB-36/73 — refill config upgrade for existing installs, AFTER the
+    // membership step so a drifted upgrade chains repair → upgrade. Self-gating
+    // and lock-serialized; null means "already upgraded or nothing to upgrade".
+    const upgraded = await mintRefillConfigUpgradeInTx(tx, {
+      note: "refill config upgrade: slot-overlap gate + audio-weighted cosine + familiarity penalty",
     });
     const refillConfigUpgraded = upgraded !== null;
 
