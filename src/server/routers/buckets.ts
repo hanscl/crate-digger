@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, count, desc, eq, sql } from "drizzle-orm";
+import { and, count, desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   bucket,
@@ -196,7 +196,27 @@ export const bucketsRouter = router({
 
   recommendations: protectedProcedure.query(async ({ ctx }) => {
     const rows = await listPendingRecommendations(ctx.db);
-    return rows;
+    // LAB-76 — join bucket NAMES into the payload so the client renders names
+    // (clickable to select) instead of raw ids. A recommendation references
+    // 1 (split) or 2 (merge) bucket ids via the plain `bucket_ids` int[]; a
+    // referenced bucket can be missing (a concurrent merge/removeMember prunes
+    // it before the next recompute), so the name is nullable per id.
+    const referencedIds = [...new Set(rows.flatMap((r) => r.bucketIds))];
+    const nameRows = referencedIds.length
+      ? await ctx.db
+          .select({ id: bucket.id, name: bucket.name, color: bucket.color })
+          .from(bucket)
+          .where(inArray(bucket.id, referencedIds))
+      : [];
+    const nameById = new Map(nameRows.map((b) => [b.id, { name: b.name, color: b.color }]));
+    return rows.map((r) => ({
+      ...r,
+      buckets: r.bucketIds.map((id) => ({
+        id,
+        name: nameById.get(id)?.name ?? null,
+        color: nameById.get(id)?.color ?? null,
+      })),
+    }));
   }),
 
   /** Manual trigger for the Phase 5 recommendations heuristic. */

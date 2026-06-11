@@ -57,6 +57,10 @@ export function QueueScreen() {
         rate.mutate({ eventId: next.data.eventId, decision: "defer" });
       } else if (e.key === "l" || e.key === "L") {
         rate.mutate({ eventId: next.data.eventId, decision: "dislike" });
+      } else if (e.key === "n" || e.key === "N") {
+        // LAB-76 — neutral: "seen it, indifferent." Settles the track (never
+        // re-surfaces) without any taste signal.
+        rate.mutate({ eventId: next.data.eventId, decision: "neutral" });
       }
     }
     window.addEventListener("keydown", onKey);
@@ -75,7 +79,7 @@ export function QueueScreen() {
       </div>
       <div className="text-ink-3 text-sm mb-6">
         One track at a time. <kbd className="kbd">J</kbd> keep, <kbd className="kbd">K</kbd> defer,{" "}
-        <kbd className="kbd">L</kbd> dislike.
+        <kbd className="kbd">L</kbd> dislike, <kbd className="kbd">N</kbd> neutral.
       </div>
 
       {next.isLoading ? (
@@ -117,7 +121,7 @@ function CurrentTrack({
   data: QueueNext;
   why: string | null;
   submitting: boolean;
-  onRate: (decision: "keep" | "dislike" | "defer") => void;
+  onRate: (decision: "keep" | "dislike" | "defer" | "neutral") => void;
 }) {
   const { track, ranker } = data;
   const af = track.audioFeatures;
@@ -236,6 +240,15 @@ function CurrentTrack({
               style={{ borderColor: "var(--pass)", color: "var(--pass)" }}
             >
               <kbd className="kbd">L</kbd> dislike
+            </button>
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={() => onRate("neutral")}
+              className="btn ghost"
+              title="seen it, indifferent — never re-surfaces, no taste signal"
+            >
+              <kbd className="kbd">N</kbd> neutral
             </button>
           </div>
         </div>

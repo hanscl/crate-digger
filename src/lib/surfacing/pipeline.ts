@@ -35,13 +35,14 @@ import { logSurfaceEvents } from "./log";
  *
  * Composition (applied in order):
  *
- *   1. Eligibility gate (LAB-60). Drop candidates the user already decided
- *      (any keep/dislike rating, ever) and candidates already sitting unrated
- *      in the queue (a surface_event with no rating row). Re-pulls
- *      legitimately revisit tracks near bucket centroids; without this gate
- *      they would re-queue settled tracks or duplicate queue cards. Decision
- *      dedupe, not a taste penalty (Constraint #4 untouched); defer/neutral-
- *      only tracks stay eligible.
+ *   1. Eligibility gate (LAB-60, amended LAB-76). Drop candidates the user
+ *      already decided (any keep/dislike/neutral rating, ever) and candidates
+ *      already sitting unrated in the queue (a surface_event with no rating
+ *      row). Re-pulls legitimately revisit tracks near bucket centroids;
+ *      without this gate they would re-queue settled tracks or duplicate queue
+ *      cards. Decision dedupe, not a taste penalty (Constraint #4 untouched);
+ *      defer-only tracks stay eligible (defer means "later"). `neutral` settles
+ *      the track (no re-surface) but carries zero taste signal.
  *   2. Resolve the queue-ceiling headroom. `effectiveCap = max(0, queueCeiling
  *      − unratedQueueDepth)`. This is the ONLY count bound — there is no
  *      per-day budget. The candidate pool always carries everything ingest
@@ -634,17 +635,20 @@ async function loadRefillableBuckets(
 /**
  * LAB-60 — surfacing-entry eligibility gate. A candidate is ineligible when:
  *
- *   - `decided`: it carries ANY keep/dislike rating, ever — regardless of the
- *     rating's model_version or a later defer. The user already decided this
- *     track; re-surfacing would re-queue it as a fresh card.
+ *   - `decided`: it carries ANY keep/dislike/neutral rating, ever — regardless
+ *     of the rating's model_version or a later defer. The user already decided
+ *     this track; re-surfacing would re-queue it as a fresh card. `neutral`
+ *     (LAB-76) is "seen it, indifferent — never re-surface, zero taste signal":
+ *     it settles the track here like keep/dislike, but contributes no signal to
+ *     the taste model (no bucket commit, no dislike counter, no λ-penalty).
  *   - `pending`: it already has an unrated surface_event — it IS a queue card
  *     right now; surfacing it again would duplicate the card.
  *
  * This is an eligibility gate (a decision dedupe), NOT a taste penalty —
  * Constraint #4 is untouched: dislikes keep downweighting OTHER candidates
- * via the refill dislike term, never excluding them. Tracks whose only
- * ratings are defer/neutral stay eligible — defer means "later", so they
- * re-surface on subsequent runs.
+ * via the refill dislike term, never excluding them. Tracks whose only rating
+ * is defer stay eligible — defer means "later", so they re-surface on
+ * subsequent runs.
  */
 async function loadIneligibleTrackIds(
   db: Database,
@@ -657,7 +661,9 @@ async function loadIneligibleTrackIds(
   const decidedRows = await db
     .selectDistinct({ trackId: rating.trackId })
     .from(rating)
-    .where(and(inArray(rating.trackId, ids), inArray(rating.decision, ["keep", "dislike"])));
+    .where(
+      and(inArray(rating.trackId, ids), inArray(rating.decision, ["keep", "dislike", "neutral"])),
+    );
   const pendingRows = await db
     .selectDistinct({ trackId: surfaceEvent.trackId })
     .from(surfaceEvent)
