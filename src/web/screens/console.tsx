@@ -39,6 +39,9 @@ export function ConsoleScreen() {
     trendingLimitPerSource: number;
     similarLimitPerSource: number;
     similarSeedBuckets: number;
+    similarArtistCap: number;
+    familiarArtistKeepThreshold: number;
+    surfaceArtistCap: number;
   } | null>(null);
 
   useEffect(() => {
@@ -57,6 +60,9 @@ export function ConsoleScreen() {
         trendingLimitPerSource: params.data.trendingLimitPerSource,
         similarLimitPerSource: params.data.similarLimitPerSource,
         similarSeedBuckets: params.data.similarSeedBuckets,
+        similarArtistCap: params.data.similarArtistCap,
+        familiarArtistKeepThreshold: params.data.familiarArtistKeepThreshold,
+        surfaceArtistCap: params.data.surfaceArtistCap,
       });
     }
   }, [params.data, draft]);
@@ -103,6 +109,16 @@ export function ConsoleScreen() {
                 format={(v) => v.toFixed(0)}
                 onChange={(v) => setDraft({ ...draft, queueCeiling: Math.round(v) })}
                 onCommit={(v) => update.mutate({ queueCeiling: Math.round(v) })}
+              />
+              <Knob
+                label="artist cap"
+                value={draft.surfaceArtistCap}
+                min={1}
+                max={10}
+                step={1}
+                format={(v) => v.toFixed(0)}
+                onChange={(v) => setDraft({ ...draft, surfaceArtistCap: Math.round(v) })}
+                onCommit={(v) => update.mutate({ surfaceArtistCap: Math.round(v) })}
               />
             </div>
             <div className="cap text-ink-3 mb-4">ranking</div>
@@ -203,6 +219,26 @@ export function ConsoleScreen() {
                 onChange={(v) => setDraft({ ...draft, similarSeedBuckets: Math.round(v) })}
                 onCommit={(v) => update.mutate({ similarSeedBuckets: Math.round(v) })}
               />
+              <Knob
+                label="similar artist cap"
+                value={draft.similarArtistCap}
+                min={1}
+                max={10}
+                step={1}
+                format={(v) => v.toFixed(0)}
+                onChange={(v) => setDraft({ ...draft, similarArtistCap: Math.round(v) })}
+                onCommit={(v) => update.mutate({ similarArtistCap: Math.round(v) })}
+              />
+              <Knob
+                label="familiar skip"
+                value={draft.familiarArtistKeepThreshold}
+                min={0}
+                max={10}
+                step={1}
+                format={(v) => v.toFixed(0)}
+                onChange={(v) => setDraft({ ...draft, familiarArtistKeepThreshold: Math.round(v) })}
+                onCommit={(v) => update.mutate({ familiarArtistKeepThreshold: Math.round(v) })}
+              />
             </div>
             {update.data?.bumped ? (
               <div className="mt-4 chip accent">bumped refill v{update.data.refillVersionId}</div>
@@ -234,7 +270,9 @@ export function ConsoleScreen() {
                 <div className="mt-3 text-xs mono text-keep">
                   pipeline: {runNow.data.status} • surfaced {runNow.data.surfacedCount} • excluded{" "}
                   {runNow.data.excludedDecidedCount} decided / {runNow.data.excludedPendingCount}{" "}
-                  pending
+                  pending • artist-diversity: {runNow.data.similarArtistCappedCount} capped /{" "}
+                  {runNow.data.similarFamiliarSkippedCount} skipped /{" "}
+                  {runNow.data.artistQuotaDeferredCount} quota-deferred
                 </div>
               ) : null}
               {retrain.data ? (

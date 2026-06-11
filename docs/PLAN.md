@@ -131,7 +131,7 @@ buckets, fixed taxonomy in `src/lib/embedding.ts`). Revisit dim only if eval bre
 | `search_run`            | `id`, `source`, `params jsonb`, `started_at`, `count_pulled`, `count_surfaced`                                                                                                                                                                                        |
 | `model_version`         | `id`, `kind enum(refill,broad)`, `config jsonb`, `training_window_start/end`, `trained_at`, `parent_id`                                                                                                                                                               |
 | `bucket_recommendation` | `id`, `kind enum(merge,split)`, `bucket_ids int[]`, `reason jsonb`, `status enum(pending,accepted,dismissed)`                                                                                                                                                         |
-| `app_config`            | Singleton row: novelty knob, source mix, refill/broad quality bars, queue ceiling, pull throttle, retrain cadence, source toggles                                                                                                                                     |
+| `app_config`            | Singleton row: novelty knob, source mix, refill/broad quality bars, queue ceiling, pull throttle, artist-diversity caps (LAB-73), retrain cadence, source toggles                                                                                                     |
 
 Drizzle migrations via `drizzle-kit`. `pgvector` extension created in an idempotent
 `migrations/0000_init.sql`.
@@ -446,7 +446,11 @@ guard catches refactors that accidentally violate documented constraints.
   candidate that clears its ranker's quality bar, bounded only by the queue ceiling
   (`max(0, queueCeiling − unrated)`). The per-run pull size (LAB-51) is the throttle.
   Keep/dislike-decided and pending-unrated tracks are excluded at surfacing entry (amended
-  LAB-60); defer re-surfaces.
+  LAB-60); defer re-surfaces. Artist diversity (amended LAB-73): the similar pull is capped
+  per-artist (+ skips artists with ≥N keeps), and surfacing emits at most N tracks per artist
+  per run; overflow stays enriched-but-unsurfaced. Novelty scales the refill familiarity
+  penalty and is version-frozen (Constraint #6, amended LAB-73 — a novelty change bumps the
+  refill `model_version`).
 - **Enrichment idempotency** (Phase 2): running enrichment twice on the same input produces
   identical `Track` records and does not duplicate.
 - **Ratings tag the surface-time `model_version`** (Constraint #3 — Phase 5): not the version

@@ -78,6 +78,14 @@ export const TASTE_CONFIG_SCHEMA = z.object({
   trendingLimitPerSource: z.number().int().nonnegative(),
   similarLimitPerSource: z.number().int().nonnegative(),
   similarSeedBuckets: z.number().int().nonnegative(),
+  // LAB-73 — artist-diversity knobs travel with the taste profile. Optional so
+  // pre-LAB-73 exports (which lack them) still import (LAB-53 precedent):
+  // importTaste's upsert falls back to the app_config column defaults.
+  // (The novelty-scaled familiarity penalty is NOT here — it lives in the
+  // refill model_version.config, derived from `novelty` above on import.)
+  similarArtistCap: z.number().int().nonnegative().optional(),
+  familiarArtistKeepThreshold: z.number().int().nonnegative().optional(),
+  surfaceArtistCap: z.number().int().nonnegative().optional(),
 });
 
 export const TASTE_EXPORT_SCHEMA = z.object({

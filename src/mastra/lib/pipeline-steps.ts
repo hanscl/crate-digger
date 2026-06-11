@@ -1,6 +1,6 @@
-import { eq, inArray, sql } from "drizzle-orm";
+import { count, eq, inArray, sql } from "drizzle-orm";
 import type { Database } from "@/db/client";
-import { type AudioFeatures, appConfig, bucket, bucketMember, track } from "@/db/schema";
+import { type AudioFeatures, appConfig, bucket, bucketMember, rating, track } from "@/db/schema";
 import { flagCandidateBucket } from "@/lib/bucketing/assign";
 import { evaluateBucketRecommendations } from "@/lib/bucketing/recommendations";
 import { cosine } from "@/lib/embedding";
@@ -17,7 +17,7 @@ import {
   type SourceId,
   createDefaultRegistry,
 } from "@/lib/ingestion";
-import type { Candidate } from "@/lib/ranking/types";
+import { artistKey, type Candidate } from "@/lib/ranking/types";
 import { runSurfacingBatch } from "@/lib/surfacing/pipeline";
 import type { Env } from "@/server/env";
 import { type BucketNamerInput, type GenreCount, nameBucket } from "@/mastra/agents/bucket-namer";
@@ -44,6 +44,10 @@ export type PullEnrichSummary = {
   discogsGenresUpdated: number;
   /** Candidates pulled by the taste-seeded Last.fm `getSimilar` pass (LAB-39). */
   similarPulledCount: number;
+  /** LAB-73 — similar-pull candidates dropped by the per-artist cap (lever 1). */
+  similarArtistCappedCount: number;
+  /** LAB-73 — similar-pull candidates skipped because the artist already has ≥N keeps (lever 1). */
+  similarFamiliarSkippedCount: number;
 };
 
 // LAB-51 — fallback per-run pull throttle, used only when app_config has no
@@ -55,6 +59,10 @@ const DEFAULT_TRENDING_LIMIT_PER_SOURCE = 3;
 const DEFAULT_SIMILAR_LIMIT_PER_SOURCE = 3;
 /** Top-N buckets seeded for the Last.fm similar pull (LAB-39). */
 const DEFAULT_SIMILAR_SEED_BUCKETS = 5;
+// LAB-73 — pull-side artist throttle (lever 1) fallbacks, used only when
+// app_config has no row (tests) and no explicit option is passed.
+const DEFAULT_SIMILAR_ARTIST_CAP = 2;
+const DEFAULT_FAMILIAR_ARTIST_KEEP_THRESHOLD = 3;
 
 /**
  * Step 1: pull `mode: "trending"` from every available adapter, resolve each
@@ -92,6 +100,10 @@ export async function pullAndEnrichTrending(
     similarLimitPerSource?: number;
     adapters?: readonly SourceAdapter[];
     similarSeedBuckets?: number;
+    /** LAB-73 — per-artist cap on the similar pull (lever 1). */
+    similarArtistCap?: number;
+    /** LAB-73 — skip similar-pulled artists with ≥N keeps (lever 1); 0 disables. */
+    familiarArtistKeepThreshold?: number;
   } = {},
 ): Promise<PullEnrichSummary> {
   // LAB-51 — per-run throttle. Precedence: explicit option > app_config > the
@@ -112,6 +124,13 @@ export async function pullAndEnrichTrending(
     DEFAULT_SIMILAR_LIMIT_PER_SOURCE;
   const seedBuckets =
     options.similarSeedBuckets ?? cfg.similarSeedBuckets ?? DEFAULT_SIMILAR_SEED_BUCKETS;
+  // LAB-73 — pull-side artist throttle (lever 1), same precedence chain.
+  const similarArtistCap =
+    options.similarArtistCap ?? cfg.similarArtistCap ?? DEFAULT_SIMILAR_ARTIST_CAP;
+  const familiarKeepThreshold =
+    options.familiarArtistKeepThreshold ??
+    cfg.familiarArtistKeepThreshold ??
+    DEFAULT_FAMILIAR_ARTIST_KEEP_THRESHOLD;
   const adapters = options.adapters ?? createDefaultRegistry().available(env);
 
   const perSource: { source: SourceId; pulled: number }[] = [];
@@ -147,10 +166,23 @@ export async function pullAndEnrichTrending(
   // is available (Last.fm-only first cut). Seeds are the centroid-nearest
   // exemplar of each top-N bucket; per-seed `getSimilar` calls are issued
   // sequentially to respect Last.fm rate limits — NEVER Promise.all.
+  // LAB-73 — the per-artist throttle (lever 1) is applied to each seed's
+  // results BEFORE resolution (a dropped candidate never resolves), with the
+  // per-artist counts accumulated ACROSS seeds so two seeds can't smuggle the
+  // same artist past the cap. `similarPulled` still counts what the API
+  // returned (so `pulledCount === sum(perSource.pulled)` holds); the throttle's
+  // effect is reported separately as capped/skipped — no silent truncation.
   let similarPulled = 0;
+  let similarArtistCappedCount = 0;
+  let similarFamiliarSkippedCount = 0;
   const lastfm = adapters.find((a) => a.id === "lastfm");
   if (lastfm) {
     const seeds = await selectBucketSeeds(db, { maxBuckets: seedBuckets });
+    // Keep-counts per artist, loaded once. Skipped entirely when the threshold
+    // is 0 (the skip is disabled) so we don't pay for the query.
+    const keepCounts =
+      familiarKeepThreshold > 0 ? await loadKeepCountsByArtist(db) : new Map<string, number>();
+    const artistRunCounts = new Map<string, number>();
     for (const seed of seeds) {
       const cands = await lastfm.pullCandidates(
         {
@@ -162,7 +194,15 @@ export async function pullAndEnrichTrending(
         env,
       );
       similarPulled += cands.length;
-      for (const c of cands) {
+      const throttled = throttleSimilarByArtist(cands, {
+        cap: similarArtistCap,
+        keepThreshold: familiarKeepThreshold,
+        keepCounts,
+        running: artistRunCounts,
+      });
+      similarArtistCappedCount += throttled.cappedCount;
+      similarFamiliarSkippedCount += throttled.skippedCount;
+      for (const c of throttled.kept) {
         await resolveInto(c);
       }
     }
@@ -195,7 +235,75 @@ export async function pullAndEnrichTrending(
     mbGenresUpdated: mbResult.updated,
     discogsGenresUpdated: discogsResult.updated,
     similarPulledCount: similarPulled,
+    similarArtistCappedCount,
+    similarFamiliarSkippedCount,
   };
+}
+
+/**
+ * LAB-73 — pure per-artist throttle for the similar pull (lever 1). Walks the
+ * candidates a single seed returned and drops two classes BEFORE resolution:
+ *   - `skipped`: the artist already has ≥`keepThreshold` keeps — we know their
+ *     music, so more of it isn't discovery (0 disables this check).
+ *   - `capped`: the artist already reached `cap` kept tracks THIS RUN (the
+ *     `running` map persists across seeds; <= 0 disables the cap).
+ * Candidates without an artist key bypass the throttle (kept). The skip is
+ * checked first so a familiar over-cap artist counts as `skipped`, not
+ * `capped`. Pure given its inputs (the caller owns the DB reads).
+ */
+export function throttleSimilarByArtist(
+  cands: readonly RawCandidate[],
+  opts: {
+    cap: number;
+    keepThreshold: number;
+    keepCounts: ReadonlyMap<string, number>;
+    running: Map<string, number>;
+  },
+): { kept: RawCandidate[]; cappedCount: number; skippedCount: number } {
+  const { cap, keepThreshold, keepCounts, running } = opts;
+  const kept: RawCandidate[] = [];
+  let cappedCount = 0;
+  let skippedCount = 0;
+  for (const c of cands) {
+    const key = artistKey(c.artist);
+    if (key === null) {
+      kept.push(c);
+      continue;
+    }
+    if (keepThreshold > 0 && (keepCounts.get(key) ?? 0) >= keepThreshold) {
+      skippedCount += 1;
+      continue;
+    }
+    const used = running.get(key) ?? 0;
+    if (cap > 0 && used >= cap) {
+      cappedCount += 1;
+      continue;
+    }
+    running.set(key, used + 1);
+    kept.push(c);
+  }
+  return { kept, cappedCount, skippedCount };
+}
+
+/**
+ * LAB-73 — keep-rating count per normalized artist key, for the pull-side
+ * familiar-artist skip. Two raw artist spellings that normalize to the same
+ * key (e.g. "Beatles" / "The Beatles") fold together.
+ */
+async function loadKeepCountsByArtist(db: Database): Promise<Map<string, number>> {
+  const rows = await db
+    .select({ artist: track.artist, n: count() })
+    .from(rating)
+    .innerJoin(track, eq(track.id, rating.trackId))
+    .where(eq(rating.decision, "keep"))
+    .groupBy(track.artist);
+  const out = new Map<string, number>();
+  for (const r of rows) {
+    const key = artistKey(r.artist);
+    if (key === null) continue;
+    out.set(key, (out.get(key) ?? 0) + Number(r.n));
+  }
+  return out;
 }
 
 /**
@@ -207,12 +315,16 @@ async function loadPullThrottle(db: Database): Promise<{
   trendingLimitPerSource?: number;
   similarLimitPerSource?: number;
   similarSeedBuckets?: number;
+  similarArtistCap?: number;
+  familiarArtistKeepThreshold?: number;
 }> {
   const [row] = await db
     .select({
       trendingLimitPerSource: appConfig.trendingLimitPerSource,
       similarLimitPerSource: appConfig.similarLimitPerSource,
       similarSeedBuckets: appConfig.similarSeedBuckets,
+      similarArtistCap: appConfig.similarArtistCap,
+      familiarArtistKeepThreshold: appConfig.familiarArtistKeepThreshold,
     })
     .from(appConfig)
     .limit(1);
@@ -466,6 +578,8 @@ export type SurfaceSummary = {
   excludedDecidedCount: number;
   /** LAB-60 — candidates dropped at the surfacing entry gate: already queued unrated. */
   excludedPendingCount: number;
+  /** LAB-73 — above-bar candidates the per-artist surfacing quota held back (lever 2). */
+  artistQuotaDeferredCount: number;
 };
 
 /**
@@ -492,6 +606,7 @@ export async function surfaceStep(
     effectiveCap: result.effectiveCap,
     excludedDecidedCount: result.excludedDecidedCount,
     excludedPendingCount: result.excludedPendingCount,
+    artistQuotaDeferredCount: result.artistQuotaDeferredCount,
   };
 }
 
@@ -503,6 +618,8 @@ async function loadCandidates(db: Database, trackIds: readonly number[]): Promis
       embedding: track.embedding,
       audioFeatures: track.audioFeatures,
       primaryGenre: track.primaryGenre,
+      // LAB-73 — artist drives the surfacing diversity quota + familiarity penalty.
+      artist: track.artist,
     })
     .from(track)
     .where(inArray(track.id, [...trackIds]));
@@ -514,6 +631,7 @@ async function loadCandidates(db: Database, trackIds: readonly number[]): Promis
       embedding: r.embedding,
       audioFeatures: r.audioFeatures as AudioFeatures | null,
       primaryGenre: r.primaryGenre,
+      artist: r.artist,
     });
   }
   return out;

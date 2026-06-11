@@ -333,6 +333,23 @@ export const appConfig = pgTable(
     trendingLimitPerSource: integer("trending_limit_per_source").notNull().default(3),
     similarLimitPerSource: integer("similar_limit_per_source").notNull().default(3),
     similarSeedBuckets: integer("similar_seed_buckets").notNull().default(5),
+    // LAB-73 — artist-diversity knobs. Last.fm getSimilar is same-artist
+    // biased and refill keep-similarity rewards same-artist tracks, so without
+    // these the queue fills with repeat artists.
+    //   - similarArtistCap: pull-side cap (lever 1) — at most N similar-pulled
+    //     tracks per artist per run (the cap counts PULLS, not unique tracks).
+    //   - familiarArtistKeepThreshold: pull-side skip (lever 1) — skip a
+    //     similar-pulled artist already represented by ≥N keeps ("we know
+    //     their music — not discovery"). 0 disables the skip.
+    //   - surfaceArtistCap: surfacing-side quota (lever 2) — at most N surfaced
+    //     tracks per artist per run; overflow stays enriched-but-unsurfaced
+    //     (defer-not-discard, same as the LAB-53 quality bar). Live config like
+    //     the LAB-51/53 knobs — no model_version bump (eligibility shaping).
+    //   (Lever 3, the novelty-scaled familiarity penalty, needs no column — it
+    //    reuses `novelty` and freezes into the refill model_version.config.)
+    similarArtistCap: integer("similar_artist_cap").notNull().default(2),
+    familiarArtistKeepThreshold: integer("familiar_artist_keep_threshold").notNull().default(3),
+    surfaceArtistCap: integer("surface_artist_cap").notNull().default(1),
     retrainCadence: text("retrain_cadence").notNull().default("daily"),
     spawnThreshold: doublePrecision("spawn_threshold").notNull().default(0.7),
     refillLambda: doublePrecision("refill_lambda").notNull().default(0.3),

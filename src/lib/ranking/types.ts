@@ -20,6 +20,13 @@ export type Candidate = {
   /** Used by the refill winner-eligibility gate and human-readable explanations. */
   primaryGenre?: string | null;
   /**
+   * LAB-73 — the track's artist (`track.artist`). Drives the surfacing
+   * diversity quota (≤1 surfaced per artist/run) and the refill familiarity
+   * penalty. Optional so legacy/synthetic candidates without it bypass both
+   * mechanisms (the quota and penalty no-op on an absent/empty artist).
+   */
+  artist?: string | null;
+  /**
    * Audio features at decision time; persisted into
    * `surface_event.features_at_decision`. LAB-36: also the null-audio damping
    * key for refill scoring — null/absent means the embedding's audio dims are
@@ -58,6 +65,18 @@ export type RefillConfig = {
    * scored with — see {@link refillGenreGate}.
    */
   genreGate?: GenreGate;
+  /**
+   * LAB-73 — soft per-candidate refill-score penalty applied when the
+   * candidate's artist is "familiar" (the user has keep-rated that artist).
+   * This is the EFFECTIVE penalty, already scaled by the novelty knob at
+   * version-mint time (`familiarityPenaltyFromNovelty`), so it is frozen into
+   * the version like {@link audioWeight} — scoring never reads live novelty
+   * and counterfactual replay stays config-deterministic (Constraints #2/#3).
+   * Optional: legacy configs predate it and MUST keep replaying byte-
+   * identically, so absence means 0 (no penalty) — see
+   * {@link refillFamiliarityPenalty}.
+   */
+  familiarityPenalty?: number;
 };
 
 /**
@@ -78,6 +97,40 @@ export function refillAudioWeight(config: RefillConfig): number {
 /** Effective genre gate for a refill config; legacy configs → 'exact' (LAB-45). */
 export function refillGenreGate(config: RefillConfig): GenreGate {
   return config.genreGate ?? "exact";
+}
+
+/** Effective familiarity penalty for a refill config; legacy configs → 0 (no penalty). */
+export function refillFamiliarityPenalty(config: RefillConfig): number {
+  return config.familiarityPenalty ?? 0;
+}
+
+/**
+ * LAB-73 — the per-candidate refill penalty applied to a familiar artist at
+ * novelty = 1.0. The novelty knob (`app_config.novelty`, [0,1]) scales it
+ * down. Default novelty 0.5 ⇒ a 0.1 downweight on a refill score (keepSim ≈
+ * 0.7–0.96): meaningful enough to let a novel-artist candidate outrank a
+ * familiar one when the queue ceiling binds, but soft — it never excludes a
+ * candidate from the pool (Constraint #4). Tunable in code (YAGNI to surface
+ * as its own knob; novelty IS the operator-facing lever, Constraint #6).
+ */
+export const FAMILIARITY_PENALTY_AT_FULL_NOVELTY = 0.2;
+
+/** Novelty-scaled effective familiarity penalty to freeze into a refill version. */
+export function familiarityPenaltyFromNovelty(novelty: number): number {
+  const n = Number.isFinite(novelty) ? Math.min(1, Math.max(0, novelty)) : 0.5;
+  return n * FAMILIARITY_PENALTY_AT_FULL_NOVELTY;
+}
+
+/**
+ * LAB-73 — normalized artist key for the diversity quota + familiarity
+ * penalty. Mirrors the `trackKey` normalization in taste/import.ts
+ * (lowercased, trimmed). Returns null for an absent/blank artist so such
+ * candidates bypass both mechanisms rather than colliding on an empty key.
+ */
+export function artistKey(artist: string | null | undefined): string | null {
+  if (!artist) return null;
+  const key = artist.trim().toLowerCase();
+  return key.length > 0 ? key : null;
 }
 
 /**
@@ -119,6 +172,14 @@ export function isRefillConfig(x: unknown): x is RefillConfig {
   }
   if (c.genreGate !== undefined) {
     if (c.genreGate !== "exact" && c.genreGate !== "slot-overlap") return false;
+  }
+  // LAB-73 — familiarityPenalty optional (legacy configs predate it → 0). When
+  // present it's a score downweight in [0,1]: a negative would UP-weight
+  // familiar artists (the opposite of the intent) and a >1 would dominate the
+  // composite score, so reject both at the trust boundary.
+  if (c.familiarityPenalty !== undefined) {
+    if (!Number.isFinite(c.familiarityPenalty) || c.familiarityPenalty < 0) return false;
+    if (c.familiarityPenalty > 1) return false;
   }
   return true;
 }

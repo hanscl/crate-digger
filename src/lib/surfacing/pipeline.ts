@@ -14,9 +14,11 @@ import { genreScopeCompatible } from "@/lib/bucketing/genre-scope";
 import { scoreBroadBatch } from "@/lib/ranking/broad";
 import { scoreRefillBatch } from "@/lib/ranking/refill";
 import {
+  artistKey,
   type Candidate,
   type RatedTrack,
   type RefillConfig,
+  refillFamiliarityPenalty,
   refillGenreGate,
   type ScoredCandidate,
 } from "@/lib/ranking/types";
@@ -49,17 +51,27 @@ import { logSurfaceEvents } from "./log";
  *      keeps + global dislikes. Every on-genre candidate whose keep-similarity
  *      clears the refill bar (the spawn_threshold family) is a refill winner —
  *      dynamic count, possibly >1/bucket. Highest refill score first; bounded
- *      by `effectiveCap` when the ceiling binds. Each winner is logged with the
- *      FULL candidate pool — Constraint #2.
+ *      by `effectiveCap` when the ceiling binds. The refill score carries the
+ *      LAB-73 familiarity penalty (already-kept artists rank lower). Each
+ *      winner is logged with the FULL candidate pool — Constraint #2.
  *   4. Broad phase. Score remaining candidates with the broad classifier;
  *      every candidate whose P(keep) clears the broad bar (default 0.5) and
  *      isn't already a refill winner fills the remaining ceiling headroom,
  *      source-mix biased. Same pool-logging contract.
  *
+ * LAB-73 — artist-diversity quota (lever 2). After both rankers pick their
+ * above-bar winners, a per-artist cap (`surface_artist_cap`, default 1) is
+ * enforced across the COMBINED surfaced set: at most N tracks per artist per
+ * run reach the queue. Overflow stays enriched-but-unsurfaced — the same
+ * defer-not-discard semantics as the LAB-53 quality bar, and still logged in
+ * every `candidate_pool` (Constraint #2). Eligibility shaping, not a taste
+ * penalty (Constraint #4 untouched); no model_version bump (LAB-60 precedent).
+ *
  * Below-bar candidates are simply NOT surfaced (no `surface_event`). They stay
  * enriched + candidate-flagged (LAB-52); a re-pull dedupes to the existing row
- * and can surface in a future run if it clears the bar then. Novelty no longer
- * splits quotas (LAB-42 will repurpose it to bias the pull mix / bars).
+ * and can surface in a future run if it clears the bar then. Novelty now scales
+ * the refill familiarity penalty (LAB-73, frozen into the refill version) — it
+ * no longer splits quotas (that job was removed in LAB-53).
  *
  * Inputs are explicit: a candidate pool the caller produced (typically by
  * running ingestion). The pipeline does not reach back into ingestion.
@@ -78,6 +90,11 @@ export type SurfacingParams = {
   refillBarOverride?: number;
   /** Broad classifier-probability bar (LAB-53). Falls back to app_config.broad_quality_bar. */
   broadBarOverride?: number;
+  /**
+   * LAB-73 — max surfaced tracks per artist per run (lever 2). Falls back to
+   * app_config.surface_artist_cap (default 1). <= 0 disables the quota.
+   */
+  surfaceArtistCapOverride?: number;
   /** When true, skip writing surface_event rows — useful for previews. Default false. */
   dryRun?: boolean;
 };
@@ -104,6 +121,14 @@ export type SurfacingResult = {
   excludedDecidedCount: number;
   /** LAB-60 — candidates dropped at entry: an unrated surface_event already queues them. */
   excludedPendingCount: number;
+  /**
+   * LAB-73 — above-bar candidates the per-artist surfacing quota (lever 2) held
+   * back this run: repeat-artist material suppressed across refill + broad.
+   * Counted regardless of whether the queue ceiling would also have bound them
+   * (it is the quota's footprint, not a ceiling metric). Constraint #2: these
+   * stay scored in every event's candidate_pool, just not surfaced.
+   */
+  artistQuotaDeferredCount: number;
 };
 
 export async function runSurfacingBatch(
@@ -145,6 +170,8 @@ export async function runSurfacingBatch(
   const queueCeiling = params.queueCeilingOverride ?? cfg.queueCeiling;
   const refillBar = clamp01(params.refillBarOverride ?? cfg.refillBar);
   const broadBar = clamp01(params.broadBarOverride ?? cfg.broadBar);
+  // LAB-73 — per-artist surfacing quota (lever 2). <= 0 disables it.
+  const surfaceArtistCap = params.surfaceArtistCapOverride ?? cfg.surfaceArtistCap;
 
   // LAB-53: the queue ceiling is the ONLY count bound — surfacing fills the
   // unrated queue up to the ceiling and stops. No per-day budget (that
@@ -156,24 +183,42 @@ export async function runSurfacingBatch(
   const refillableBuckets = await loadRefillableBuckets(db);
   const dislikes = await loadGlobalDislikes(db);
 
+  // LAB-73 — familiarity signal (lever 3). Only loaded when the refill version's
+  // frozen penalty is non-zero, so legacy/penalty-0 installs pay no query and
+  // stay byte-identical. Reconstructed the same way at replay time.
+  const familiarArtists =
+    refillFamiliarityPenalty(refillConfig) > 0 ? await loadFamiliarArtists(db) : undefined;
+
   // Refill phase: every on-genre candidate whose keep-similarity clears the
   // refill bar surfaces (dynamic count, possibly >1/bucket), highest refill
-  // score first, bounded by the ceiling headroom.
+  // score first, bounded by the ceiling headroom and the per-artist quota.
   const refillResults = await runRefillPhase(db, {
     candidates,
     refillBar,
     cap: effectiveCap,
+    artistCap: surfaceArtistCap,
     buckets: refillableBuckets,
     dislikes,
+    familiarArtists,
     refillConfig,
     refillVersionId: refillVersion.id,
     dryRun,
   });
 
+  // LAB-73 — seed the cross-phase artist counts from the tracks refill ACTUALLY
+  // surfaced (not the deduped-but-ceiling-cut ones), so broad can't push an
+  // artist over the run-wide cap and a refill candidate that never surfaced
+  // doesn't block a broad one.
+  const artistCounts = new Map<string, number>();
+  for (const s of refillResults.surfaced) {
+    const key = artistKey(s.candidate.artist);
+    if (key !== null) artistCounts.set(key, (artistCounts.get(key) ?? 0) + 1);
+  }
+
   // Broad phase scores ALL candidates (Constraint #4 — refill-rejected
   // candidates stay in the pool with their broad score). Every candidate that
   // clears the broad bar and isn't already a refill winner fills the remaining
-  // ceiling headroom, source-mix biased.
+  // ceiling headroom, source-mix biased — after the per-artist quota dedups it.
   const remainingHeadroom = Math.max(0, effectiveCap - refillResults.surfaced.length);
   const broadPool = scoreBroadBatch(candidates, broadConfig);
   const alreadySurfacedIds = new Set(refillResults.surfaced.map((s) => s.candidate.trackId));
@@ -181,7 +226,17 @@ export async function runSurfacingBatch(
     .filter((s) => !alreadySurfacedIds.has(s.candidate.trackId) && s.score >= broadBar)
     .sort((a, b) => b.score - a.score || a.candidate.trackId - b.candidate.trackId);
 
-  const broadWinners = pickWithSourceMix(broadEligible, remainingHeadroom, cfg.sourceMix);
+  // Dedupe to the per-artist cap (sharing `artistCounts` with refill) BEFORE
+  // source-mix selection, so the cap holds across the COMBINED surfaced set and
+  // source-mix can't reintroduce a same-artist track. Deferred = above-bar
+  // broad candidates the quota suppressed.
+  const { kept: broadArtistEligible, deferred: broadArtistDeferred } = dedupeByArtist(
+    broadEligible,
+    (s) => s.candidate.artist,
+    artistCounts,
+    surfaceArtistCap,
+  );
+  const broadWinners = pickWithSourceMix(broadArtistEligible, remainingHeadroom, cfg.sourceMix);
 
   let broadEvents: SurfaceEvent[] = [];
   if (broadWinners.length > 0 && !dryRun) {
@@ -209,6 +264,7 @@ export async function runSurfacingBatch(
     refilledBucketIds: refillResults.refilledBucketIds,
     excludedDecidedCount,
     excludedPendingCount,
+    artistQuotaDeferredCount: refillResults.artistQuotaDeferred + broadArtistDeferred,
   };
 }
 
@@ -222,6 +278,8 @@ type RefillPhaseInput = {
   candidates: readonly Candidate[];
   refillBar: number;
   cap: number;
+  /** LAB-73 — max refill winners per artist (lever 2). <= 0 disables the quota. */
+  artistCap: number;
   buckets: {
     id: number;
     primaryGenre: string | null;
@@ -229,6 +287,8 @@ type RefillPhaseInput = {
     memberTrackIds: readonly number[];
   }[];
   dislikes: readonly RatedTrack[];
+  /** LAB-73 — normalized artist keys whose tracks get the refill familiarity penalty (lever 3). */
+  familiarArtists?: ReadonlySet<string>;
   refillConfig: RefillConfig;
   refillVersionId: number;
   dryRun: boolean;
@@ -240,18 +300,30 @@ type RefillPhaseResult = {
   refilledBucketIds: number[];
   /** Pool from the LAST refill iteration — useful for callers/tests inspecting the most recent run. */
   lastPool: ScoredCandidate[];
+  /** LAB-73 — above-bar refill winners the per-artist quota suppressed this run. */
+  artistQuotaDeferred: number;
 };
 
 async function runRefillPhase(db: Database, input: RefillPhaseInput): Promise<RefillPhaseResult> {
-  const { candidates, refillBar, cap, buckets, dislikes, refillConfig, refillVersionId, dryRun } =
-    input;
+  const {
+    candidates,
+    refillBar,
+    cap,
+    artistCap,
+    buckets,
+    dislikes,
+    familiarArtists,
+    refillConfig,
+    refillVersionId,
+    dryRun,
+  } = input;
   const surfaced: ScoredCandidate[] = [];
   const events: SurfaceEvent[] = [];
   const refilledBucketIds: number[] = [];
   let lastPool: ScoredCandidate[] = [];
 
   if (cap <= 0 || buckets.length === 0 || candidates.length === 0) {
-    return { surfaced, events, refilledBucketIds, lastPool };
+    return { surfaced, events, refilledBucketIds, lastPool, artistQuotaDeferred: 0 };
   }
 
   // Score every candidate against every refillable bucket. A candidate is a
@@ -270,7 +342,13 @@ async function runRefillPhase(db: Database, input: RefillPhaseInput): Promise<Re
   for (const targetBucket of buckets) {
     const keepEmbeddings = await loadKeepEmbeddingsForBucket(db, targetBucket.memberTrackIds);
     if (keepEmbeddings.length === 0) continue;
-    const pool = scoreRefillBatch(candidates, keepEmbeddings, dislikes, refillConfig);
+    const pool = scoreRefillBatch(
+      candidates,
+      keepEmbeddings,
+      dislikes,
+      refillConfig,
+      familiarArtists,
+    );
     poolByBucket.set(targetBucket.id, pool);
     lastPool = pool;
     for (const s of pool) {
@@ -292,13 +370,24 @@ async function runRefillPhase(db: Database, input: RefillPhaseInput): Promise<Re
     }
   }
 
-  // Highest refill score first; the queue ceiling is the only count bound, so
-  // ordering only matters when `cap` binds.
+  // Highest refill score first (the familiarity penalty already pushed
+  // already-kept artists down). The queue ceiling and the per-artist quota are
+  // the count bounds, so ordering matters when either binds.
   const ranked = [...bestByTrack.values()].sort(
     (a, b) =>
       b.scored.score - a.scored.score || a.scored.candidate.trackId - b.scored.candidate.trackId,
   );
-  const chosen = ranked.slice(0, cap);
+  // LAB-73 — apply the per-artist quota BEFORE the ceiling slice so distinct
+  // artists backfill the cap (a local counts map; the caller re-derives the
+  // cross-phase counts from the tracks actually surfaced). `artistQuotaDeferred`
+  // counts every above-bar refill candidate the quota held back.
+  const { kept: dedupedRanked, deferred: artistQuotaDeferred } = dedupeByArtist(
+    ranked,
+    (hit) => hit.scored.candidate.artist,
+    new Map<string, number>(),
+    artistCap,
+  );
+  const chosen = dedupedRanked.slice(0, cap);
 
   // Group winners by bucket so each surface_event carries that bucket's FULL
   // candidate pool (Constraint #2). `logSurfaceEvents` writes one row per
@@ -327,7 +416,41 @@ async function runRefillPhase(db: Database, input: RefillPhaseInput): Promise<Re
     }
   }
 
-  return { surfaced, events, refilledBucketIds, lastPool };
+  return { surfaced, events, refilledBucketIds, lastPool, artistQuotaDeferred };
+}
+
+/**
+ * LAB-73 — per-artist quota dedup (lever 2). Walks `items` in priority order
+ * (caller pre-sorts by score) and keeps at most `cap` per normalized artist
+ * key, mutating the shared `counts` map so the cap holds across phases
+ * (refill → broad). Items with no artist key bypass the quota entirely (legacy
+ * candidates without `artist`), and `cap <= 0` disables it. `deferred` counts
+ * the items the quota dropped — the run's repeat-artist suppression footprint
+ * (ceiling-independent; the caller separately bounds surfacing by the ceiling).
+ */
+function dedupeByArtist<T>(
+  items: readonly T[],
+  artistOf: (item: T) => string | null | undefined,
+  counts: Map<string, number>,
+  cap: number,
+): { kept: T[]; deferred: number } {
+  const kept: T[] = [];
+  let deferred = 0;
+  for (const item of items) {
+    const key = artistKey(artistOf(item));
+    if (key === null || cap <= 0) {
+      kept.push(item);
+      continue;
+    }
+    const used = counts.get(key) ?? 0;
+    if (used >= cap) {
+      deferred += 1;
+      continue;
+    }
+    counts.set(key, used + 1);
+    kept.push(item);
+  }
+  return { kept, deferred };
 }
 
 /**
@@ -390,6 +513,7 @@ type AppConfigSnapshot = {
   queueCeiling: number;
   refillBar: number;
   broadBar: number;
+  surfaceArtistCap: number;
 };
 
 async function loadAppConfig(db: Database): Promise<AppConfigSnapshot> {
@@ -400,6 +524,7 @@ async function loadAppConfig(db: Database): Promise<AppConfigSnapshot> {
       queueCeiling: appConfig.queueCeiling,
       refillBar: appConfig.refillQualityBar,
       broadBar: appConfig.broadQualityBar,
+      surfaceArtistCap: appConfig.surfaceArtistCap,
     })
     .from(appConfig)
     .limit(1);
@@ -409,7 +534,43 @@ async function loadAppConfig(db: Database): Promise<AppConfigSnapshot> {
     queueCeiling: row?.queueCeiling ?? 50,
     refillBar: row?.refillBar ?? 0.7,
     broadBar: row?.broadBar ?? 0.5,
+    surfaceArtistCap: row?.surfaceArtistCap ?? 1,
   };
+}
+
+/**
+ * LAB-73 — the "familiar artist" set for the refill familiarity penalty
+ * (lever 3): every artist the user has keep-rated (all-time) — the "we already
+ * know their music, so more of it isn't discovery" signal. Keys are normalized
+ * with `artistKey`.
+ *
+ * Keeps-ONLY by design. The "recently surfaced artist" signal the ticket also
+ * mentions is deliberately left out HERE because this set feeds the VERSIONED,
+ * replayed refill ranker: counterfactual replay must rebuild it the same way,
+ * and the keep set is current state (the same accepted drift as the dislike
+ * set) with no self-reference. A surface-event window would make an artist
+ * "familiar" only via the very run/event being scored — penalized at replay
+ * (the events exist) but NOT at live-score time (the set is loaded before this
+ * run writes its events), silently depressing `agreementRate`. Cross-run
+ * surfaced-repetition is instead handled deterministically and outside the
+ * replayed ranker: the pull-side cap + familiar-keep skip (lever 1), the
+ * per-run surfacing quota (lever 2), and the LAB-60 no-re-surface gate.
+ *
+ * Exported so `counterfactualReplay` reconstructs the EXACT same set (live and
+ * replayed refill scores must agree given the same config — Constraint #2/#3).
+ */
+export async function loadFamiliarArtists(db: Database): Promise<Set<string>> {
+  const keepRows = await db
+    .selectDistinct({ artist: track.artist })
+    .from(rating)
+    .innerJoin(track, eq(track.id, rating.trackId))
+    .where(eq(rating.decision, "keep"));
+  const out = new Set<string>();
+  for (const r of keepRows) {
+    const key = artistKey(r.artist);
+    if (key !== null) out.add(key);
+  }
+  return out;
 }
 
 /**

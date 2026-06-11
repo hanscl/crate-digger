@@ -129,6 +129,37 @@ describe("params.update — audioWeight (LAB-36)", () => {
     expect(reconciled.refillConfigUpgraded).toBe(true);
     const upgraded = await getActiveModelVersion(db, "refill");
     expect(upgraded?.parentId).toBe(active?.id);
-    expect(upgraded?.config).toEqual({ lambda: 0.3, audioWeight: 3, genreGate: "slot-overlap" });
+    expect(upgraded?.config).toEqual({
+      lambda: 0.3,
+      audioWeight: 3,
+      genreGate: "slot-overlap",
+      familiarityPenalty: 0.1,
+    });
+  });
+});
+
+describe("params.update — novelty (LAB-73)", () => {
+  it("a changed novelty bumps the refill version once, freezing the scaled familiarity penalty", async () => {
+    const v1 = await ensureActiveModelVersion(db, "refill"); // novelty 0.5 → penalty 0.1
+    const result = await caller().update({ novelty: 1 });
+    expect(result.bumped).toBe(true);
+
+    const [cfg] = await db.select().from(schema.appConfig).limit(1);
+    expect(cfg?.novelty).toBe(1);
+
+    const active = await getActiveModelVersion(db, "refill");
+    expect(active?.id).toBe(result.refillVersionId);
+    expect(active?.parentId).toBe(v1.id);
+    // familiarityPenaltyFromNovelty(1) = 1 × 0.2, frozen into the new version.
+    expect(active?.config).toMatchObject({ familiarityPenalty: 0.2 });
+    expect(active?.note).toContain("novelty update: 0.5 → 1");
+  });
+
+  it("a same-value novelty write does not bump", async () => {
+    await ensureActiveModelVersion(db, "refill");
+    const result = await caller().update({ novelty: 0.5 }); // column default
+    expect(result.bumped).toBe(false);
+    const versions = await db.select().from(schema.modelVersion);
+    expect(versions.filter((v) => v.kind === "refill")).toHaveLength(1);
   });
 });

@@ -395,7 +395,7 @@ describe("reconcileBuckets — LAB-61 post-migration sweep", () => {
   });
 });
 
-describe("reconcileBuckets — LAB-36 refill config upgrade step", () => {
+describe("reconcileBuckets — LAB-36/73 refill config upgrade step", () => {
   it("upgrades a legacy {lambda}-only active config exactly once; re-run is a no-op", async () => {
     // Pre-LAB-36 install: the active refill version has no audioWeight. The
     // app_config knob (here deliberately non-default) supplies the value.
@@ -410,9 +410,14 @@ describe("reconcileBuckets — LAB-36 refill config upgrade step", () => {
     const active = await getActiveModelVersion(db, "refill");
     expect(active?.id).not.toBe(legacy.id);
     expect(active?.parentId).toBe(legacy.id);
-    expect(active?.config).toEqual({ lambda: 0.42, audioWeight: 3, genreGate: "slot-overlap" });
+    expect(active?.config).toEqual({
+      lambda: 0.42,
+      audioWeight: 3,
+      genreGate: "slot-overlap",
+      familiarityPenalty: 0.1,
+    });
     expect(active?.note).toBe(
-      "LAB-36: cross-lane membership — slot-overlap gate + audio-weighted cosine",
+      "refill config upgrade: slot-overlap gate + audio-weighted cosine + familiarity penalty",
     );
 
     const second = await reconcileBuckets(db);
@@ -445,7 +450,12 @@ describe("reconcileBuckets — LAB-36 refill config upgrade step", () => {
     expect(result.refillConfigUpgraded).toBe(true);
     const active = await getActiveModelVersion(db, "refill");
     expect(active?.parentId).toBe(gateless.id);
-    expect(active?.config).toEqual({ lambda: 0.3, audioWeight: 4, genreGate: "slot-overlap" });
+    expect(active?.config).toEqual({
+      lambda: 0.3,
+      audioWeight: 4,
+      genreGate: "slot-overlap",
+      familiarityPenalty: 0.1,
+    });
 
     const second = await reconcileBuckets(db);
     expect(second.refillConfigUpgraded).toBe(false);
@@ -488,9 +498,14 @@ describe("reconcileBuckets — LAB-36 refill config upgrade step", () => {
     // legacy-shaped) → LAB-36 upgrade (new fields added). Separate rows,
     // separate notes.
     const active = await getActiveModelVersion(db, "refill");
-    expect(active?.config).toEqual({ lambda: 0.3, audioWeight: 2.5, genreGate: "slot-overlap" });
+    expect(active?.config).toEqual({
+      lambda: 0.3,
+      audioWeight: 2.5,
+      genreGate: "slot-overlap",
+      familiarityPenalty: 0.1,
+    });
     expect(active?.note).toBe(
-      "LAB-36: cross-lane membership — slot-overlap gate + audio-weighted cosine",
+      "refill config upgrade: slot-overlap gate + audio-weighted cosine + familiarity penalty",
     );
     const [repairBump] = await db
       .select()
@@ -499,5 +514,32 @@ describe("reconcileBuckets — LAB-36 refill config upgrade step", () => {
     expect(repairBump?.config).toEqual({ lambda: 0.3 });
     expect(repairBump?.note).toContain("bucket reconcile: membership repair");
     expect(repairBump?.parentId).toBe(legacy.id);
+  });
+
+  it("LAB-73 — backfills familiarityPenalty on a post-LAB-36 config that lacks only it", async () => {
+    // A config that already carries audioWeight + genreGate (post-LAB-36) but
+    // predates LAB-73 must still get the novelty-scaled familiarity penalty
+    // installed — keyed on the missing field, exactly once.
+    const preLab73 = await bumpModelVersion(
+      db,
+      "refill",
+      { lambda: 0.3, audioWeight: 2.5, genreGate: "slot-overlap" },
+      { note: "pre-LAB-73" },
+    );
+    await db.update(schema.appConfig).set({ novelty: 0.5 });
+
+    const result = await reconcileBuckets(db);
+    expect(result.refillConfigUpgraded).toBe(true);
+    const active = await getActiveModelVersion(db, "refill");
+    expect(active?.parentId).toBe(preLab73.id);
+    expect(active?.config).toEqual({
+      lambda: 0.3,
+      audioWeight: 2.5,
+      genreGate: "slot-overlap",
+      familiarityPenalty: 0.1, // novelty 0.5 × 0.2
+    });
+
+    const second = await reconcileBuckets(db);
+    expect(second.refillConfigUpgraded).toBe(false);
   });
 });

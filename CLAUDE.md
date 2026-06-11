@@ -39,9 +39,15 @@ current state.** Then proceed.
    ranker's quality bar (refill = keep-similarity; broad = classifier P(keep)), bounded only by the
    queue ceiling (`max(0, queueCeiling − unrated)`). Below-bar tracks stay enriched but unsurfaced.
    The per-run pull size (LAB-51) is the throttle. Keep/dislike-decided and pending-unrated tracks
-   are excluded at surfacing entry (amended LAB-60); defer re-surfaces.
-6. **Novelty knob = ranking parameter.** Affects explore/exploit weight (broad) and bucket-spawn
-   aggressiveness (refill).
+   are excluded at surfacing entry (amended LAB-60); defer re-surfaces. **Artist diversity**
+   (amended LAB-73): the similar pull is capped per-artist and skips artists with ≥N keeps, and
+   surfacing emits at most N tracks per artist per run — overflow stays enriched-but-unsurfaced
+   (defer-not-discard, like below-bar tracks; full pool still logged per Constraint #2).
+6. **Novelty knob = ranking parameter** (amended LAB-73). It scales the refill artist-familiarity
+   penalty (higher novelty ⇒ already-kept artists are downweighted harder) and is therefore
+   version-frozen: changing it bumps the refill `model_version` (Constraint #3), and ratings tag
+   the new version. Its originally-spec'd effects — explore/exploit weight (broad) and bucket-spawn
+   aggressiveness (refill) — remain future work.
 7. **Admin dashboard is read-mostly + parameter tweaks.** Writes limited to config, manual
    retrain triggers, merge/split confirmations.
 8. **Taste profile portable.** Ratings + buckets exportable/importable as JSON.

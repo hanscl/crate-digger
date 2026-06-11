@@ -55,6 +55,10 @@ async function startRun(deps: { db: Database; env: Env }): Promise<DailyPipeline
     effectiveCap: output?.effectiveCap,
     excludedDecidedCount: output?.excludedDecidedCount,
     excludedPendingCount: output?.excludedPendingCount,
+    // LAB-73 — artist-diversity footprint (no silent truncation).
+    similarArtistCappedCount: output?.similarArtistCappedCount,
+    similarFamiliarSkippedCount: output?.similarFamiliarSkippedCount,
+    artistQuotaDeferredCount: output?.artistQuotaDeferredCount,
   });
   return { status: result.status, output };
 }

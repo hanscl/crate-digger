@@ -3,7 +3,10 @@ import type { AudioFeatures } from "@/db/schema";
 import { AUDIO_FEATURE_DIM, buildEmbedding, cosine, weightedCosine } from "@/lib/embedding";
 import { scoreRefill, scoreRefillBatch } from "@/lib/ranking/refill";
 import {
+  artistKey,
   type Candidate,
+  FAMILIARITY_PENALTY_AT_FULL_NOVELTY,
+  familiarityPenaltyFromNovelty,
   isRefillConfig,
   type RatedTrack,
   type RefillConfig,
@@ -146,6 +149,84 @@ describe("scoreRefill — audio-weighted metric (LAB-36)", () => {
   });
 });
 
+describe("scoreRefill — artist familiarity penalty (LAB-73)", () => {
+  // keep == candidate → keepSim = 1, no dislikes → base score 1. The penalty
+  // (if any) subtracts off that clean baseline so the delta is exact.
+  const cand = (artist: string | null | undefined): Candidate => ({
+    trackId: 1,
+    embedding: emb(1, 0, 0, 0),
+    artist,
+  });
+  const keeps = [rated(2, emb(1, 0, 0, 0))];
+  const penaltyConfig: RefillConfig = { lambda: 0.5, familiarityPenalty: 0.2 };
+  const familiar = new Set(["the killers"]);
+
+  it("subtracts the penalty when the candidate's artist is familiar", () => {
+    const r = scoreRefill(cand("The Killers"), keeps, [], penaltyConfig, familiar);
+    expect(r.subScores.keepSim).toBeCloseTo(1, 12);
+    expect(r.subScores.familiarityPenalty).toBe(0.2);
+    expect(r.score).toBeCloseTo(0.8, 12); // 1 − 0.2
+  });
+
+  it("normalizes the artist key (case / whitespace insensitive) before matching", () => {
+    const r = scoreRefill(cand("  the KILLERS "), keeps, [], penaltyConfig, familiar);
+    expect(r.subScores.familiarityPenalty).toBe(0.2);
+  });
+
+  it("does NOT penalize an unfamiliar artist", () => {
+    const r = scoreRefill(cand("Some New Band"), keeps, [], penaltyConfig, familiar);
+    expect(r.subScores.familiarityPenalty).toBe(0);
+    expect(r.score).toBeCloseTo(1, 12);
+  });
+
+  it("does NOT penalize a candidate with no artist (legacy candidates bypass the penalty)", () => {
+    const r1 = scoreRefill(cand(null), keeps, [], penaltyConfig, familiar);
+    const r2 = scoreRefill(cand(undefined), keeps, [], penaltyConfig, familiar);
+    expect(r1.subScores.familiarityPenalty).toBe(0);
+    expect(r2.subScores.familiarityPenalty).toBe(0);
+  });
+
+  it("no familiar set provided → no penalty even for a penalty config", () => {
+    const r = scoreRefill(cand("The Killers"), keeps, [], penaltyConfig);
+    expect(r.subScores.familiarityPenalty).toBe(0);
+    expect(r.score).toBeCloseTo(1, 12);
+  });
+
+  it("byte-identical to the legacy score when the config has no familiarityPenalty", () => {
+    // toBe (not toBeCloseTo): an absent penalty must reduce to `score − 0`,
+    // which is bit-exact in IEEE 754 — pre-LAB-73 versions replay unchanged
+    // even when a familiar set is passed.
+    const legacy = scoreRefill(cand("The Killers"), keeps, [], { lambda: 0.5 }, familiar);
+    const baseline = scoreRefill(cand("The Killers"), keeps, [], { lambda: 0.5 });
+    expect(legacy.score).toBe(baseline.score);
+    expect(legacy.subScores.familiarityPenalty).toBe(0);
+  });
+
+  it("familiarityPenaltyFromNovelty scales linearly and clamps to [0,1]", () => {
+    expect(familiarityPenaltyFromNovelty(0)).toBe(0);
+    expect(familiarityPenaltyFromNovelty(1)).toBe(FAMILIARITY_PENALTY_AT_FULL_NOVELTY);
+    expect(familiarityPenaltyFromNovelty(0.5)).toBeCloseTo(
+      FAMILIARITY_PENALTY_AT_FULL_NOVELTY / 2,
+      12,
+    );
+    // Out-of-range / non-finite novelty is clamped, never NaN.
+    expect(familiarityPenaltyFromNovelty(2)).toBe(FAMILIARITY_PENALTY_AT_FULL_NOVELTY);
+    expect(familiarityPenaltyFromNovelty(-1)).toBe(0);
+    expect(familiarityPenaltyFromNovelty(Number.NaN)).toBeCloseTo(
+      FAMILIARITY_PENALTY_AT_FULL_NOVELTY / 2,
+      12,
+    );
+  });
+
+  it("artistKey normalizes and rejects blanks", () => {
+    expect(artistKey("  The Killers ")).toBe("the killers");
+    expect(artistKey("")).toBeNull();
+    expect(artistKey("   ")).toBeNull();
+    expect(artistKey(null)).toBeNull();
+    expect(artistKey(undefined)).toBeNull();
+  });
+});
+
 describe("isRefillConfig — trust-boundary guard (LAB-36 fields)", () => {
   it("accepts a legacy {lambda}-only config (pre-LAB-36 versions stay valid)", () => {
     expect(isRefillConfig({ lambda: 0.3 })).toBe(true);
@@ -165,6 +246,15 @@ describe("isRefillConfig — trust-boundary guard (LAB-36 fields)", () => {
 
   it("rejects unknown genreGate strings", () => {
     expect(isRefillConfig({ lambda: 0.3, genreGate: "fuzzy" })).toBe(false);
+  });
+
+  it("accepts a valid familiarityPenalty in [0,1] and rejects out-of-range / non-finite (LAB-73)", () => {
+    expect(isRefillConfig({ lambda: 0.3, familiarityPenalty: 0 })).toBe(true);
+    expect(isRefillConfig({ lambda: 0.3, familiarityPenalty: 0.1 })).toBe(true);
+    expect(isRefillConfig({ lambda: 0.3, familiarityPenalty: 1 })).toBe(true);
+    expect(isRefillConfig({ lambda: 0.3, familiarityPenalty: -0.1 })).toBe(false);
+    expect(isRefillConfig({ lambda: 0.3, familiarityPenalty: 1.5 })).toBe(false);
+    expect(isRefillConfig({ lambda: 0.3, familiarityPenalty: Number.NaN })).toBe(false);
   });
 
   it("still rejects a non-finite lambda", () => {
