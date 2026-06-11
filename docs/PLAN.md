@@ -308,7 +308,8 @@ export const mastra = new Mastra({
 Each phase ships as its own feature branch + PR. Workflow per phase:
 
 1. `git checkout main && git pull`
-2. `git checkout -b phase-N-<slug>` (e.g. `phase-2-ingestion`)
+2. `git checkout -b <linear-branch-name>` — the issue's Linear `gitBranchName` (e.g. `lab-47-…`),
+   never an invented name (see CLAUDE.md → "Tracking").
 3. Implement scope below; CI on every push runs `pnpm check && pnpm typecheck && pnpm test`.
 4. `gh pr create` against `main` with the phase brief in the body (copied from this plan, plus
    any deviations decided mid-phase).
@@ -316,8 +317,9 @@ Each phase ships as its own feature branch + PR. Workflow per phase:
    clean.
 6. Squash-merge to main. **No phase merges itself.** No phase starts before the previous PR is
    merged.
-7. Update `docs/PROGRESS.md` (see Context management) — tick the phase, note any plan
-   amendments, link the merged PR.
+7. Update the issue in Linear (via the `linear-crosby33` skill) — status, decisions, any plan
+   amendments, and the merged-PR link. Linear is the source of record; there is no in-repo
+   progress log.
 
 Phase scopes:
 
@@ -344,26 +346,26 @@ Goal: keep the assistant's context small per phase but never lose the plan's int
 
 - **`docs/PLAN.md`** lands in Phase 1 — it IS this file, copied into the repo. Canonical reference.
   Updated only when scope changes (in a PR, with reasoning).
-- **`docs/PROGRESS.md`** is the phase tracker — a checklist with one entry per phase: status,
-  PR link, completion date, any plan-amending notes the assistant should know in future phases.
-  Lands in Phase 1, updated at the end of every phase.
-- **`CLAUDE.md`** at repo root contains a 30-line summary of the stack + non-negotiable
-  constraints (Source-adapter interface, surface-event candidate-pool, model-version bumps, soft
-  dislikes, Postgres-via-single-env-var, etc.). Auto-loaded by Claude Code in every session, so a
-  fresh window starts pre-anchored. Lands in Phase 1.
+- **Linear** (team Product Lab, project Crate Digger) is the live tracker and **source of record** —
+  one issue per phase/task carrying status, decisions, the PR link, and any notes future sessions
+  need. Access it only through the `linear-crosby33` skill. (`docs/PROGRESS.md` was the original
+  in-repo tracker; it is **retired** — frozen for history, not updated. See its banner.)
+- **`CLAUDE.md`** at repo root contains a summary of the stack + non-negotiable constraints +
+  the tracking conventions. Auto-loaded by Claude Code in every session, so a fresh window starts
+  pre-anchored. Lands in Phase 1.
 
 Per-phase session protocol:
 
 1. After each merged PR: `/clear` the conversation. Discard prior phase context entirely.
 2. Open a fresh session in the repo. CLAUDE.md auto-loads.
-3. First message: "Implement Phase N from `docs/PLAN.md`. Read `docs/PROGRESS.md` for state."
-   The assistant reads those two files plus any phase-relevant code from prior phases and starts
-   work. Nothing else is needed in context.
+3. First message: "Implement <LAB-NN> from `docs/PLAN.md`; check Linear for state." The assistant
+   reads PLAN.md + CLAUDE.md, pulls the issue + project state from Linear (via the
+   `linear-crosby33` skill), reads phase-relevant code, and starts work.
 4. If mid-phase the conversation grows large, use `/compact` rather than `/clear` (preserves
    working state).
 
-This keeps every phase's context bounded by `PLAN.md` (~600 lines) + `PROGRESS.md` (small) +
-the actual code being touched. The plan stays authoritative; conversation history is disposable.
+This keeps every phase's context bounded by `PLAN.md` + `CLAUDE.md` + the Linear issue + the
+actual code being touched. The plan stays authoritative; conversation history is disposable.
 
 ## Critical files to land
 
