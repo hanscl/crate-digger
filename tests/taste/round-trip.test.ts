@@ -115,9 +115,9 @@ describe("taste profile export/import (Constraint #8)", () => {
       genres: ["jazz"],
     });
 
-    await assignTrack(db, a, { spawnThreshold: 0.7 });
-    await assignTrack(db, b, { spawnThreshold: 0.7 });
-    await assignTrack(db, c, { spawnThreshold: 0.7 });
+    await assignTrack(db, a, { origin: "seed_track", spawnThreshold: 0.7 });
+    await assignTrack(db, b, { origin: "seed_track", spawnThreshold: 0.7 });
+    await assignTrack(db, c, { origin: "seed_track", spawnThreshold: 0.7 });
 
     // Rename the indie-rock bucket so the export carries non-default name/color.
     const bucketsBefore = await db.select().from(schema.bucket).orderBy(schema.bucket.id);
@@ -254,5 +254,135 @@ describe("taste profile export/import (Constraint #8)", () => {
     expect(cfg?.queueCeiling).toBe(42); // provided field applied
     expect(cfg?.refillQualityBar).toBe(0.7); // DB default
     expect(cfg?.broadQualityBar).toBe(0.5); // DB default
+    // Pre-LAB-36 exports also lack audioWeight — same fallback rule.
+    expect(cfg?.audioWeight).toBe(2.5); // DB default
+  });
+
+  it("round-trips audioWeight in the config block (LAB-36)", async () => {
+    await db.insert(schema.appConfig).values({ id: 1, audioWeight: 3.5 });
+    const exportPayload = await exportTaste(db);
+    expect(exportPayload.config?.audioWeight).toBe(3.5);
+
+    const wire = JSON.parse(JSON.stringify(exportPayload));
+    await wipe();
+    await importTaste(db, wire);
+
+    const [cfg] = await db.select().from(schema.appConfig).limit(1);
+    expect(cfg?.audioWeight).toBe(3.5);
+  });
+});
+
+describe("taste profile — LAB-61 membership origin round-trip", () => {
+  it("origin survives export → wipe → import", async () => {
+    // One playlist-seeded member plus one discovery keep (the keep joins the
+    // seed's bucket through the ingestRating approval path).
+    const seed = await insertTrack({
+      title: "Playlist seed",
+      artist: "Artist A",
+      isrc: "USABC0000001",
+      audioFeatures: audio({ tempo: 130 }),
+      genres: ["rock"],
+    });
+    await assignTrack(db, seed, {
+      origin: "seed_playlist",
+      spawnThreshold: 0.7,
+      coldStartSeed: true,
+    });
+    const found = await insertTrack({
+      title: "Discovery keep",
+      artist: "Artist B",
+      isrc: "USABC0000002",
+      audioFeatures: audio({ tempo: 131 }),
+      genres: ["rock"],
+    });
+    await ingestRating(db, { trackId: found, decision: "keep" });
+
+    const exportPayload = await exportTaste(db);
+    const members = exportPayload.buckets.flatMap((b) => b.members);
+    expect(members.find((m) => m.isrc === "USABC0000001")?.origin).toBe("seed_playlist");
+    expect(members.find((m) => m.isrc === "USABC0000002")?.origin).toBe("discovery_keep");
+
+    const wire = JSON.parse(JSON.stringify(exportPayload));
+    await wipe();
+    await importTaste(db, wire);
+
+    const reMembers = await db
+      .select({ isrc: schema.track.isrc, origin: schema.bucketMember.origin })
+      .from(schema.bucketMember)
+      .innerJoin(schema.track, sql`${schema.track.id} = ${schema.bucketMember.trackId}`);
+    expect(reMembers).toHaveLength(2);
+    const byIsrc = new Map(reMembers.map((m) => [m.isrc, m.origin]));
+    expect(byIsrc.get("USABC0000001")).toBe("seed_playlist");
+    expect(byIsrc.get("USABC0000002")).toBe("discovery_keep");
+  });
+
+  it("imports a pre-LAB-61 export without member origins via the keep-inference fallback", async () => {
+    // Backward-compat (LAB-61): members lacking `origin` follow the full
+    // 0010 backfill mapping — 'discovery_keep' when the SAME export carries
+    // a keep rating for the track, SKIPPED when the track is rated but never
+    // kept (legacy eager-join cruft; importing it as a seed would re-anchor
+    // refill on a disliked track), else the generic 'seed_track'. Ratings
+    // import regardless of membership.
+    const kept = {
+      isrc: "USABC2222222",
+      spotifyId: null,
+      title: "Kept legacy member",
+      artist: "Artist",
+      album: null,
+      genres: ["rock"],
+    };
+    const unrated = {
+      isrc: "USABC3333333",
+      spotifyId: null,
+      title: "Unrated legacy member",
+      artist: "Artist",
+      album: null,
+      genres: ["rock"],
+    };
+    const disliked = {
+      isrc: "USABC4444444",
+      spotifyId: null,
+      title: "Disliked legacy member",
+      artist: "Artist",
+      album: null,
+      genres: ["rock"],
+    };
+    const payload = {
+      version: 1 as const,
+      exportedAt: new Date().toISOString(),
+      buckets: [
+        {
+          name: "Legacy bucket",
+          color: null,
+          primaryGenre: "rock",
+          isColdStartSeed: false,
+          members: [kept, unrated, disliked], // no `origin` on any — pre-LAB-61 shape
+        },
+      ],
+      ratings: [
+        { decision: "keep" as const, ratedAt: new Date().toISOString(), track: kept },
+        { decision: "dislike" as const, ratedAt: new Date().toISOString(), track: disliked },
+      ],
+    };
+    const result = await importTaste(db, payload);
+    expect(result.membersAdded).toBe(2);
+    expect(result.ratingsInserted).toBe(2);
+
+    const reMembers = await db
+      .select({ isrc: schema.track.isrc, origin: schema.bucketMember.origin })
+      .from(schema.bucketMember)
+      .innerJoin(schema.track, sql`${schema.track.id} = ${schema.bucketMember.trackId}`);
+    expect(reMembers).toHaveLength(2);
+    const byIsrc = new Map(reMembers.map((m) => [m.isrc, m.origin]));
+    expect(byIsrc.get("USABC2222222")).toBe("discovery_keep");
+    expect(byIsrc.get("USABC3333333")).toBe("seed_track");
+    expect(byIsrc.has("USABC4444444")).toBe(false);
+
+    // The skipped membership never folds into the bucket's derived state…
+    const [legacyBucket] = await db.select().from(schema.bucket);
+    expect(legacyBucket?.memberCount).toBe(2);
+    // …but the dislike rating itself imports (eval substrate stays complete).
+    const reRatings = await db.select().from(schema.rating);
+    expect(reRatings.map((r) => r.decision).sort()).toEqual(["dislike", "keep"]);
   });
 });

@@ -7,9 +7,10 @@ import { protectedProcedure, router } from "../trpc-base";
 /**
  * Params router — backs the Console screen (#04). The Console is the only
  * surface that mutates `app_config`; the deterministic core elsewhere reads
- * it. Any change to `refillLambda` bumps the refill model_version (Constraint
- * #3) so subsequent ratings tag the new chain — that's how the Analyzer can
- * later compare "before tightening lambda" vs "after."
+ * it. Any change to `refillLambda` or `audioWeight` (LAB-36) bumps the refill
+ * model_version (Constraint #3) so subsequent ratings tag the new chain —
+ * that's how the Analyzer can later compare "before tightening lambda" vs
+ * "after."
  */
 
 const PARAMS_INPUT = z.object({
@@ -21,6 +22,9 @@ const PARAMS_INPUT = z.object({
   broadQualityBar: z.number().min(0).max(1).optional(),
   spawnThreshold: z.number().min(0).max(1).optional(),
   refillLambda: z.number().min(0).max(5).optional(),
+  // LAB-36 — audio-dim weight for membership + refill scoring. ≥1 (1 = plain
+  // cosine); 8 caps runaway audio dominance.
+  audioWeight: z.number().min(1).max(8).optional(),
   mergeThreshold: z.number().min(0).max(1).optional(),
   splitDislikeRate: z.number().min(0).max(1).optional(),
   // LAB-51 — per-run pull throttle. min(0) allows disabling a pull mode
@@ -51,6 +55,7 @@ export const paramsRouter = router({
     if (input.broadQualityBar !== undefined) update.broadQualityBar = input.broadQualityBar;
     if (input.spawnThreshold !== undefined) update.spawnThreshold = input.spawnThreshold;
     if (input.refillLambda !== undefined) update.refillLambda = input.refillLambda;
+    if (input.audioWeight !== undefined) update.audioWeight = input.audioWeight;
     if (input.mergeThreshold !== undefined) update.mergeThreshold = input.mergeThreshold;
     if (input.splitDislikeRate !== undefined) update.splitDislikeRate = input.splitDislikeRate;
     if (input.trendingLimitPerSource !== undefined)
@@ -65,32 +70,49 @@ export const paramsRouter = router({
 
     update.updatedAt = sql`NOW()`;
 
-    // Read prior lambda, upsert, and conditionally bump the refill version in
-    // a single transaction so concurrent submissions can't race past the
-    // `!== priorLambda` guard and produce a duplicate or missing bump.
+    // Read prior knob values, upsert, and conditionally bump the refill
+    // version in a single transaction so concurrent submissions can't race
+    // past the changed-value guards and produce a duplicate or missing bump.
     return ctx.db.transaction(async (tx) => {
       // FOR UPDATE serializes concurrent submissions on the singleton row so
-      // priorLambda reflects the latest committed state, not a stale snapshot.
+      // the prior values reflect the latest committed state, not a stale snapshot.
       const [prior] = await tx.select().from(appConfig).for("update").limit(1);
       const priorLambda = prior?.refillLambda;
+      const priorAudioWeight = prior?.audioWeight;
 
       await tx
         .insert(appConfig)
         .values({ id: 1, ...update })
         .onConflictDoUpdate({ target: appConfig.id, set: update });
 
-      let bumpedVersionId: number | null = null;
-      if (
+      // LAB-36 — audioWeight is version-frozen like lambda. A single update
+      // touching both knobs mints ONE version carrying both changes.
+      const lambdaChanged =
         input.refillLambda !== undefined &&
         priorLambda !== undefined &&
-        input.refillLambda !== priorLambda
-      ) {
+        input.refillLambda !== priorLambda;
+      const audioWeightChanged =
+        input.audioWeight !== undefined &&
+        priorAudioWeight !== undefined &&
+        input.audioWeight !== priorAudioWeight;
+
+      let bumpedVersionId: number | null = null;
+      if (lambdaChanged || audioWeightChanged) {
         const config = await getActiveConfig(tx, "refill");
+        const notes: string[] = [];
+        if (lambdaChanged) notes.push(`lambda update: ${priorLambda} → ${input.refillLambda}`);
+        if (audioWeightChanged) {
+          notes.push(`audioWeight update: ${priorAudioWeight} → ${input.audioWeight}`);
+        }
         const newVersion = await bumpModelVersion(
           tx,
           "refill",
-          { ...config, lambda: input.refillLambda },
-          { note: `lambda update: ${priorLambda} → ${input.refillLambda}` },
+          {
+            ...config,
+            ...(lambdaChanged ? { lambda: input.refillLambda as number } : {}),
+            ...(audioWeightChanged ? { audioWeight: input.audioWeight as number } : {}),
+          },
+          { note: notes.join("; ") },
         );
         bumpedVersionId = newVersion.id;
       }

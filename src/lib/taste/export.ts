@@ -18,6 +18,7 @@ export async function exportTaste(db: Database): Promise<TasteExport> {
   const memberRows = await db
     .select({
       bucketId: bucketMember.bucketId,
+      origin: bucketMember.origin,
       isrc: track.isrc,
       spotifyId: track.spotifyId,
       title: track.title,
@@ -39,6 +40,7 @@ export async function exportTaste(db: Database): Promise<TasteExport> {
       artist: m.artist,
       album: m.album ?? null,
       genres: m.genres,
+      origin: m.origin,
     });
     membersByBucket.set(m.bucketId, list);
   }
@@ -91,6 +93,7 @@ export async function exportTaste(db: Database): Promise<TasteExport> {
           broadQualityBar: cfg.broadQualityBar,
           spawnThreshold: cfg.spawnThreshold,
           refillLambda: cfg.refillLambda,
+          audioWeight: cfg.audioWeight,
           mergeThreshold: cfg.mergeThreshold,
           splitDislikeRate: cfg.splitDislikeRate,
           trendingLimitPerSource: cfg.trendingLimitPerSource,

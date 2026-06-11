@@ -197,7 +197,7 @@ function fixtureAdapter(): SourceAdapter {
  */
 async function seedBucketsEager(trackIds: readonly number[]): Promise<void> {
   for (const id of trackIds) {
-    await assignTrack(db, id, { spawnThreshold: 0.7 });
+    await assignTrack(db, id, { origin: "seed_track", spawnThreshold: 0.7 });
   }
 }
 
@@ -559,8 +559,8 @@ describe("daily-pipeline (LAB-39 taste-seeded similar pull)", () => {
     expect(b).toBeDefined();
     if (!b) return;
     await db.insert(schema.bucketMember).values([
-      { bucketId: b.id, trackId: trackA.id, similarityAtJoin: 0 },
-      { bucketId: b.id, trackId: trackB.id, similarityAtJoin: 1 },
+      { bucketId: b.id, trackId: trackA.id, similarityAtJoin: 0, origin: "seed_track" },
+      { bucketId: b.id, trackId: trackB.id, similarityAtJoin: 1, origin: "seed_track" },
     ]);
 
     const seeds = await selectBucketSeeds(db, { maxBuckets: 5 });
@@ -638,8 +638,8 @@ describe("daily-pipeline (LAB-39 taste-seeded similar pull)", () => {
     expect(b).toBeDefined();
     if (!b) return;
     await db.insert(schema.bucketMember).values([
-      { bucketId: b.id, trackId: trackLow.id, similarityAtJoin: 1 },
-      { bucketId: b.id, trackId: trackHigh.id, similarityAtJoin: 1 },
+      { bucketId: b.id, trackId: trackLow.id, similarityAtJoin: 1, origin: "seed_track" },
+      { bucketId: b.id, trackId: trackHigh.id, similarityAtJoin: 1, origin: "seed_track" },
     ]);
 
     const seeds = await selectBucketSeeds(db, { maxBuckets: 5 });

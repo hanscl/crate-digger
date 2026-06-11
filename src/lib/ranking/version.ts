@@ -3,6 +3,7 @@ import type { Database } from "@/db/client";
 import { appConfig, type ModelVersion, modelVersion, type NewModelVersion } from "@/db/schema";
 import {
   type BroadConfig,
+  DEFAULT_AUDIO_WEIGHT,
   isBroadConfig,
   isRefillConfig,
   type RankerKind,
@@ -138,6 +139,101 @@ export async function bumpModelVersion(
 }
 
 /**
+ * Mint a new version that carries the ACTIVE version's config forward
+ * unchanged, inside an existing transaction — for callers whose bump
+ * annotates a data repair rather than a config change (e.g. the bucket
+ * reconcile sweep, where a membership repair changes the refill keep-anchor
+ * set but not lambda). The active pointer AND its config are read under the
+ * same app_config FOR UPDATE lock that serializes every bump, so a config
+ * change committed concurrently can never be reverted by a stale pre-lock
+ * read. Returns null when no active version of `kind` exists — nothing to
+ * chain from or carry forward.
+ */
+export async function bumpModelVersionCarryForwardInTx(
+  tx: Tx,
+  kind: RankerKind,
+  options: BumpOptions = {},
+): Promise<ModelVersion | null> {
+  await lockAppConfig(tx);
+  const [cfg] = await tx
+    .select({
+      activeRefill: appConfig.activeRefillVersionId,
+      activeBroad: appConfig.activeBroadVersionId,
+    })
+    .from(appConfig)
+    .where(eq(appConfig.id, 1))
+    .limit(1);
+  const activeId = kind === "refill" ? cfg?.activeRefill : cfg?.activeBroad;
+  if (!activeId) return null;
+  const [active] = await tx
+    .select()
+    .from(modelVersion)
+    .where(eq(modelVersion.id, activeId))
+    .limit(1);
+  if (!active) return null;
+  return bumpInTx(tx, kind, configFromVersion(active, kind), options);
+}
+
+/**
+ * LAB-36 — idempotent config upgrade for EXISTING installs: when the ACTIVE
+ * refill version's config predates the cross-lane fields, mint one refill
+ * version carrying lambda forward and filling in whichever fields are
+ * missing — `audioWeight` (from the active config when a Console knob bump
+ * already froze one, else `app_config.audio_weight`) and
+ * `genreGate: 'slot-overlap'` — parent-chained, under the app_config lock
+ * (Constraint #3: the gate/metric change must be a version boundary so
+ * ratings collected after it attribute to the new chain).
+ *
+ * The two fields are checked INDEPENDENTLY because they can drift apart: a
+ * Console audioWeight bump on a still-legacy `{lambda}` config mints
+ * `{lambda, audioWeight}` WITHOUT a gate (the knob never invents one — see
+ * the params router), and keying this upgrade on audioWeight alone would
+ * leave such an install on the 'exact' fallback forever, with no product
+ * path to 'slot-overlap'. An already-frozen audioWeight is carried forward,
+ * never overwritten from app_config.
+ *
+ * Returns null — complete no-op — when the active config already has both
+ * fields (re-run), or when no active refill version exists (fresh install:
+ * the `ensureActiveModelVersion` bootstrap mints the full config directly).
+ * The check-and-mint runs entirely under the lock, so concurrent callers
+ * serialize and exactly one mints.
+ */
+export async function mintRefillCrossLaneUpgradeInTx(
+  tx: Tx,
+  options: BumpOptions = {},
+): Promise<ModelVersion | null> {
+  await lockAppConfig(tx);
+  const [cfg] = await tx
+    .select({
+      activeRefill: appConfig.activeRefillVersionId,
+      audioWeight: appConfig.audioWeight,
+    })
+    .from(appConfig)
+    .where(eq(appConfig.id, 1))
+    .limit(1);
+  if (!cfg?.activeRefill) return null;
+  const [active] = await tx
+    .select()
+    .from(modelVersion)
+    .where(eq(modelVersion.id, cfg.activeRefill))
+    .limit(1);
+  if (!active || !isRefillConfig(active.config)) return null;
+  if (active.config.audioWeight !== undefined && active.config.genreGate !== undefined) {
+    return null;
+  }
+  return bumpInTx(
+    tx,
+    "refill",
+    {
+      lambda: active.config.lambda,
+      audioWeight: active.config.audioWeight ?? cfg.audioWeight ?? DEFAULT_AUDIO_WEIGHT,
+      genreGate: active.config.genreGate ?? "slot-overlap",
+    },
+    options,
+  );
+}
+
+/**
  * Idempotent bootstrap: ensures both rankers have an active model_version
  * row at first surfacing time. Called by the surfacing pipeline so a fresh
  * install can rank without the user having to manually retrain.
@@ -173,6 +269,7 @@ export async function ensureActiveModelVersionInTx(
       activeRefill: appConfig.activeRefillVersionId,
       activeBroad: appConfig.activeBroadVersionId,
       refillLambda: appConfig.refillLambda,
+      audioWeight: appConfig.audioWeight,
     })
     .from(appConfig)
     .where(eq(appConfig.id, 1))
@@ -190,7 +287,19 @@ export async function ensureActiveModelVersionInTx(
 
   const lambda = cfg?.refillLambda ?? DEFAULT_REFILL_LAMBDA;
   if (kind === "refill") {
-    return bumpInTx(tx, "refill", { lambda }, { note: "initial bootstrap" });
+    // LAB-36 — fresh installs bootstrap straight onto the cross-lane config
+    // (audio-weighted cosine + slot-overlap gate), so the reconcile sweep's
+    // upgrade step never fires for them.
+    return bumpInTx(
+      tx,
+      "refill",
+      {
+        lambda,
+        audioWeight: cfg?.audioWeight ?? DEFAULT_AUDIO_WEIGHT,
+        genreGate: "slot-overlap",
+      },
+      { note: "initial bootstrap" },
+    );
   }
   return bumpInTx(
     tx,
@@ -286,11 +395,17 @@ export async function getActiveConfig<K extends RankerKind>(
     if (active && isRefillConfig(active.config)) {
       return active.config as K extends "refill" ? RefillConfig : BroadConfig;
     }
+    // No active version yet — mirror the fresh-install bootstrap config so a
+    // pre-bootstrap knob change doesn't mint a legacy-shaped version.
     const [cfg] = await db
-      .select({ refillLambda: appConfig.refillLambda })
+      .select({ refillLambda: appConfig.refillLambda, audioWeight: appConfig.audioWeight })
       .from(appConfig)
       .limit(1);
-    const fallback: RefillConfig = { lambda: cfg?.refillLambda ?? DEFAULT_REFILL_LAMBDA };
+    const fallback: RefillConfig = {
+      lambda: cfg?.refillLambda ?? DEFAULT_REFILL_LAMBDA,
+      audioWeight: cfg?.audioWeight ?? DEFAULT_AUDIO_WEIGHT,
+      genreGate: "slot-overlap",
+    };
     return fallback as K extends "refill" ? RefillConfig : BroadConfig;
   }
   if (active && isBroadConfig(active.config)) {

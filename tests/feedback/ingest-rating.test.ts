@@ -166,7 +166,7 @@ describe("ingestRating — bucket dislike counter side effect", () => {
       audioFeatures: audio({ tempo: 130 }),
       genres: ["rock"],
     });
-    const assignment = await assignTrack(db, t.id, { spawnThreshold: 0.7 });
+    const assignment = await assignTrack(db, t.id, { origin: "seed_track", spawnThreshold: 0.7 });
     expect(assignment.spawned).toBe(true);
 
     const result = await ingestRating(db, { trackId: t.id, decision: "dislike" });
@@ -188,7 +188,7 @@ describe("ingestRating — bucket dislike counter side effect", () => {
       audioFeatures: audio({ tempo: 130 }),
       genres: ["rock"],
     });
-    const assignment = await assignTrack(db, t.id, { spawnThreshold: 0.7 });
+    const assignment = await assignTrack(db, t.id, { origin: "seed_track", spawnThreshold: 0.7 });
 
     const first = await ingestRating(db, { trackId: t.id, decision: "dislike" });
     expect(first.bucketDislikeIncremented).toBe(true);
@@ -210,7 +210,10 @@ describe("ingestRating — bucket dislike counter side effect", () => {
       audioFeatures: audio({ tempo: 130 }),
       genres: ["rock"],
     });
-    const assignment = await assignTrack(db, member.id, { spawnThreshold: 0.7 });
+    const assignment = await assignTrack(db, member.id, {
+      origin: "seed_track",
+      spawnThreshold: 0.7,
+    });
     await ingestRating(db, { trackId: member.id, decision: "keep" });
 
     const orphan = await insertTrack({
@@ -254,7 +257,11 @@ describe("ingestRating — LAB-52 candidate flag + join-on-keep", () => {
       audioFeatures: audio({ tempo: 130 }),
       genres: ["rock"],
     });
-    const seedAssign = await assignTrack(db, seed.id, { spawnThreshold: 0.7, coldStartSeed: true });
+    const seedAssign = await assignTrack(db, seed.id, {
+      origin: "seed_track",
+      spawnThreshold: 0.7,
+      coldStartSeed: true,
+    });
     expect(seedAssign.spawned).toBe(true);
 
     const disc = await insertTrack({
@@ -292,7 +299,11 @@ describe("ingestRating — LAB-52 candidate flag + join-on-keep", () => {
       audioFeatures: audio({ tempo: 130 }),
       genres: ["rock"],
     });
-    const seedAssign = await assignTrack(db, seed.id, { spawnThreshold: 0.7, coldStartSeed: true });
+    const seedAssign = await assignTrack(db, seed.id, {
+      origin: "seed_track",
+      spawnThreshold: 0.7,
+      coldStartSeed: true,
+    });
     const disc = await insertTrack({
       title: "Disc",
       audioFeatures: audio({ tempo: 131 }),
@@ -328,7 +339,11 @@ describe("ingestRating — LAB-52 candidate flag + join-on-keep", () => {
       audioFeatures: audio({ tempo: 130 }),
       genres: ["rock"],
     });
-    const seedAssign = await assignTrack(db, seed.id, { spawnThreshold: 0.7, coldStartSeed: true });
+    const seedAssign = await assignTrack(db, seed.id, {
+      origin: "seed_track",
+      spawnThreshold: 0.7,
+      coldStartSeed: true,
+    });
     const disc = await insertTrack({
       title: "Disc",
       audioFeatures: audio({ tempo: 131 }),
@@ -355,5 +370,80 @@ describe("ingestRating — LAB-52 candidate flag + join-on-keep", () => {
       .from(schema.bucket)
       .where(eq(schema.bucket.id, seedAssign.bucketId));
     expect(b?.memberCount).toBe(1);
+  });
+});
+
+describe("ingestRating — LAB-61 membership origin", () => {
+  it("a keep that joins an existing bucket stamps the member 'discovery_keep'", async () => {
+    const seed = await insertTrack({
+      title: "Seed",
+      audioFeatures: audio({ tempo: 130 }),
+      genres: ["rock"],
+    });
+    await assignTrack(db, seed.id, {
+      origin: "seed_track",
+      spawnThreshold: 0.7,
+      coldStartSeed: true,
+    });
+    const disc = await insertTrack({
+      title: "Disc",
+      audioFeatures: audio({ tempo: 131 }),
+      genres: ["rock"],
+    });
+    await flagCandidateBucket(db, disc.id, { spawnThreshold: 0.7 });
+
+    const res = await ingestRating(db, { trackId: disc.id, decision: "keep" });
+    expect(res.committedBucketId).not.toBeNull();
+
+    const [member] = await db
+      .select({ origin: schema.bucketMember.origin })
+      .from(schema.bucketMember)
+      .where(eq(schema.bucketMember.trackId, disc.id));
+    expect(member?.origin).toBe("discovery_keep");
+  });
+
+  it("a keep on a would-spawn candidate stamps the spawned bucket's member 'discovery_keep'", async () => {
+    // No same-genre bucket exists → the keep spawns a fresh bucket; the sole
+    // member is still a discovery approval, not a seed.
+    const disc = await insertTrack({
+      title: "Spawning disc",
+      audioFeatures: audio(),
+      genres: ["jazz"],
+    });
+    const flag = await flagCandidateBucket(db, disc.id, { spawnThreshold: 0.7 });
+    expect(flag.wouldSpawn).toBe(true);
+
+    const res = await ingestRating(db, { trackId: disc.id, decision: "keep" });
+    expect(res.committedBucketId).not.toBeNull();
+
+    const [member] = await db
+      .select({ origin: schema.bucketMember.origin, bucketId: schema.bucketMember.bucketId })
+      .from(schema.bucketMember)
+      .where(eq(schema.bucketMember.trackId, disc.id));
+    expect(member?.bucketId).toBe(res.committedBucketId);
+    expect(member?.origin).toBe("discovery_keep");
+  });
+
+  it("a keep on an existing seed member leaves its origin unchanged", async () => {
+    const seed = await insertTrack({
+      title: "Seed member",
+      audioFeatures: audio({ tempo: 130 }),
+      genres: ["rock"],
+    });
+    await assignTrack(db, seed.id, {
+      origin: "seed_playlist",
+      spawnThreshold: 0.7,
+      coldStartSeed: true,
+    });
+
+    const res = await ingestRating(db, { trackId: seed.id, decision: "keep" });
+    // alreadyAssigned — no second insert, no commit reported.
+    expect(res.committedBucketId).toBeNull();
+
+    const [member] = await db
+      .select({ origin: schema.bucketMember.origin })
+      .from(schema.bucketMember)
+      .where(eq(schema.bucketMember.trackId, seed.id));
+    expect(member?.origin).toBe("seed_playlist");
   });
 });

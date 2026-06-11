@@ -20,6 +20,9 @@ COPY --from=build --chown=node:node /app/migrations ./migrations
 COPY --from=build --chown=node:node /app/src ./src
 COPY --from=build --chown=node:node /app/package.json ./package.json
 COPY --from=build --chown=node:node /app/tsconfig.json ./tsconfig.json
+# `pnpm db:migrate` runs as the Fly release_command; drizzle-kit resolves
+# ./drizzle.config.ts from cwd, so the runtime image must carry it.
+COPY --from=build --chown=node:node /app/drizzle.config.ts ./drizzle.config.ts
 USER node
 EXPOSE 3000
 CMD ["pnpm", "start"]

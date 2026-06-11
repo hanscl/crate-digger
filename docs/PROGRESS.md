@@ -2,6 +2,187 @@
 
 Phase tracker. Update at the end of every phase. Newest at the top.
 
+## LAB-36 — Cross-lane bucket membership: slot-overlap genre gate + audio-weighted cosine
+
+- **Status:** review
+- **Branch:** `lab-36-rework-bucket-membership-pre-filter-so-audio-dims-can-pull`
+- **PR:** _pending_ (stacked on LAB-61)
+- **Problem:** `computeBucketDecision` pre-filtered candidate buckets by EXACT
+  `bucket.primary_genre = track.primary_genre` before any cosine, and the 6
+  audio dims carry only ~9% of the 64-dim embedding mass — so audio had zero
+  leverage across artist-genre lanes ("More Than Words", a metal-tagged
+  acoustic ballad at energy 0.134, was ineligible for any non-metal bucket).
+- **Scope landed (design locked by analyst + 3-judge panel — slot-overlap
+  gate + comparison-time weighted cosine, NO re-embedding):**
+  - `weightedCosine(a, b, audioWeight)` (`src/lib/embedding.ts`) scales the
+    audio dims of BOTH vectors before cosine; `audioWeight=1` reduces
+    bit-identically to `cosine` (pinned by test), which is what keeps legacy
+    replays byte-exact. Slot helpers `genreSlotsFromVector` /
+    `hasSlotOverlap` expose the genre dims; stored vectors are untouched.
+  - ONE shared genre-compatibility predicate (`genreScopeCompatible`,
+    `src/lib/bucketing/genre-scope.ts`) used by the JOIN gate
+    (`computeBucketDecision` — the seam shared by eager commit, LAB-52
+    `flagCandidateBucket`, and the keep-commit path), the refill winner gate
+    (surfacing pipeline), and the counterfactual replay gate — selected PER
+    MODEL VERSION via `RefillConfig.genreGate` (`'exact' | 'slot-overlap'`).
+    Slot-overlap definition: track side = its embedding genre slots; bucket
+    side = centroid genre MASS (slot on iff any member contributed it —
+    insert-order-insensitive, pinned by an Extrabreit-before-SMG test);
+    compatible iff ≥1 shared slot. Zero-slot tracks fall back to exact
+    primary-genre equality (null===null included) and a slotted track never
+    enters a zero-genre-mass bucket — today's null/raw-tag lanes preserved
+    exactly.
+  - NULL-AUDIO DAMPING: a track whose `audio_features IS NULL` embeds
+    neutral 0.5 fills; its comparisons degrade to weight 1 (assign +
+    refill scoring) so featureless tracks don't become promiscuous joiners
+    (the fixture's 17 no-audio rows are asserted to stay spread).
+  - `RefillConfig` → `{lambda, audioWeight?, genreGate?}`; `isRefillConfig`
+    accepts legacy `{lambda}`-only (absent → weight 1 + 'exact' via
+    `refillAudioWeight`/`refillGenreGate`), so v1 replays are byte-identical.
+    `scoreRefill` keepSim AND dislikeSim use `weightedCosine` at the
+    config's weight — membership + surfacing stay one metric family
+    (Constraint #5 coherence).
+  - Migration `0012`: `app_config.audio_weight` (double precision, NOT NULL,
+    DEFAULT **2.5**) — live knob like `refillLambda`; params router
+    zod-validates (≥1, ≤8) and bumps the refill version on change (one bump
+    when lambda+weight change together); Console gets the "audio wt" knob;
+    taste config schema gains optional `audioWeight` (back-compat per LAB-53
+    precedent), export/import round-trips it.
+  - Version migration: fresh installs bootstrap refill with
+    `{lambda, audioWeight, genreGate:'slot-overlap'}` directly
+    (`ensureActiveModelVersion`); EXISTING installs get a second idempotent
+    reconcile-sweep step (`mintRefillAudioWeightUpgradeInTx`, runs after the
+    LAB-61 membership step inside `db:migrate`) that mints ONE upgrade
+    version (lambda — and any knob-frozen `audioWeight` — carried forward,
+    parent-chained, under the app_config lock) iff the active config lacks
+    `audioWeight` OR `genreGate`, checked independently: a Console
+    audioWeight bump on a still-legacy config mints `{lambda, audioWeight}`
+    without a gate, and the upgrade must still install `slot-overlap` on it.
+    Composition with the LAB-61 membership bump = separate rows, separate
+    notes; re-runs no-op.
+    `loadAssignConfig` resolves the live gate/weight from the ACTIVE refill
+    version (legacy → exact/1 during the pre-reconcile window; none → new
+    defaults), so membership decisions always match the scoring version.
+  - **W=2.5 chosen from the grid** (`scripts/lab36-grid.ts`, w ∈ {1,1.5,2,
+    2.5,3,4} × gate ∈ {exact, slot-overlap, none} over the cohort fixture):
+    minimum of the mandated W ≥ ~2.5 range; all three named cases pass
+    (pairwise at 2.5: Shins–BoH 0.825, SMG–Extrabreit 0.791, MTW–TING 0.685
+    < 0.7 spawn bar) with the least similarity-scale inflation and the least
+    cross-lane accretion (13 buckets vs 9 at w=3). Pinned in lock-step in
+    the schema default, `DEFAULT_AUDIO_WEIGHT`, bootstrap, and the eval.
+  - Eval artifacts: `scripts/export-lab36-cohort.ts` (one-shot read-only dev
+    DB export) → checked-in `tests/fixtures/lab36-cohort.json` (136 tracks,
+    17 null-audio); `tests/evals/lab36-reassignment-replay.test.ts` replays
+    the cohort at threshold 0.7 under the NEW config (cases A/B/C + sanity
+    guards) and under a CONTROL `{audioWeight:1, genreGate:'exact'}` block
+    that reproduces the dev DB's 32-bucket geometry and the old outcomes
+    (MTW metal-locked WITH "There Is No God") — the config toggle alone
+    drives the delta.
+- **Notes / deviations:**
+  - **Max-share guard deviation:** the ticket drafted "no bucket >40% of
+    tracks" as a sanity guard, but on this cohort that bound is
+    unsatisfiable at ANY weight that also passes cases B+C (slot-overlap
+    accretes a mainstream-rock bucket: 44.9% at w=1.5, 61% at w=2, 64% at
+    w=2.5, 70.6% at w=3). Guard pinned at <70% (still fails fast on
+    dissolution-to-one-bucket); the production blast radius is smaller than
+    the eager replay suggests — discovery tracks join only on keep (LAB-52)
+    and live geometry evolves from the existing 32 buckets.
+  - **Similarity-scale inflation:** weighted cosines run higher (member→
+    centroid keepSim p50 ≈ 0.962 at the old exact/w=1 vs 0.913 at
+    slot-overlap/w=2.5, but against MUCH coarser buckets; pairwise sims gain
+    ~0.13–0.22 at w=2.5) — `refill_quality_bar` (0.7) and `spawn_threshold`
+    (0.7) semantics loosen. Follow-up tuning ticket anticipated.
+  - MERGE gate (`recommendations.ts`) deliberately stays exact-match —
+    conservative asymmetry (a JOIN moves one track; a MERGE collapses
+    shelves); documented inline.
+  - `bucket.primary_genre` demoted to a naming/display hint + merge key:
+    buckets may legitimately hold cross-genre members now.
+  - Stale pre-change `candidate_bucket_id`/`candidate_score` on tracks are
+    display-only and re-derived fresh on keep — no backfill needed. An
+    optional re-bucket script for live memberships is a possible follow-up
+    (acceptance here is the counterfactual replay, not live re-bucketing).
+  - Novelty knob untouched (inert until LAB-42).
+
+## LAB-61 — Bucket-member provenance (origin) + legacy eager-join cleanup
+
+- **Status:** review
+- **Branch:** `lab-61-bucket-member-provenance-origin-backfillcleanup-of-legacy`
+- **PR:** _pending_ (based on `main`; see the LAB-60 migration-collision note below)
+- **Scope landed:** `bucket_member.origin` enum
+  (`seed_playlist | seed_track | seed_manual | discovery_keep`; `seed_manual`
+  reserved — no live path yet) records membership provenance. Pre-LAB-52 the
+  schema couldn't distinguish a deliberate cold-start seed from eager-join
+  cruft (both = member with no rating), and a disliked legacy member
+  self-anchored refill at keepSim=1.000. The column is NOT NULL with **no
+  default**, so `$inferInsert` forces every insert site to stamp explicitly:
+  `commitAssignmentInTx` takes `{origin, coldStartSeed}` and threads it into
+  both join + spawn inserts; `AssignOptions.origin` is required;
+  `seedBucketsFromTrackIds(db, ids, origin)` gets `'seed_playlist'` /
+  `'seed_track'` from the two Setup flows; the `ingestRating` keep branch
+  stamps `'discovery_keep'`; taste import stamps the exported origin (or, for
+  legacy exports, applies the full 0011 mapping: keep-rated → `discovery_keep`,
+  rated-but-never-kept → membership skipped, unrated → `seed_track`). The
+  alreadyAssigned short-circuit never rewrites an existing origin.
+  **Migration 0011 hand-edit pattern:** `pnpm db:generate` produced the pure
+  ADD (no rename-prompt hazard), then the SQL was hand-edited into: CREATE
+  TYPE → ADD COLUMN (nullable) → DELETE members rated-but-never-kept
+  (dislike-no-keep + defer-only memberships go, **rating rows untouched** —
+  no synthesized keeps, the eval substrate stays honest per Constraints
+  #2/#3) → UPDATE keep-rated members to `discovery_keep` → UPDATE the rest to
+  `seed_track` (generic: the schema has no record of which seed flow added
+  them) → SET NOT NULL. A follow-up `db:generate` confirms zero snapshot
+  drift; journal-tracked = exactly-once on every install. Two-phase
+  migration-replay test (`tests/db/lab61-backfill.test.ts`) pins the mapping.
+  **Reconcile sweep chained into db:migrate:** new
+  `src/lib/bucketing/reconcile.ts` (+ `src/db/reconcile-buckets.ts` CLI;
+  `db:migrate` = `drizzle-kit migrate && tsx … reconcile-buckets.ts`, so the
+  Fly release_command repairs derived state on the same deploy). One
+  transaction, idempotent, drift-gated: recompute every bucket whose
+  member_count disagrees with reality (`recomputeBucketStats` extracted from
+  the buckets router into `src/lib/bucketing/recompute.ts`; 0-member buckets
+  deleted), delete pending recommendations referencing pruned buckets
+  (`bucket_ids` is a plain int[], no FK; the merge-accept mutation now also
+  prunes other pending recommendations referencing the bucket it deletes),
+  re-derive all pending recommendations whenever anything was repaired, and
+  bump the refill `model_version` exactly once — but ONLY when membership
+  actually changed: a stale-recommendation-only repair touches no keep-anchor
+  geometry and mints nothing. The bump note is dynamic ("bucket reconcile:
+  membership repair changed the refill keep-anchor set (buckets …)"), parent
+  chained, config carried forward from the active version read under the
+  app_config lock (`bumpModelVersionCarryForwardInTx`), so a concurrently
+  committed knob change can never be silently reverted.
+  **Membership-gated bump rationale:** a membership repair changes the
+  refill keep-anchor set, so post-repair ratings must not attribute to the
+  pre-repair version (Constraint #3) — but a clean install that repairs
+  nothing keeps its version chain untouched, and re-runs are complete
+  no-ops (no second bump, no recommendation churn; dismissed rows are never
+  resurrected thanks to the (kind, bucket_ids) unique index).
+  Refill anchors narrowed: `loadRefillableBuckets` + counterfactual
+  `loadKeepsByBucket` filter on `KEEP_ANCHOR_ORIGINS` (all four today —
+  defense-in-depth so a future origin doesn't silently anchor); the
+  `loadKeepEmbeddingsForBucket` "narrow the SQL once Phase 5 lands" TODO is
+  resolved — post-backfill, every member is a seed or a keep.
+  Buckets screen: list/detail expose per-bucket origin tallies + per-member
+  origin; the detail chips row renders "seeded N (playlist|tracks|manual) ·
+  found M". Taste export/import (Constraint #8) round-trips origin
+  (optional in the wire schema, version stays 1 — LAB-53 back-compat
+  precedent).
+- **Notes for future phases:**
+  - **Residual gap (deliberate):** a seed member disliked AFTER LAB-61 still
+    anchors refill — the cleanup only targets legacy eager-joins;
+    differential weighting of dislike-rated seeds is out of scope here.
+  - **0011 delete-arm residual:** pre-LAB-61 rows carry no provenance, so a
+    membership deliberately re-created via Setup seeding AFTER the track was
+    rated elsewhere (defer-then-seed) is indistinguishable from eager-join
+    cruft and is deleted by the backfill (and skipped by the legacy taste
+    import). Single-user blast radius is one re-seed; documented in the
+    migration comment.
+  - Generic backfill is lossy on purpose: playlist-seeded pre-LAB-52 installs
+    get `seed_track` labels (cosmetic — no schema signal exists to recover
+    the method; every seed origin anchors identically).
+  - The recommendations panel on the Buckets screen is global-by-design;
+    whether it should scope to the selected bucket is a follow-up UX call.
+
 ## LAB-60 — Surfacing eligibility gate (no re-queue of decided tracks)
 
 - **Status:** review

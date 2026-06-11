@@ -307,6 +307,7 @@ function BucketDetail({
           <div className="flex flex-wrap gap-2 mb-3">
             <span className="chip">{b.primaryGenre ?? "—"}</span>
             <span className="chip mono">{b.memberCount} members</span>
+            <span className="chip mono">{provenanceLabel(b.originCounts)}</span>
             {b.isColdStartSeed ? <span className="chip accent">cold-start</span> : null}
           </div>
           <div className="space-y-2">
@@ -360,6 +361,29 @@ function BucketDetail({
       </div>
     </div>
   );
+}
+
+/**
+ * LAB-61 provenance chip: "seeded N (method) · found M". N sums the seed_*
+ * origins, the method label is the dominant seed origin among them (ties
+ * resolve playlist > tracks > manual), and `found` counts discovery keeps.
+ * The seeded segment is omitted for buckets with no seed members.
+ */
+function provenanceLabel(counts: BucketDetailData["bucket"]["originCounts"]): string {
+  const seedMethods = [
+    ["seed_playlist", "playlist"],
+    ["seed_track", "tracks"],
+    ["seed_manual", "manual"],
+  ] as const;
+  const seeded = seedMethods.reduce((sum, [key]) => sum + counts[key], 0);
+  const parts: string[] = [];
+  if (seeded > 0) {
+    let dominant: (typeof seedMethods)[number] = seedMethods[0];
+    for (const m of seedMethods) if (counts[m[0]] > counts[dominant[0]]) dominant = m;
+    parts.push(`seeded ${seeded} (${dominant[1]})`);
+  }
+  parts.push(`found ${counts.discovery_keep}`);
+  return parts.join(" · ");
 }
 
 function clamp01(x: number): number {

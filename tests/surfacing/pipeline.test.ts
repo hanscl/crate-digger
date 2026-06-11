@@ -8,7 +8,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import * as schema from "@/db/schema";
 import type { AudioFeatures, CandidatePoolEntry } from "@/db/schema";
 import { assignTrack } from "@/lib/bucketing/assign";
-import { buildEmbedding, derivePrimaryGenre } from "@/lib/embedding";
+import { buildEmbedding, derivePrimaryGenre, weightedCosine } from "@/lib/embedding";
 import { ingestRating } from "@/lib/feedback/ingest-rating";
 import { scoreBroad } from "@/lib/ranking/broad";
 import { scoreRefill } from "@/lib/ranking/refill";
@@ -223,8 +223,8 @@ describe("runSurfacingBatch — Constraint #2 (full candidate pool persistence)"
       audioFeatures: audio({ tempo: 132, energy: 0.72 }),
       genres: ["rock"],
     });
-    await assignTrack(db, seed1.id, { spawnThreshold: 0.7 });
-    await assignTrack(db, seed2.id, { spawnThreshold: 0.7 });
+    await assignTrack(db, seed1.id, { origin: "seed_track", spawnThreshold: 0.7 });
+    await assignTrack(db, seed2.id, { origin: "seed_track", spawnThreshold: 0.7 });
 
     const candTracks = [];
     for (let i = 0; i < 3; i++) {
@@ -439,7 +439,10 @@ describe("runSurfacingBatch — quality-gated surfacing (LAB-53: quality bar + q
       audioFeatures: audio({ tempo: 130, energy: 0.7 }),
       genres: ["rock"],
     });
-    const seedAssign = await assignTrack(db, seed.id, { spawnThreshold: 0.7 });
+    const seedAssign = await assignTrack(db, seed.id, {
+      origin: "seed_track",
+      spawnThreshold: 0.7,
+    });
 
     const candTracks = [];
     for (let i = 0; i < 3; i++) {
@@ -479,7 +482,7 @@ describe("runSurfacingBatch — soft penalties only (Constraint #4)", () => {
       audioFeatures: audio({ tempo: 130, energy: 0.7 }),
       genres: ["rock"],
     });
-    await assignTrack(db, seed.id, { spawnThreshold: 0.7 });
+    await assignTrack(db, seed.id, { origin: "seed_track", spawnThreshold: 0.7 });
 
     // A disliked rock track adds a global negative signal for refill.
     const dislikedAnchor = await insertTrack({
@@ -538,13 +541,16 @@ describe("runSurfacingBatch — soft penalties only (Constraint #4)", () => {
   });
 });
 
-describe("runSurfacingBatch — refill primary-genre winner-eligibility gate (LAB-45)", () => {
-  it("an off-genre candidate that tops keep-cosine still cannot WIN a refill slot, but stays in candidate_pool", async () => {
+describe("runSurfacingBatch — refill genre winner-eligibility gate (LAB-45, config-selected per LAB-36)", () => {
+  it("a slot-disjoint candidate that tops keep-similarity still cannot WIN a refill slot, but stays in candidate_pool", async () => {
     // Mirror of the JOIN gate (assign.ts): an indie-primary track ("the cure")
-    // can score the highest raw keep-cosine against a metal bucket yet must
-    // never win a refill slot for it — it could never JOIN or MERGE into that
-    // bucket. The in-genre metal candidate wins instead. Constraint #2 is
-    // preserved: the indie candidate is still scored into the pool.
+    // can score the highest raw keep-similarity against a metal bucket yet
+    // must never win a refill slot for it — under the LAB-36 slot-overlap
+    // gate its {indie} slots share nothing with the bucket's {metal} mass
+    // (and under the legacy exact gate the lanes differ outright), so it
+    // could never JOIN that bucket. The in-genre metal candidate wins
+    // instead. Constraint #2 is preserved: the indie candidate is still
+    // scored into the pool.
     const metalSeed = await insertTrack({
       title: "Heavy Metal Thunder (seed)",
       audioFeatures: audio({
@@ -558,7 +564,10 @@ describe("runSurfacingBatch — refill primary-genre winner-eligibility gate (LA
       genres: ["heavy metal"],
     });
     // Spawns a metal-primary bucket with the seed as its sole keep anchor.
-    const seedAssign = await assignTrack(db, metalSeed.id, { spawnThreshold: 0.7 });
+    const seedAssign = await assignTrack(db, metalSeed.id, {
+      origin: "seed_track",
+      spawnThreshold: 0.7,
+    });
     expect(seedAssign.spawned).toBe(true);
     expect(seedAssign.primaryGenre).toBe("metal");
 
@@ -632,6 +641,82 @@ describe("runSurfacingBatch — refill primary-genre winner-eligibility gate (LA
     expect(metalPoolEntry?.surfaced).toBe(true);
   });
 
+  it("slot-overlap config: a cross-lane candidate sharing a slot CAN win a refill slot (impossible under LAB-45 exact)", async () => {
+    // Rock-primary bucket; indie-primary candidate whose "indie rock" tag
+    // shares the rock slot. The bootstrap refill config is the LAB-36 one
+    // (slot-overlap), so the candidate is winner-eligible across the lane —
+    // membership (JOIN) and surfacing (winner gate) move together.
+    const rockSeed = await insertTrack({
+      title: "Rock seed",
+      audioFeatures: audio({ tempo: 128, energy: 0.7 }),
+      genres: ["rock"],
+    });
+    const seedAssign = await assignTrack(db, rockSeed.id, {
+      origin: "seed_track",
+      spawnThreshold: 0.7,
+    });
+    expect(seedAssign.primaryGenre).toBe("rock");
+
+    const indieCand = await insertTrack({
+      title: "Indie rock candidate",
+      audioFeatures: audio({ tempo: 127, energy: 0.69 }),
+      genres: ["indie rock"],
+    });
+    const candidates = await Promise.all([indieCand].map(asCandidate));
+    expect(candidates[0]?.primaryGenre).toBe("indie");
+
+    const result = await runSurfacingBatch(db, {
+      candidates,
+      noveltyOverride: 0,
+      refillBarOverride: 0,
+      broadBarOverride: 1,
+      queueCeilingOverride: 1,
+    });
+    expect(result.refillSurfacedCount).toBe(1);
+    const event = (await db.select().from(schema.surfaceEvent))[0]!;
+    expect(event.rankerKind).toBe("refill");
+    expect(event.bucketId).toBe(seedAssign.bucketId);
+    expect(event.trackId).toBe(indieCand.id);
+  });
+
+  it("legacy exact config: the SAME cross-lane candidate cannot win — the version's genreGate drives the gate", async () => {
+    // Pin a legacy {lambda}-only refill version as active BEFORE surfacing.
+    // ensureActiveModelVersion returns it untouched, so the winner gate runs
+    // 'exact' and the cross-lane candidate is ineligible — proving the gate
+    // is selected per model_version config, not hardcoded.
+    await bumpModelVersion(db, "refill", { lambda: 0.3 }, { note: "legacy pin" });
+
+    const rockSeed = await insertTrack({
+      title: "Rock seed",
+      audioFeatures: audio({ tempo: 128, energy: 0.7 }),
+      genres: ["rock"],
+    });
+    const seedAssign = await assignTrack(db, rockSeed.id, {
+      origin: "seed_track",
+      spawnThreshold: 0.7,
+    });
+    expect(seedAssign.primaryGenre).toBe("rock");
+
+    const indieCand = await insertTrack({
+      title: "Indie rock candidate",
+      audioFeatures: audio({ tempo: 127, energy: 0.69 }),
+      genres: ["indie rock"],
+    });
+    const candidates = await Promise.all([indieCand].map(asCandidate));
+
+    const result = await runSurfacingBatch(db, {
+      candidates,
+      noveltyOverride: 0,
+      refillBarOverride: 0,
+      broadBarOverride: 1,
+      queueCeilingOverride: 1,
+    });
+    // Gate-ineligible for the only refillable bucket → nothing surfaces
+    // (broad bar pinned at 1 so refill is the only path).
+    expect(result.refillSurfacedCount).toBe(0);
+    expect(result.surfaced).toHaveLength(0);
+  });
+
   it("the null===null rule: a null-genre candidate can win a refill slot for a null-genre bucket", async () => {
     // Sanity for the null-handling branch of sameGenreScope. A bucket spawned
     // from a genre-less seed has primaryGenre=null; a genre-less candidate
@@ -641,7 +726,10 @@ describe("runSurfacingBatch — refill primary-genre winner-eligibility gate (LA
       audioFeatures: audio({ tempo: 125, energy: 0.6 }),
       genres: [],
     });
-    const seedAssign = await assignTrack(db, nullSeed.id, { spawnThreshold: 0.7 });
+    const seedAssign = await assignTrack(db, nullSeed.id, {
+      origin: "seed_track",
+      spawnThreshold: 0.7,
+    });
     expect(seedAssign.primaryGenre).toBeNull();
 
     const nullCand = await insertTrack({
@@ -965,7 +1053,7 @@ describe("counterfactual replay determinism", () => {
       audioFeatures: audio({ tempo: 125, energy: 0.6 }),
       genres: ["rock"],
     });
-    await assignTrack(db, seed.id, { spawnThreshold: 0.7 });
+    await assignTrack(db, seed.id, { origin: "seed_track", spawnThreshold: 0.7 });
 
     const c1 = await insertTrack({
       title: "C1",
@@ -1001,5 +1089,107 @@ describe("counterfactual replay determinism", () => {
       const replay = scoreRefill(cand!, keeps, [], refillConfig);
       expect(replay.score).toBeCloseTo(entry.score, 5);
     }
+  });
+});
+
+describe("runSurfacingBatch — LAB-61 keep-anchor cleanup", () => {
+  it("a bucket emptied by the legacy-membership cleanup is no longer refillable", async () => {
+    // Shape the 0010 backfill leaves behind for a bucket whose only member
+    // was eager-joined cruft: the membership row is gone (the bucket row may
+    // briefly linger until the reconcile sweep prunes it). With no members
+    // there is no keep-set — refill must not anchor on the empty bucket.
+    const seed = await insertTrack({
+      title: "Legacy-only anchor",
+      audioFeatures: audio({ tempo: 130, energy: 0.7 }),
+      genres: ["rock"],
+    });
+    const seedAssign = await assignTrack(db, seed.id, {
+      origin: "seed_track",
+      spawnThreshold: 0.7,
+    });
+    await db
+      .delete(schema.bucketMember)
+      .where(eq(schema.bucketMember.bucketId, seedAssign.bucketId));
+
+    const cand = await insertTrack({
+      title: "Would-be refill",
+      audioFeatures: audio({ tempo: 130, energy: 0.7 }),
+      genres: ["rock"],
+    });
+    const candidates = await Promise.all([cand].map(asCandidate));
+
+    const result = await runSurfacingBatch(db, {
+      candidates,
+      noveltyOverride: 0,
+      refillBarOverride: 0,
+      broadBarOverride: 1, // broad never fills — isolates the refill phase
+      queueCeilingOverride: 50,
+    });
+    expect(result.refillSurfacedCount).toBe(0);
+    expect(result.refilledBucketIds).toEqual([]);
+    expect(result.events).toHaveLength(0);
+  });
+
+  it("keepSim is computed only over surviving members after a legacy member is removed", async () => {
+    // Two same-genre members with deliberately opposite audio shapes; the
+    // second (the "disliked legacy" stand-in) is then deleted the way the
+    // 0010 cleanup deletes it. A candidate identical to the REMOVED member
+    // must score keepSim against the survivor alone — not self-anchor at
+    // the old (cos+1)/2 mean.
+    const survivor = await insertTrack({
+      title: "Surviving seed",
+      audioFeatures: audio({ tempo: 130, energy: 0.7 }),
+      genres: ["rock"],
+    });
+    const legacy = await insertTrack({
+      title: "Disliked legacy member",
+      audioFeatures: audio({ tempo: 60, energy: 0.1, acousticness: 0.9 }),
+      genres: ["rock"],
+    });
+    const seedAssign = await assignTrack(db, survivor.id, {
+      origin: "seed_track",
+      spawnThreshold: 0.7,
+    });
+    // Same genre + spawnThreshold 0 → joins the survivor's bucket regardless
+    // of audio distance (embeddings are non-negative, so cosine ≥ 0).
+    const legacyAssign = await assignTrack(db, legacy.id, {
+      origin: "seed_track",
+      spawnThreshold: 0,
+    });
+    expect(legacyAssign.bucketId).toBe(seedAssign.bucketId);
+    await db.delete(schema.bucketMember).where(eq(schema.bucketMember.trackId, legacy.id));
+
+    const cand = await insertTrack({
+      title: "Looks like the removed member",
+      audioFeatures: audio({ tempo: 60, energy: 0.1, acousticness: 0.9 }),
+      genres: ["rock"],
+    });
+    const candidates = await Promise.all([cand].map(asCandidate));
+
+    const result = await runSurfacingBatch(db, {
+      candidates,
+      noveltyOverride: 0,
+      refillBarOverride: 0,
+      broadBarOverride: 1,
+      queueCeilingOverride: 50,
+    });
+    expect(result.refillSurfacedCount).toBe(1);
+
+    const event = (await db.select().from(schema.surfaceEvent))[0]!;
+    const entry = event.candidatePool.find((pe: CandidatePoolEntry) => pe.trackId === cand.id);
+    // Recompute under the metric of the version the event was scored with
+    // (LAB-36: the bootstrap config carries audioWeight).
+    const eventVersion = await getModelVersion(db, event.modelVersionId);
+    const eventConfig = configFromVersion(eventVersion!, "refill");
+    const simToSurvivor = weightedCosine(
+      cand.embedding,
+      survivor.embedding,
+      eventConfig.audioWeight ?? 1,
+    );
+    // keep-set = [survivor] only → keepSim is exactly the survivor similarity…
+    expect(entry?.subScores?.keepSim).toBeCloseTo(simToSurvivor, 6);
+    // …and strictly below the two-member mean the legacy self-anchor (cos=1
+    // against itself) would have produced.
+    expect(entry?.subScores?.keepSim ?? 1).toBeLessThan((simToSurvivor + 1) / 2);
   });
 });

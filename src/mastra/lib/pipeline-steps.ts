@@ -201,7 +201,7 @@ export async function pullAndEnrichTrending(
 /**
  * LAB-51 — read the per-run pull throttle from `app_config`. Returns an empty
  * object when the singleton row is absent (tests) so callers fall back to the
- * DEFAULT_* constants. Mirrors the `loadSpawnThreshold` read idiom in assign.ts.
+ * DEFAULT_* constants. Mirrors the `loadAssignConfig` read idiom in assign.ts.
  */
 async function loadPullThrottle(db: Database): Promise<{
   trendingLimitPerSource?: number;

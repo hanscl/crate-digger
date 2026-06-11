@@ -31,12 +31,24 @@ export const TASTE_TRACK_REF_SCHEMA = z.object({
 
 export type TasteTrackRef = z.infer<typeof TASTE_TRACK_REF_SCHEMA>;
 
+export const TASTE_BUCKET_MEMBER_SCHEMA = TASTE_TRACK_REF_SCHEMA.extend({
+  // LAB-61 — membership provenance travels with the profile. Optional so
+  // pre-LAB-61 exports (which lack it) still import: importTaste falls back
+  // to the full 0011 backfill mapping — a member whose track has a keep
+  // decision in the same export imports as 'discovery_keep'; a member whose
+  // track is rated but never kept is skipped (legacy eager-join cruft, the
+  // 0011 delete arm); unrated members import as the generic 'seed_track'.
+  origin: z.enum(["seed_playlist", "seed_track", "seed_manual", "discovery_keep"]).optional(),
+});
+
+export type TasteBucketMember = z.infer<typeof TASTE_BUCKET_MEMBER_SCHEMA>;
+
 export const TASTE_BUCKET_SCHEMA = z.object({
   name: z.string().min(1),
   color: z.string().nullable(),
   primaryGenre: z.string().nullable(),
   isColdStartSeed: z.boolean().default(false),
-  members: z.array(TASTE_TRACK_REF_SCHEMA),
+  members: z.array(TASTE_BUCKET_MEMBER_SCHEMA),
 });
 
 export const TASTE_RATING_SCHEMA = z.object({
@@ -56,6 +68,10 @@ export const TASTE_CONFIG_SCHEMA = z.object({
   broadQualityBar: z.number().min(0).max(1).optional(),
   spawnThreshold: z.number().min(0).max(1),
   refillLambda: z.number().min(0),
+  // LAB-36 — audio-dim weight travels with the taste profile. Optional so
+  // pre-LAB-36 exports (which lack it) still import (LAB-53 precedent):
+  // importTaste's upsert falls back to the app_config column default.
+  audioWeight: z.number().min(1).max(8).optional(),
   mergeThreshold: z.number().min(0).max(1),
   splitDislikeRate: z.number().min(0).max(1),
   // LAB-51 — pull throttle travels with the taste profile (Constraint #8).
