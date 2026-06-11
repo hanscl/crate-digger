@@ -2,6 +2,48 @@
 
 Phase tracker. Update at the end of every phase. Newest at the top.
 
+## LAB-71 — Console UI fixes (knob wrap + info tooltips)
+
+- **Status:** in review
+- **Branch:** `lab-71-console-ui-fixes`
+- **PR:** _pending_
+- **Problem:** on the Console screen the three control rows (surfacing / ranking /
+  ingestion) used `flex gap-8` with no wrap, so the knobs overflowed horizontally
+  on narrower viewports; and the controls had bare labels with no explanation of
+  what each parameter does.
+- **Scope landed:**
+  - **Wrap fix.** All three control rows switched from `flex gap-8` to
+    `flex flex-wrap gap-x-8 gap-y-6`, so controls wrap responsively instead of
+    overflowing. (Surfacing + ranking rows were already converted by the prior
+    pass; this completes the ingestion row.)
+  - **InfoTip primitive.** New `src/web/components/primitives/info-tip.tsx`: a
+    quiet `(i)` affordance that reveals a layman's explanation on hover OR
+    keyboard focus. The trigger is a real `<button>` (focusable), the tip is
+    `role="tooltip"` wired via `aria-describedby` + `aria-expanded`, and it uses
+    the Cyan Tape tokens (tertiary ink, accent on interaction). Exported from
+    `primitives/index.ts`.
+  - **Prop API, no call-site duplication.** `Knob` and `Fader` gained an optional
+    `info?: string` prop; when present they render the `InfoTip` next to the label
+    (inside the existing label block, so spacing/tokens stay consistent). Every
+    Console control passes `info`, so all 16 controls (4 surfacing, 7 ranking,
+    5 ingestion) now have a tooltip.
+  - **Copy provenance.** Explanations are jargon-free and fact-checked against
+    `CLAUDE.md` constraints, `docs/PLAN.md`, and the actual param consumers in
+    `src/mastra/lib/pipeline-steps.ts` and `src/db/schema.ts`. Novelty scales the
+    refill familiarity penalty (Constraint #6); queue ceiling, refill/broad bars,
+    and the per-artist surface cap are the surfacing throttle / quality bar
+    (Constraint #5); refill λ is the dislike-penalty weight and audio wt is the
+    LAB-36 audio-dim weight (both version-frozen, Constraint #3);
+    spawn/merge/split are the bucket spawn/merge/split thresholds (merge and split
+    only _suggest_, Constraint #7); trending pull, similar pull, and seed buckets
+    are the LAB-51 per-run throttle; similar artist cap (pull-side lever 1) and
+    familiar skip are the LAB-73 caps. Surfacing "artist cap" maps to
+    `surfaceArtistCap` (surfacing lever 2); ingestion "similar artist cap" maps to
+    the distinct pull-side `similarArtistCap`.
+- **Verification:** `pnpm check` (oxlint + oxfmt) clean, `pnpm typecheck` clean,
+  `pnpm build` compiles. UI is not unit-tested per PLAN.md — no RTL tests added;
+  needs human visual QA of the wrap + tooltip behavior.
+
 ## LAB-73 — Artist diversity in discovery (all 3 levers)
 
 - **Status:** in review

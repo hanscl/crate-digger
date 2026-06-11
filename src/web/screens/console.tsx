@@ -80,9 +80,10 @@ export function ConsoleScreen() {
         <div className="grid grid-cols-12 gap-4">
           <div className="col-span-7 panel p-6">
             <div className="cap text-ink-3 mb-4">surfacing</div>
-            <div className="flex gap-8 items-end mb-6">
+            <div className="flex flex-wrap gap-x-8 gap-y-6 items-end mb-6">
               <Fader
                 label="novelty"
+                info="How strongly to favor fresh artists over ones you already like. Higher = artists you've already kept get pushed down harder, so more new names reach your queue."
                 value={draft.novelty}
                 min={0}
                 max={1}
@@ -92,6 +93,7 @@ export function ConsoleScreen() {
               />
               <Fader
                 label="source mix"
+                info="The target balance between Spotify and other sources (e.g. Last.fm) in what gets surfaced. 50/50 is balanced; it's a gentle preference, never a hard filter."
                 value={draft.sourceMix}
                 min={0}
                 max={1}
@@ -102,6 +104,7 @@ export function ConsoleScreen() {
               />
               <Knob
                 label="queue ceiling"
+                info="The most unrated tracks allowed in your queue at once. Each run tops up only enough to reach this number, so the queue never floods."
                 value={draft.queueCeiling}
                 min={1}
                 max={500}
@@ -112,6 +115,7 @@ export function ConsoleScreen() {
               />
               <Knob
                 label="artist cap"
+                info="The most tracks from any one artist that can be added to your queue in a single run. Keeps one artist from dominating; extras wait for a later run."
                 value={draft.surfaceArtistCap}
                 min={1}
                 max={10}
@@ -122,9 +126,10 @@ export function ConsoleScreen() {
               />
             </div>
             <div className="cap text-ink-3 mb-4">ranking</div>
-            <div className="flex gap-8 items-end">
+            <div className="flex flex-wrap gap-x-8 gap-y-6 items-end">
               <Knob
                 label="refill λ"
+                info="How much a track is penalized for sounding like music you've disliked. Higher = disliked-sounding tracks are pushed down more. Changing it starts a new ranker version."
                 value={draft.refillLambda}
                 min={0}
                 max={2}
@@ -134,6 +139,7 @@ export function ConsoleScreen() {
               />
               <Knob
                 label="audio wt"
+                info="How much the sound of a track (tempo, energy, mood) counts versus its genre/metadata when judging similarity. Higher leans on the audio. Changing it starts a new ranker version."
                 value={draft.audioWeight}
                 min={1}
                 max={8}
@@ -143,6 +149,7 @@ export function ConsoleScreen() {
               />
               <Knob
                 label="spawn"
+                info="How close a kept track must be to an existing taste cluster to join it. Above this it joins the nearest bucket; below, it starts a new one. Higher = more, tighter buckets."
                 value={draft.spawnThreshold}
                 min={0.3}
                 max={0.99}
@@ -152,6 +159,7 @@ export function ConsoleScreen() {
               />
               <Knob
                 label="merge"
+                info="How similar two taste buckets must be before the app suggests combining them. Higher = only near-identical buckets are flagged. It only suggests; you confirm merges."
                 value={draft.mergeThreshold}
                 min={0.6}
                 max={0.99}
@@ -161,6 +169,7 @@ export function ConsoleScreen() {
               />
               <Knob
                 label="split rate"
+                info="The share of a bucket's tracks you've disliked that triggers a suggestion to split it. Lower = flagged sooner. It only suggests; you confirm splits."
                 value={draft.splitDislikeRate}
                 min={0.1}
                 max={0.95}
@@ -170,6 +179,7 @@ export function ConsoleScreen() {
               />
               <Knob
                 label="refill bar"
+                info="The minimum similarity-to-your-taste score a 'more like this' track needs to reach your queue. Higher = stricter, fewer but safer picks. Below-bar tracks are kept but not surfaced."
                 value={draft.refillQualityBar}
                 min={0.3}
                 max={0.99}
@@ -179,6 +189,7 @@ export function ConsoleScreen() {
               />
               <Knob
                 label="broad bar"
+                info="The minimum predicted-you'll-keep-it score a broad-discovery track needs to reach your queue. Higher = stricter exploration. Below-bar tracks are kept but not surfaced."
                 value={draft.broadQualityBar}
                 min={0}
                 max={1}
@@ -188,9 +199,10 @@ export function ConsoleScreen() {
               />
             </div>
             <div className="cap text-ink-3 mb-4 mt-6">ingestion</div>
-            <div className="flex gap-8 items-end">
+            <div className="flex flex-wrap gap-x-8 gap-y-6 items-end">
               <Knob
                 label="trending pull"
+                info="How many trending tracks to pull from each source per run. This is the throttle on fresh inflow — higher pulls more new music each run, lower keeps things slow."
                 value={draft.trendingLimitPerSource}
                 min={0}
                 max={25}
@@ -201,6 +213,7 @@ export function ConsoleScreen() {
               />
               <Knob
                 label="similar pull"
+                info="How many 'similar artist' tracks to pull per seed each run. The other half of the inflow throttle — higher widens the net around your taste, lower keeps it tight."
                 value={draft.similarLimitPerSource}
                 min={0}
                 max={25}
@@ -211,6 +224,7 @@ export function ConsoleScreen() {
               />
               <Knob
                 label="seed buckets"
+                info="How many of your top taste clusters are used as seeds for the 'similar artist' pull each run. More seeds reach into more corners of your taste."
                 value={draft.similarSeedBuckets}
                 min={0}
                 max={15}
@@ -221,6 +235,7 @@ export function ConsoleScreen() {
               />
               <Knob
                 label="similar artist cap"
+                info="The most tracks the 'similar artist' pull will take from any one artist in a run, so a single artist can't crowd out the new music being pulled in."
                 value={draft.similarArtistCap}
                 min={1}
                 max={10}
@@ -231,6 +246,7 @@ export function ConsoleScreen() {
               />
               <Knob
                 label="familiar skip"
+                info="Artists you've already kept this many times are skipped by the 'similar artist' pull — you know their music, so the run spends its budget on new names instead. Set to 0 to never skip."
                 value={draft.familiarArtistKeepThreshold}
                 min={0}
                 max={10}

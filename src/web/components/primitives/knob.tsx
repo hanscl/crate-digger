@@ -1,5 +1,6 @@
 import { useCallback, useId, useRef, useState } from "react";
 import { clsx } from "clsx";
+import { InfoTip } from "./info-tip";
 
 /**
  * Cyan Tape rotary knob. Drag vertically to scrub through `[min, max]`.
@@ -22,6 +23,8 @@ export type KnobProps = {
   size?: number;
   label?: string;
   unit?: string;
+  /** Optional layman's explanation; renders an (i) tooltip next to the label. */
+  info?: string;
   format?: (value: number) => string;
   disabled?: boolean;
   onChange?: (value: number) => void;
@@ -61,6 +64,7 @@ export function Knob({
   size = 64,
   label,
   unit,
+  info,
   format,
   disabled = false,
   onChange,
@@ -206,7 +210,10 @@ export function Knob({
       </svg>
       {label !== undefined ? (
         <div className="text-center" id={`${id}-label`}>
-          <div className="cap text-ink-3">{label}</div>
+          <div className="inline-flex items-center gap-1">
+            <span className="cap text-ink-3">{label}</span>
+            {info ? <InfoTip text={info} label={`${label} — what does this do?`} /> : null}
+          </div>
           <div className="mono tnum text-ink-1 text-xs mt-0.5">
             {display}
             {unit ? <span className="text-ink-3 ml-0.5">{unit}</span> : null}
