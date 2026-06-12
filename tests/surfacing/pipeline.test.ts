@@ -1447,3 +1447,92 @@ describe("runSurfacingBatch — artist-diversity quota (LAB-73 lever 2)", () => 
     expect(seedAssign.primaryGenre).toBe("metal");
   });
 });
+
+describe("runSurfacingBatch — refill cursor rotation (LAB-38)", () => {
+  // Five disjoint primary-genre lanes → five separate buckets (ids 1..5), each
+  // with ONE close candidate. Under the slot-overlap gate a candidate only wins
+  // its own lane's bucket, so every bucket has exactly one above-bar winner.
+  const LANES = ["rock", "jazz", "techno", "folk", "reggae"] as const;
+
+  async function seedFiveBucketsWithCandidates(): Promise<Candidate[]> {
+    const candidates: Candidate[] = [];
+    for (let i = 0; i < LANES.length; i++) {
+      const genre = LANES[i]!;
+      // Seed: spawns the bucket (origin seed_track) and anchors its keep-set.
+      const seed = await insertTrack({
+        title: `${genre}-seed`,
+        audioFeatures: audio({ tempo: 120 + i, energy: 0.5 + i * 0.05 }),
+        genres: [genre],
+      });
+      const seedAssign = await assignTrack(db, seed.id, {
+        origin: "seed_track",
+        spawnThreshold: 0.7,
+      });
+      // Buckets spawn in insertion order → ids 1..5 line up with LANES.
+      expect(seedAssign.bucketId).toBe(i + 1);
+      // One in-lane candidate with audio close to the seed → high keepSim.
+      const cand = await insertTrack({
+        title: `${genre}-cand`,
+        audioFeatures: audio({ tempo: 121 + i, energy: 0.51 + i * 0.05 }),
+        genres: [genre],
+      });
+      candidates.push(await asCandidate(cand));
+    }
+    return candidates;
+  }
+
+  it("rotates bucket coverage across consecutive runs (no high-id starvation)", async () => {
+    const candidates = await seedFiveBucketsWithCandidates();
+
+    // queueCeiling=2 → at most 2 buckets refill per run. Three runs (⌈5/2⌉=3)
+    // must, via the rotating cursor, cover all five buckets — the old global
+    // greedy would keep serving the same top-scoring buckets every run.
+    const coverage = new Set<number>();
+    const cursors: number[] = [];
+    for (let run = 0; run < 3; run++) {
+      const result = await runSurfacingBatch(db, {
+        candidates,
+        noveltyOverride: 0,
+        refillBarOverride: 0,
+        broadBarOverride: 1, // broad never fills — isolates refill rotation
+        queueCeilingOverride: 2,
+        surfaceArtistCapOverride: 0, // disable the per-artist quota
+      });
+      expect(result.refilledBucketIds.length).toBeLessThanOrEqual(2);
+      for (const s of result.surfaced) expect(s.rankerKind).toBe("refill");
+      for (const id of result.refilledBucketIds) coverage.add(id);
+      cursors.push(result.nextRefillCursor);
+      // Reset the queue so effectiveCap stays 2 and every candidate is eligible
+      // again next run (the LAB-60 pending gate would otherwise hold them).
+      await db.execute(sql`TRUNCATE TABLE ${schema.surfaceEvent} RESTART IDENTITY CASCADE`);
+    }
+
+    // Every bucket targeted within the bounded number of runs.
+    expect(coverage).toEqual(new Set([1, 2, 3, 4, 5]));
+    // The cursor moved across runs (rotation, not a fixed start).
+    expect(new Set(cursors).size).toBeGreaterThan(1);
+    // The advanced cursor is persisted to app_config for the next session.
+    const [cfg] = await db
+      .select({ refillCursor: schema.appConfig.refillCursor })
+      .from(schema.appConfig);
+    expect(cfg?.refillCursor).toBe(cursors[cursors.length - 1]);
+  });
+
+  it("rotation does not reduce coverage when the ceiling has headroom — one run covers all 5", async () => {
+    const candidates = await seedFiveBucketsWithCandidates();
+
+    // Non-binding ceiling (50): every above-bar winner surfaces in a single run,
+    // so the rotating cursor never starves a bucket when there is headroom.
+    const result = await runSurfacingBatch(db, {
+      candidates,
+      noveltyOverride: 0,
+      refillBarOverride: 0,
+      broadBarOverride: 1,
+      queueCeilingOverride: 50,
+      surfaceArtistCapOverride: 0,
+    });
+    expect(new Set(result.refilledBucketIds)).toEqual(new Set([1, 2, 3, 4, 5]));
+    expect(result.surfaced).toHaveLength(5);
+    for (const s of result.surfaced) expect(s.rankerKind).toBe("refill");
+  });
+});
