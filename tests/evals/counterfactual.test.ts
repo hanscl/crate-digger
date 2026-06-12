@@ -75,7 +75,13 @@ async function seed(opts: {
   genres: string[];
   /** LAB-73 — defaults to "x" (existing tests share it harmlessly). */
   artist?: string;
-}): Promise<{ id: number; embedding: number[]; genres: string[]; artist: string }> {
+}): Promise<{
+  id: number;
+  embedding: number[];
+  audio: schema.AudioFeatures;
+  genres: string[];
+  artist: string;
+}> {
   const embedding = buildEmbedding({
     audioFeatures: opts.audio,
     genres: opts.genres,
@@ -93,20 +99,26 @@ async function seed(opts: {
     })
     .returning({ id: schema.track.id });
   if (!row) throw new Error("track insert returned no rows");
-  return { id: row.id, embedding, genres: opts.genres, artist };
+  return { id: row.id, embedding, audio: opts.audio, genres: opts.genres, artist };
 }
 
 async function asCand(t: {
   id: number;
   embedding: number[];
+  audio: schema.AudioFeatures;
   genres: string[];
   artist: string;
 }): Promise<Candidate> {
   // Carry the derived primary genre so the refill winner-eligibility gate
   // (same primary genre as the target bucket) lets in-genre candidates win.
+  // Carry audioFeatures too, mirroring production (loadCandidates projects
+  // track.audio_features onto every Candidate): without it the LAB-48 coverage
+  // gate would treat these populated-audio fixtures as null-audio and compare
+  // them on genre dims only.
   return {
     trackId: t.id,
     embedding: t.embedding,
+    audioFeatures: t.audio,
     primaryGenre: derivePrimaryGenre(t.genres),
     artist: t.artist,
     source: "spotify",

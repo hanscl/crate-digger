@@ -4,6 +4,7 @@ import {
   type Candidate,
   type RatedTrack,
   type RefillConfig,
+  refillAudioCoverageGate,
   refillAudioWeight,
   refillFamiliarityPenalty,
   type ScoredCandidate,
@@ -28,10 +29,15 @@ import {
  *   so the ranker NEVER drops candidates from the pool — it only lowers their
  *   scores. λ is the penalty weight (0..1ish), pulled from `app_config.refillLambda`
  *   and frozen into the active `model_version.config`.
- * - Null-audio damping (LAB-36): a candidate whose audioFeatures are null
- *   (or absent) embeds neutral 0.5 audio fills; up-weighting those would make
- *   it similar to everything. Its comparisons degrade to weight 1 — the same
- *   rule the JOIN gate applies in assign.ts.
+ * - Null-audio coverage gate (LAB-48, was LAB-36 damping): a candidate whose
+ *   audioFeatures are null (or absent) embeds neutral 0.5 audio fills — a
+ *   constant, non-discriminating block. Under a gated version
+ *   (`audioCoverageGate` true) its comparisons drop to audioWeight 0, excluding
+ *   that block entirely so the metric reduces to a genre-only cosine; the 0.5
+ *   fills can no longer make it look audio-similar to everything. Legacy/gate-
+ *   off configs keep the LAB-36 weight-1 damping (plain cosine over the fills),
+ *   so historical counterfactual replay stays byte-identical (Constraint #3).
+ *   Populated candidates are unaffected either way (they use audioWeight).
  * - Familiarity penalty (LAB-73): refill keep-similarity rewards same-artist
  *   tracks (near-identical embeddings → top scores), so the queue fills with
  *   repeat artists. When `familiarArtists` contains the candidate's artist key
@@ -62,7 +68,16 @@ export function scoreRefill(
   config: RefillConfig,
   familiarArtists?: ReadonlySet<string>,
 ): ScoredCandidate {
-  const audioWeight = candidate.audioFeatures ? refillAudioWeight(config) : 1;
+  // LAB-48 — a null-audio candidate's 0.5 fills are routed through the SAME
+  // weightedCosine path (via meanWeightedCosine) as everything else; an
+  // audioWeight of 0 zeroes that block in the dot product and both norms,
+  // yielding a genre-only cosine without a separate code path.
+  const hasAudio = candidate.audioFeatures != null;
+  const audioWeight = hasAudio
+    ? refillAudioWeight(config)
+    : refillAudioCoverageGate(config)
+      ? 0 // LAB-48: genre-only cosine — exclude the absent track's audio block
+      : 1; // legacy LAB-36 damping: plain cosine over the neutral 0.5 fills
   const keepSim = meanWeightedCosine(candidate.embedding, keeps, audioWeight);
   const dislikeSim = meanWeightedCosine(candidate.embedding, dislikes, audioWeight);
   const penaltyWeight = refillFamiliarityPenalty(config);

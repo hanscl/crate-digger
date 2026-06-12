@@ -143,6 +143,14 @@ export function normalizeTempo(bpm: number): number {
  * Project audio features into the 6-dim audio segment of the embedding.
  * `null` audio yields a neutral 0.5 across the board so cosine similarity
  * remains well-defined for tracks lacking Spotify features.
+ *
+ * LAB-48 — the 0.5 fills stay (stored pgvector embeddings must remain
+ * real-valued for HNSW; re-embedding would break counterfactual replay), but
+ * they are a constant, non-discriminating signal that still contributes to
+ * cosine and so made null-audio tracks look audio-similar to everything. The
+ * refill metric now EXCLUDES the audio block for a null-audio candidate (via
+ * the version-gated coverage gate — `weightedCosine(.,.,0)`), so the fills no
+ * longer inflate similarity. Comparison-side change only; keep returning 0.5.
  */
 export function audioFeaturesToVector(af: AudioFeatures | null): number[] {
   if (!af) return Array.from({ length: AUDIO_FEATURE_DIM }, () => 0.5);
@@ -267,6 +275,13 @@ export function cosine(a: readonly number[], b: readonly number[]): number {
  * exact. `audioWeight=1` reduces EXACTLY to plain cosine (`x * 1 === x` in
  * IEEE 754 — pinned by test), which is what keeps legacy `{lambda}`-only
  * refill configs byte-identical on replay.
+ *
+ * LAB-48 — `audioWeight=0` is the other endpoint: scaling both vectors' audio
+ * dims by 0 zeroes those dims in the dot product AND in both norms (the loop
+ * accumulates `ai*ai`/`bi*bi` from the already-scaled values), so the metric
+ * reduces to a pure genre-only cosine. {@link genreOnlyCosine} names this path
+ * — it lets a track lacking audio features be compared on genre alone instead
+ * of being made spuriously similar by the neutral 0.5 fills.
  */
 export function weightedCosine(
   a: readonly number[],
@@ -289,6 +304,16 @@ export function weightedCosine(
   }
   if (na === 0 || nb === 0) return 0;
   return dot / Math.sqrt(na * nb);
+}
+
+/**
+ * LAB-48 — cosine over the genre dims only: the 6-dim audio block is excluded
+ * (`weightedCosine` at weight 0 zeroes it in both the dot product and both
+ * norms) so a track lacking audio features is not made spuriously similar by
+ * the neutral 0.5 fills `audioFeaturesToVector(null)` produces.
+ */
+export function genreOnlyCosine(a: readonly number[], b: readonly number[]): number {
+  return weightedCosine(a, b, 0);
 }
 
 /**

@@ -134,6 +134,7 @@ describe("params.update — audioWeight (LAB-36)", () => {
       audioWeight: 3,
       genreGate: "slot-overlap",
       familiarityPenalty: 0.1,
+      audioCoverageGate: true,
     });
   });
 });
