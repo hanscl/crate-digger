@@ -189,13 +189,18 @@ describe("why-surfaced buildPrompt", () => {
 
   it("steers the model off sonic claims when audio is absent", () => {
     const prompt = buildPrompt({ ...base, hasAudioFeatures: false });
-    expect(prompt).toContain("ABSENT");
-    expect(prompt).toContain("do NOT claim");
+    // Assert the FULL anchored line (not a bare substring), and that the
+    // audio-present wording is absent — so the two branches are provably distinct.
+    expect(prompt).toContain(
+      "Audio features: ABSENT — do NOT claim any sonic/audio similarity; ground only in genre and bucket",
+    );
+    expect(prompt).not.toContain("available (you may reference sonic qualities)");
   });
 
   it("permits sonic references when audio is present", () => {
     const prompt = buildPrompt({ ...base, hasAudioFeatures: true });
-    expect(prompt).toContain("available");
+    expect(prompt).toContain("Audio features: available (you may reference sonic qualities)");
+    expect(prompt).not.toContain("ABSENT");
   });
 });
 
