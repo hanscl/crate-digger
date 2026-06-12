@@ -91,7 +91,15 @@ function headers(env: Env): Record<string, string> {
 /** GET + JSON parse with the shared retry/backoff. Returns null on any failure. */
 async function vibGet<T>(path: string, env: Env): Promise<T | null> {
   const res = await rateLimiter.schedule(() =>
-    fetchWithRetry(`${VIBERATE_BASE}${path}`, { method: "GET", headers: headers(env) }),
+    // `label` keeps retry/error logs prefixed `[viberate]` — the shared helper
+    // otherwise defaults to `[reccobeats]` and would misattribute failures.
+    fetchWithRetry(
+      `${VIBERATE_BASE}${path}`,
+      { method: "GET", headers: headers(env) },
+      {
+        label: "viberate",
+      },
+    ),
   );
   if (!res) return null;
   try {
@@ -195,6 +203,9 @@ async function pullTrending(limit: number, env: Env): Promise<RawCandidate[]> {
   );
   const items = Array.isArray(data?.data) ? data.data : [];
   const out: RawCandidate[] = [];
+  // Defensive cap: we ask for `rows` via the `limit` param, but don't trust the
+  // provider to honour it — slice so a server that over-delivers can't blow past
+  // MAX_TRENDING_ROWS into the surfacing pool.
   for (const item of items.slice(0, rows)) {
     const candidate = toCandidate(item, country);
     if (candidate) out.push(candidate);
