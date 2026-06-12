@@ -223,6 +223,7 @@ export const queueRouter = router({
           title: track.title,
           artist: track.artist,
           primaryGenre: track.primaryGenre,
+          audioFeatures: track.audioFeatures,
         })
         .from(surfaceEvent)
         .innerJoin(track, eq(track.id, surfaceEvent.trackId))
@@ -251,6 +252,8 @@ export const queueRouter = router({
           winnerScore: row.winnerScore,
           subScores: winner?.subScores,
           poolSize: row.candidatePool.length,
+          // LAB-49: ground the explanation in available signals — no sonic claims for null-audio tracks.
+          hasAudioFeatures: row.audioFeatures !== null,
         },
         ctx.appEnv,
       );

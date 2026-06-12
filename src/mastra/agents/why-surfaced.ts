@@ -30,6 +30,11 @@ export type WhySurfacedInput = {
   primaryGenre: string | null;
   rankerKind: "refill" | "broad";
   bucketName: string | null;
+  /**
+   * LAB-49: whether the track has real audio features; when false the
+   * explanation must not claim sonic/audio similarity (no audio data to ground it).
+   */
+  hasAudioFeatures: boolean;
   /** Score the ranker assigned at decision time. */
   winnerScore: number;
   /** Sub-scores from the surface_event row — `keepSim`, `dislikeSim`, etc. */
@@ -45,6 +50,12 @@ You will receive the structured decision context: which ranker chose the
 track (refill = exploit, broad = explore), the winning score, sub-scores,
 and (for refill) which bucket anchored the choice.
 
+Ground every claim ONLY in the signals you are given. The context states
+whether audio features are available. When audio features are ABSENT you MUST
+NOT claim any sonic, audio, acoustic, energy, tempo, mood, or sounds-like
+quality or similarity — there is no audio data to justify it; lean only on the
+genre and the bucket. Reference sonic qualities ONLY when audio features are present.
+
 Write ONE sentence. Plain English. No quotes. No emoji. No trailing
 punctuation. Lead with the cause ("Because…", "Surfaced from…",
 "Closest to your <bucket>…"). Mention the bucket by name when given.
@@ -59,6 +70,8 @@ export const whySurfacedAgent = new Agent({
   model: "anthropic/claude-haiku-4-5",
 });
 
+// LAB-49: the fallback copy references only ranker/bucket/score metadata and
+// deliberately never asserts sonic similarity, so it is safe for audio-less tracks.
 function fallbackExplanation(input: WhySurfacedInput): Explanation {
   const score = input.winnerScore.toFixed(3);
   if (input.rankerKind === "refill" && input.bucketName) {
@@ -74,13 +87,17 @@ function fallbackExplanation(input: WhySurfacedInput): Explanation {
   };
 }
 
-function buildPrompt(input: WhySurfacedInput): string {
+export function buildPrompt(input: WhySurfacedInput): string {
   const sub = input.subScores ?? {};
   const subLines = Object.entries(sub)
     .map(([k, v]) => `  - ${k}: ${typeof v === "number" ? v.toFixed(3) : String(v)}`)
     .join("\n");
+  const audioLine = input.hasAudioFeatures
+    ? "available (you may reference sonic qualities)"
+    : "ABSENT — do NOT claim any sonic/audio similarity; ground only in genre and bucket";
   return `Track: ${input.trackTitle} — ${input.trackArtist}
 Primary genre: ${input.primaryGenre ?? "(none)"}
+Audio features: ${audioLine}
 Ranker: ${input.rankerKind}
 ${input.bucketName ? `Anchor bucket: ${input.bucketName}` : "Anchor bucket: (none — broad)"}
 Winner score: ${input.winnerScore.toFixed(3)}
