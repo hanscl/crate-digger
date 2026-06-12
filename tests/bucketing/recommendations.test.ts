@@ -115,14 +115,82 @@ describe("evaluateBucketRecommendations — merge heuristic", () => {
     expect(r.merges[0]?.status).toBe("pending");
   });
 
-  it("does NOT emit a merge across different primary_genre even at high cosine", async () => {
-    // Two buckets whose audio dims are identical but whose primary_genre
-    // labels differ. Cosine on the 64-dim vector is high, but the
-    // user-facing genre split blocks the merge.
-    await seedBucket({ name: "rock", centroid: vec(0), primaryGenre: "rock" });
-    await seedBucket({ name: "folk", centroid: vec(1), primaryGenre: "folk" });
+  it("does NOT merge two POPULATED lanes of different primary_genre, even with overlapping slots at high cosine", async () => {
+    // LAB-81 — lane×lane keeps the exact-genre gate. Same genre slot (slot 0)
+    // and near-identical centroids (cosine ≈ 1), but different primary_genre
+    // shelves → no merge. Collapsing two established shelves must never ride on
+    // similarity alone.
+    await seedBucket({ name: "rock", centroid: vec(0), primaryGenre: "rock", memberCount: 3 });
+    await seedBucket({ name: "pop", centroid: vec(0, 0.001), primaryGenre: "pop", memberCount: 3 });
     const r = await evaluateBucketRecommendations(db, { mergeThreshold: 0.5 });
     expect(r.merges).toHaveLength(0);
+  });
+
+  it("folds a SINGLETON into a populated neighbor across genre via slot overlap", async () => {
+    // LAB-81 — a one-member cold-start seed (disco) shares genre slot 0 with a
+    // populated rock shelf. The singleton-fold path uses the slot-overlap gate,
+    // so the cross-genre merge IS recommended (JOIN-shaped, not a shelf
+    // collapse). accept() folds the singleton into the larger bucket.
+    const single = await seedBucket({
+      name: "disco (auto)",
+      centroid: vec(0),
+      primaryGenre: "disco",
+      memberCount: 1,
+    });
+    const lane = await seedBucket({
+      name: "Heartfelt Rockers",
+      centroid: vec(0, 0.001),
+      primaryGenre: "rock",
+      memberCount: 20,
+    });
+    const r = await evaluateBucketRecommendations(db, { mergeThreshold: 0.9 });
+    expect(r.merges).toHaveLength(1);
+    expect(r.merges[0]?.bucketIds.slice().sort((x, y) => x - y)).toEqual(
+      [single, lane].sort((x, y) => x - y),
+    );
+  });
+
+  it("does NOT fold a singleton into a neighbor it shares no genre slot with", async () => {
+    // Different slots (0 vs 1) → no slot overlap → no fold, even though the
+    // audio-driven cosine (~0.6) clears the threshold.
+    await seedBucket({
+      name: "disco (auto)",
+      centroid: vec(0),
+      primaryGenre: "disco",
+      memberCount: 1,
+    });
+    await seedBucket({
+      name: "Heavy Metal Thunder",
+      centroid: vec(1),
+      primaryGenre: "metal",
+      memberCount: 20,
+    });
+    const r = await evaluateBucketRecommendations(db, { mergeThreshold: 0.5 });
+    expect(r.merges).toHaveLength(0);
+  });
+
+  it("folds two cross-genre SINGLETONS that share a slot — the case the old exact-genre gate blocked", async () => {
+    // Both are 1-member cold-start seeds with DIFFERENT primary_genre but the
+    // same genre slot (slot 0). The old `a.primaryGenre !== b.primaryGenre`
+    // guard blocked this; the singleton path (either side memberCount === 1)
+    // now folds them via slot overlap.
+    const a = await seedBucket({
+      name: "disco (auto)",
+      centroid: vec(0),
+      primaryGenre: "disco",
+      memberCount: 1,
+    });
+    const b = await seedBucket({
+      name: "funk (auto)",
+      centroid: vec(0, 0.001),
+      primaryGenre: "funk",
+      memberCount: 1,
+    });
+    const r = await evaluateBucketRecommendations(db, { mergeThreshold: 0.9 });
+    expect(r.merges).toHaveLength(1);
+    expect(r.merges[0]?.bucketIds.slice().sort((x, y) => x - y)).toEqual(
+      [a, b].sort((x, y) => x - y),
+    );
   });
 
   it("is idempotent — running twice does not create duplicates", async () => {

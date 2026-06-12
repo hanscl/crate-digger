@@ -8,8 +8,9 @@ import {
   bucketRecommendation,
   type RecommendationStatus,
 } from "@/db/schema";
-import { cosine } from "@/lib/embedding";
+import { cosine, genreSlotsFromVector, hasSlotOverlap } from "@/lib/embedding";
 import type { Tx } from "./assign";
+import { sameGenreScope } from "./genre-scope";
 
 /**
  * Merge / split recommendation heuristics. NEVER auto-applies — the admin
@@ -19,11 +20,13 @@ import type { Tx } from "./assign";
  * Heuristics:
  *
  *   - MERGE: any unordered bucket pair whose centroid cosine similarity is
- *     ≥ `app_config.mergeThreshold` (default 0.92). Same-genre is a soft
- *     prerequisite — buckets with different `primary_genre` won't merge even
- *     at high cosine, because cosine on the multi-hot genre dims keeps
- *     mixed-genre pairs close while the user's mental model treats them as
- *     distinct shelves.
+ *     ≥ `app_config.mergeThreshold` (default 0.92) AND passes the genre gate
+ *     (`mergeGenreCompatible`). LAB-81 made the gate asymmetric by size: a
+ *     SINGLETON folding into a neighbor uses the LAB-47 slot-overlap gate (it
+ *     moves one orphaned cold-start seed track, JOIN-shaped), while a lane×lane
+ *     pair keeps the conservative exact-`primary_genre` rule — cosine on the
+ *     multi-hot genre dims keeps even cross-genre shelves close, and collapsing
+ *     two established shelves must never ride on similarity alone.
  *
  *   - SPLIT: any bucket whose internal dislike rate
  *     (`dislike_count / member_count`) exceeds `app_config.splitDislikeRate`
@@ -82,6 +85,31 @@ export async function evaluateBucketRecommendations(
   return { merges, splits, totalPending: pendingCount?.n ?? 0 };
 }
 
+/**
+ * LAB-81 — genre gate for MERGE recommendations.
+ *
+ * Lane×lane merges keep the conservative LAB-36 exact-genre rule: collapsing
+ * two established shelves is destructive, and cosine on the multi-hot genre
+ * dims keeps even cross-genre lanes close, so high similarity alone must never
+ * recommend a collapse. But a SINGLETON — one orphaned cold-start seed track —
+ * folding into a neighbor is JOIN-shaped, not a shelf collapse, so it uses the
+ * LAB-47 slot-overlap gate (lets e.g. a one-track `disco` seed fold into a
+ * `rock` shelf it shares a genre slot with). A zero-genre-mass bucket on either
+ * side falls back to exact primary-genre equality, matching the slot-overlap
+ * JOIN gate's degenerate case (`genreScopeCompatible`).
+ */
+function mergeGenreCompatible(a: Bucket, b: Bucket): boolean {
+  if (a.memberCount !== 1 && b.memberCount !== 1) {
+    return sameGenreScope(a.primaryGenre, b.primaryGenre);
+  }
+  const slotsA = genreSlotsFromVector(a.centroid);
+  const slotsB = genreSlotsFromVector(b.centroid);
+  if (slotsA.size === 0 || slotsB.size === 0) {
+    return sameGenreScope(a.primaryGenre, b.primaryGenre);
+  }
+  return hasSlotOverlap(slotsA, slotsB);
+}
+
 async function emitMergeRecommendations(
   db: Database | Tx,
   buckets: readonly Bucket[],
@@ -94,14 +122,9 @@ async function emitMergeRecommendations(
       const a = buckets[i];
       const b = buckets[j];
       if (!a || !b) continue;
-      // Same primary_genre is required: cosine on the genre multi-hot keeps
-      // pairs close even when the user clearly maintains them as separate
-      // shelves. Without this guard `[indie-rock] + [folk]` could merge if
-      // their audio dims drift together. LAB-36 deliberately did NOT widen
-      // this to the slot-overlap gate: a JOIN moves one track; a MERGE
-      // collapses whole shelves. The conservative exact-match asymmetry is
-      // intentional.
-      if (a.primaryGenre !== b.primaryGenre) continue;
+      // LAB-81 — singleton folds use the slot-overlap gate; lane×lane merges
+      // stay exact-genre (see mergeGenreCompatible).
+      if (!mergeGenreCompatible(a, b)) continue;
       const sim = cosine(a.centroid, b.centroid);
       if (sim < mergeThreshold) continue;
       const ids = [a.id, b.id].sort((x, y) => x - y);
