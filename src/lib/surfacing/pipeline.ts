@@ -466,17 +466,6 @@ async function runRefillPhase(db: Database, input: RefillPhaseInput): Promise<Re
     winnersByBucket.set(hit.bucketId, list);
   }
 
-  // LAB-38 — persist the advanced cursor so the rotation survives across runs.
-  // The app_config id=1 row always exists here: ensureActiveModelVersion ran
-  // earlier in runSurfacingBatch and lockAppConfig upserts it. Skip the write on
-  // dryRun (previews never mutate state) and when the cursor didn't move.
-  if (!dryRun && nextRefillCursor !== refillCursor) {
-    await db
-      .update(appConfig)
-      .set({ refillCursor: nextRefillCursor, updatedAt: sql`NOW()` })
-      .where(eq(appConfig.id, 1));
-  }
-
   for (const [bucketId, winners] of winnersByBucket) {
     refilledBucketIds.push(bucketId);
     if (!dryRun) {
@@ -493,6 +482,24 @@ async function runRefillPhase(db: Database, input: RefillPhaseInput): Promise<Re
     }
   }
 
+  // LAB-38 — persist the advanced cursor ONLY after the surface_events are
+  // written. The cursor write and the event writes are separate statements (not
+  // one transaction), so persisting first would let a mid-logging failure leave
+  // the cursor advanced past buckets that never got a surface_event — those
+  // tracks (neither pending nor decided) would then wait a full wrap to retry.
+  // Writing the cursor last keeps the rotation state consistent with what
+  // actually surfaced: on failure the cursor stays put and the same buckets are
+  // retried next run. The app_config id=1 row always exists here
+  // (ensureActiveModelVersion + lockAppConfig upsert it earlier in
+  // runSurfacingBatch). Skip on dryRun (previews never mutate state) and when
+  // the cursor didn't move.
+  if (!dryRun && nextRefillCursor !== refillCursor) {
+    await db
+      .update(appConfig)
+      .set({ refillCursor: nextRefillCursor, updatedAt: sql`NOW()` })
+      .where(eq(appConfig.id, 1));
+  }
+
   return { surfaced, events, refilledBucketIds, lastPool, artistQuotaDeferred, nextRefillCursor };
 }
 
@@ -500,12 +507,18 @@ async function runRefillPhase(db: Database, input: RefillPhaseInput): Promise<Re
  * LAB-38 — rotate a sorted-ascending list of bucket ids so it STARTS at the
  * first id >= `cursor`, with the ids < `cursor` appended at the end (a wrap).
  * This is the order the ceiling-bound winner selection walks, so consecutive
- * runs cover different bands of buckets and no bucket starves. When no id
- * reaches the cursor (it ran past the highest id), the list is returned
- * unchanged — restarting at the lowest id, the natural wrap. Pure.
+ * runs cover different bands of buckets and no bucket starves. The `start <= 0`
+ * guard returns the list unchanged for BOTH no-rotation cases:
+ *   - start === -1: no id reaches the cursor (it ran past the highest id) →
+ *     wrap to the lowest id, the natural restart.
+ *   - start === 0: the cursor is already at/before the first id (and the empty
+ *     list) → no rotation is needed.
+ * Pure.
  */
 function rotateFromCursor(ids: readonly number[], cursor: number): number[] {
   const start = ids.findIndex((id) => id >= cursor);
+  // start === -1 (cursor past the highest id → wrap to start) and start === 0
+  // (cursor at/before the first id → no rotation) both leave the list as-is.
   if (start <= 0) return [...ids];
   return [...ids.slice(start), ...ids.slice(0, start)];
 }
