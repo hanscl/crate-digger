@@ -289,13 +289,36 @@ export const bucketsRouter = router({
         }
 
         if (rec.kind === "merge") {
-          const [keepId, mergeId] = [...rec.bucketIds].sort((a, b) => a - b);
-          if (keepId === undefined || mergeId === undefined || keepId === mergeId) {
+          const ids = [...rec.bucketIds];
+          if (
+            ids.length !== 2 ||
+            ids[0] === undefined ||
+            ids[1] === undefined ||
+            ids[0] === ids[1]
+          ) {
             throw new TRPCError({
               code: "BAD_REQUEST",
               message: "merge recommendation must reference two distinct buckets",
             });
           }
+          // LAB-81 — keep the LARGER-member bucket (fold smaller into larger),
+          // tie-break on lower id. A singleton folding into its populated
+          // neighbor must absorb INTO the established shelf so the survivor
+          // keeps that shelf's name/identity; keeping min(id) could instead
+          // fold a populated lane into a one-track "(auto)" seed bucket.
+          const sizes = await tx
+            .select({ id: bucket.id, memberCount: bucket.memberCount })
+            .from(bucket)
+            .where(inArray(bucket.id, ids));
+          if (sizes.length !== 2) {
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message: "merge recommendation references a bucket that no longer exists",
+            });
+          }
+          sizes.sort((x, y) => y.memberCount - x.memberCount || x.id - y.id);
+          const keepId = sizes[0]!.id;
+          const mergeId = sizes[1]!.id;
           await tx
             .update(bucketMember)
             .set({ bucketId: keepId })
