@@ -1,0 +1,1 @@
+ALTER TABLE "app_config" ADD COLUMN "refill_cursor" integer DEFAULT 0 NOT NULL;
