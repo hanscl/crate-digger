@@ -77,6 +77,18 @@ export type RefillConfig = {
    * {@link refillFamiliarityPenalty}.
    */
   familiarityPenalty?: number;
+  /**
+   * LAB-48 — when true, a candidate that LACKS audio features is compared on
+   * genre dims only (`weightedCosine(.,.,0)`) instead of the LAB-36
+   * plain-cosine-over-0.5-fills damping. The neutral 0.5 audio fills are a
+   * constant, non-discriminating signal; under plain cosine they still
+   * contributed mass and made null-audio tracks look audio-similar to
+   * everything. Excluding the audio block reduces the metric to a pure genre
+   * cosine for those candidates (populated candidates are unaffected). Optional:
+   * legacy configs predate it and MUST replay byte-identically, so absence
+   * means false — see {@link refillAudioCoverageGate}.
+   */
+  audioCoverageGate?: boolean;
 };
 
 /**
@@ -102,6 +114,15 @@ export function refillGenreGate(config: RefillConfig): GenreGate {
 /** Effective familiarity penalty for a refill config; legacy configs → 0 (no penalty). */
 export function refillFamiliarityPenalty(config: RefillConfig): number {
   return config.familiarityPenalty ?? 0;
+}
+
+/**
+ * LAB-48 — effective audio-coverage gate for a refill config; legacy configs →
+ * false (the LAB-36 weight-1 damping). When true, a null-audio candidate is
+ * compared on genre dims only — see {@link RefillConfig.audioCoverageGate}.
+ */
+export function refillAudioCoverageGate(config: RefillConfig): boolean {
+  return config.audioCoverageGate ?? false;
 }
 
 /**
@@ -180,6 +201,12 @@ export function isRefillConfig(x: unknown): x is RefillConfig {
   if (c.familiarityPenalty !== undefined) {
     if (!Number.isFinite(c.familiarityPenalty) || c.familiarityPenalty < 0) return false;
     if (c.familiarityPenalty > 1) return false;
+  }
+  // LAB-48 — audioCoverageGate optional (legacy configs predate it → false).
+  // When present it must be a boolean; a non-boolean would silently decide the
+  // null-audio comparison path and break replay determinism.
+  if (c.audioCoverageGate !== undefined && typeof c.audioCoverageGate !== "boolean") {
+    return false;
   }
   return true;
 }

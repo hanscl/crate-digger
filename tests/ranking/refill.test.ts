@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { AudioFeatures } from "@/db/schema";
-import { AUDIO_FEATURE_DIM, buildEmbedding, cosine, weightedCosine } from "@/lib/embedding";
+import {
+  AUDIO_FEATURE_DIM,
+  buildEmbedding,
+  cosine,
+  genreOnlyCosine,
+  weightedCosine,
+} from "@/lib/embedding";
 import { scoreRefill, scoreRefillBatch } from "@/lib/ranking/refill";
 import {
   artistKey,
@@ -146,6 +152,93 @@ describe("scoreRefill — audio-weighted metric (LAB-36)", () => {
     expect(weighted.subScores.keepSim).toBe(cosine(cand.embedding, keep.embedding));
     // Sanity: the candidate's audio dims really are the neutral fills.
     for (let i = 0; i < AUDIO_FEATURE_DIM; i++) expect(cand.embedding[i]).toBe(0.5);
+  });
+});
+
+describe("scoreRefill — null-audio coverage gate (LAB-48)", () => {
+  const af = (overrides: Partial<AudioFeatures>): AudioFeatures => ({
+    tempo: 120,
+    energy: 0.5,
+    valence: 0.5,
+    danceability: 0.5,
+    acousticness: 0.5,
+    instrumentalness: 0.5,
+    ...overrides,
+  });
+
+  it("null-audio candidate no longer inflates cross-genre similarity under the coverage gate", () => {
+    // Candidate lacks audio (neutral 0.5 fills) and sits in a DISJOINT genre
+    // slot from the keep. Under the legacy weight-1 damping, the 0.5 fills line
+    // up with the keep's populated audio enough to manufacture a positive
+    // keepSim across genre lanes that share no slot. The gate excludes the audio
+    // block, collapsing keepSim to the pure (zero) genre overlap.
+    const cand: Candidate = {
+      trackId: 1,
+      embedding: buildEmbedding({ audioFeatures: null, genres: ["jazz"] }),
+      audioFeatures: null,
+    };
+    const keep = rated(
+      2,
+      buildEmbedding({ audioFeatures: af({ energy: 0.8 }), genres: ["metal"] }),
+    );
+
+    const gated = scoreRefill(cand, [keep], [], {
+      lambda: 0,
+      audioWeight: 2.5,
+      genreGate: "slot-overlap",
+      audioCoverageGate: true,
+    });
+    const legacy = scoreRefill(cand, [keep], [], {
+      lambda: 0,
+      audioWeight: 2.5,
+      genreGate: "slot-overlap",
+    });
+
+    const legacyKeepSim = legacy.subScores.keepSim ?? Number.NaN;
+    const gatedKeepSim = gated.subScores.keepSim ?? Number.NaN;
+    // Legacy path: the 0.5 fills inflate cross-genre sim above zero.
+    expect(legacyKeepSim).toBeGreaterThan(0);
+    // Gated path: audio excluded, no shared genre slot → genre-only cosine ≈ 0.
+    expect(gatedKeepSim).toBeCloseTo(0, 12);
+    expect(gatedKeepSim).toBeLessThan(legacyKeepSim);
+    // The gated keepSim is exactly the genre-only cosine over the disjoint slots.
+    expect(gatedKeepSim).toBe(genreOnlyCosine(cand.embedding, keep.embedding));
+  });
+
+  it("gate off preserves byte-identical legacy scoring for a null-audio candidate", () => {
+    // A gate-off config scores a null-audio candidate at plain cosine (weight 1)
+    // — exactly the pre-LAB-48 behavior the existing damping test pins.
+    const cand: Candidate = {
+      trackId: 1,
+      embedding: buildEmbedding({ audioFeatures: null, genres: ["rock"] }),
+      audioFeatures: null,
+    };
+    const keep = rated(2, buildEmbedding({ audioFeatures: af({ energy: 0.7 }), genres: ["rock"] }));
+    const gateOff = scoreRefill(cand, [keep], [], {
+      lambda: 0.3,
+      audioWeight: 4,
+      genreGate: "slot-overlap",
+      // audioCoverageGate omitted → false (legacy damping).
+    });
+    // toBe, not toBeCloseTo: weight 1 multiplies every dim by 1, exact in IEEE 754.
+    expect(gateOff.subScores.keepSim).toBe(cosine(cand.embedding, keep.embedding));
+  });
+
+  it("a populated candidate is unaffected by the gate", () => {
+    // The gate only changes the null-audio branch; an audio-bearing candidate
+    // scores via audioWeight regardless of the gate flag.
+    const candAudio = af({ energy: 0.9, acousticness: 0.1 });
+    const cand: Candidate = {
+      trackId: 1,
+      embedding: buildEmbedding({ audioFeatures: candAudio, genres: ["rock"] }),
+      audioFeatures: candAudio,
+    };
+    const keep = rated(2, buildEmbedding({ audioFeatures: af({ energy: 0.4 }), genres: ["rock"] }));
+    const base: RefillConfig = { lambda: 0.3, audioWeight: 2.5, genreGate: "slot-overlap" };
+    const withoutGate = scoreRefill(cand, [keep], [], base);
+    const withGate = scoreRefill(cand, [keep], [], { ...base, audioCoverageGate: true });
+    expect(withGate.subScores.keepSim).toBe(withoutGate.subScores.keepSim);
+    expect(withGate.score).toBe(withoutGate.score);
   });
 });
 
