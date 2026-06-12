@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AudioFeatures } from "@/db/schema";
 import { nameBucket } from "@/mastra/agents/bucket-namer";
 import { parsePlaylistText } from "@/mastra/agents/playlist-parser";
-import { explainWhySurfaced } from "@/mastra/agents/why-surfaced";
+import { buildPrompt, explainWhySurfaced } from "@/mastra/agents/why-surfaced";
 import type { Env } from "@/server/env";
 
 const NEUTRAL_AUDIO: AudioFeatures = {
@@ -129,6 +129,7 @@ describe("why-surfaced fallback", () => {
         winnerScore: 0.812,
         subScores: { keepSim: 0.85, dislikeSim: 0.04 },
         poolSize: 50,
+        hasAudioFeatures: true,
       },
       noKeyEnv,
     );
@@ -147,11 +148,54 @@ describe("why-surfaced fallback", () => {
         winnerScore: 0.5,
         subScores: { p_keep: 0.5 },
         poolSize: 100,
+        hasAudioFeatures: true,
       },
       noKeyEnv,
     );
     expect(result.reason).toMatch(/broad/i);
     expect(result.reason).toMatch(/100/);
+  });
+
+  it("audio-less track makes no sonic/audio claim", async () => {
+    const result = await explainWhySurfaced(
+      {
+        trackTitle: "Foo",
+        trackArtist: "Bar",
+        primaryGenre: "indie",
+        rankerKind: "refill",
+        bucketName: "Indie picks",
+        winnerScore: 0.7,
+        subScores: { keepSim: 0.7 },
+        poolSize: 30,
+        hasAudioFeatures: false,
+      },
+      noKeyEnv,
+    );
+    expect(result.reason).not.toMatch(/sonic|acoustic|tempo|timbre|\benergy\b|\bsounds?\s+like\b/i);
+  });
+});
+
+describe("why-surfaced buildPrompt", () => {
+  const base = {
+    trackTitle: "Foo",
+    trackArtist: "Bar",
+    primaryGenre: "indie",
+    rankerKind: "refill" as const,
+    bucketName: "Indie picks",
+    winnerScore: 0.7,
+    subScores: { keepSim: 0.7 },
+    poolSize: 30,
+  };
+
+  it("steers the model off sonic claims when audio is absent", () => {
+    const prompt = buildPrompt({ ...base, hasAudioFeatures: false });
+    expect(prompt).toContain("ABSENT");
+    expect(prompt).toContain("do NOT claim");
+  });
+
+  it("permits sonic references when audio is present", () => {
+    const prompt = buildPrompt({ ...base, hasAudioFeatures: true });
+    expect(prompt).toContain("available");
   });
 });
 
