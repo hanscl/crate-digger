@@ -197,3 +197,80 @@ describe("buckets.removeMember (LAB-62)", () => {
     });
   });
 });
+
+function emptyStats(): schema.FeatureStats {
+  const zero = {
+    tempo: 0,
+    energy: 0,
+    valence: 0,
+    danceability: 0,
+    acousticness: 0,
+    instrumentalness: 0,
+  };
+  return { count: 0, mean: { ...zero }, m2: { ...zero } };
+}
+
+describe("buckets.accept — merge (LAB-81 keep-larger)", () => {
+  it("folds the singleton into the larger bucket, keeping the larger bucket's identity", async () => {
+    const centroid = buildEmbedding({ audioFeatures: audio(), genres: ["rock"] });
+
+    // Member tracks (bucket_member FK targets).
+    const t1 = await insertTrack("singleton-track");
+    const t2 = await insertTrack("lane-track-1");
+    const t3 = await insertTrack("lane-track-2");
+
+    // Singleton created FIRST → lower id, so keep-larger must beat keep-min-id.
+    const [single] = await db
+      .insert(schema.bucket)
+      .values({
+        name: "disco (auto)",
+        centroid,
+        featureStats: emptyStats(),
+        memberCount: 1,
+        primaryGenre: "disco",
+      })
+      .returning({ id: schema.bucket.id });
+    const [lane] = await db
+      .insert(schema.bucket)
+      .values({
+        name: "Heartfelt Rockers",
+        centroid,
+        featureStats: emptyStats(),
+        memberCount: 2,
+        primaryGenre: "rock",
+      })
+      .returning({ id: schema.bucket.id });
+    if (!single || !lane) throw new Error("bucket insert returned no rows");
+
+    await db.insert(schema.bucketMember).values([
+      { bucketId: single.id, trackId: t1, origin: "seed_track" },
+      { bucketId: lane.id, trackId: t2, origin: "seed_track" },
+      { bucketId: lane.id, trackId: t3, origin: "seed_track" },
+    ]);
+
+    const [rec] = await db
+      .insert(schema.bucketRecommendation)
+      .values({
+        kind: "merge",
+        bucketIds: [single.id, lane.id].sort((a, b) => a - b),
+        reason: { similarity: 0.95, threshold: 0.81 },
+      })
+      .returning({ id: schema.bucketRecommendation.id });
+    if (!rec) throw new Error("recommendation insert returned no rows");
+
+    const out = await caller().accept({ recommendationId: rec.id });
+    expect(out).toMatchObject({ ok: true, kind: "merge" });
+
+    // The singleton (lower id) is gone; the larger lane bucket survives with
+    // all three members and keeps its name.
+    const survivors = await db.select().from(schema.bucket);
+    expect(survivors).toHaveLength(1);
+    expect(survivors[0]?.id).toBe(lane.id);
+    expect(survivors[0]?.name).toBe("Heartfelt Rockers");
+    expect(survivors[0]?.memberCount).toBe(3);
+
+    const members = await db.select().from(schema.bucketMember);
+    expect(members).toHaveLength(3);
+    expect(members.every((m) => m.bucketId === lane.id)).toBe(true);
+  });
+});
