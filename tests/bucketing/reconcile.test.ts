@@ -415,9 +415,10 @@ describe("reconcileBuckets — LAB-36/73 refill config upgrade step", () => {
       audioWeight: 3,
       genreGate: "slot-overlap",
       familiarityPenalty: 0.1,
+      audioCoverageGate: true,
     });
     expect(active?.note).toBe(
-      "refill config upgrade: slot-overlap gate + audio-weighted cosine + familiarity penalty",
+      "refill config upgrade: slot-overlap gate + audio-weighted cosine + familiarity penalty + null-audio coverage gate",
     );
 
     const second = await reconcileBuckets(db);
@@ -455,6 +456,7 @@ describe("reconcileBuckets — LAB-36/73 refill config upgrade step", () => {
       audioWeight: 4,
       genreGate: "slot-overlap",
       familiarityPenalty: 0.1,
+      audioCoverageGate: true,
     });
 
     const second = await reconcileBuckets(db);
@@ -503,9 +505,10 @@ describe("reconcileBuckets — LAB-36/73 refill config upgrade step", () => {
       audioWeight: 2.5,
       genreGate: "slot-overlap",
       familiarityPenalty: 0.1,
+      audioCoverageGate: true,
     });
     expect(active?.note).toBe(
-      "refill config upgrade: slot-overlap gate + audio-weighted cosine + familiarity penalty",
+      "refill config upgrade: slot-overlap gate + audio-weighted cosine + familiarity penalty + null-audio coverage gate",
     );
     const [repairBump] = await db
       .select()
@@ -537,6 +540,7 @@ describe("reconcileBuckets — LAB-36/73 refill config upgrade step", () => {
       audioWeight: 2.5,
       genreGate: "slot-overlap",
       familiarityPenalty: 0.1, // novelty 0.5 × 0.2
+      audioCoverageGate: true,
     });
 
     const second = await reconcileBuckets(db);

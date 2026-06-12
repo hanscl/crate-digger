@@ -28,9 +28,11 @@ export type Candidate = {
   artist?: string | null;
   /**
    * Audio features at decision time; persisted into
-   * `surface_event.features_at_decision`. LAB-36: also the null-audio damping
-   * key for refill scoring — null/absent means the embedding's audio dims are
-   * neutral fills, so weighted comparisons degrade to plain cosine.
+   * `surface_event.features_at_decision`. Also the null-audio coverage key for
+   * refill scoring: null/absent means the embedding's audio dims are neutral
+   * 0.5 fills, so refill compares this candidate on genre dims only under a
+   * gated version (LAB-48 — `weightedCosine(.,.,0)`), or, on a legacy gate-off
+   * version, degrades to plain cosine over those fills (the old LAB-36 damping).
    */
   audioFeatures?: AudioFeatures | null;
 };

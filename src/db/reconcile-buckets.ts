@@ -32,7 +32,7 @@ try {
   }
   if (result.refillConfigUpgraded) {
     console.log(
-      "bucket reconcile: refill config upgraded (slot-overlap gate + audio-weighted cosine + familiarity penalty)",
+      "bucket reconcile: refill config upgraded (slot-overlap gate + audio-weighted cosine + familiarity penalty + null-audio coverage gate)",
     );
   }
 } catch (err) {

@@ -139,7 +139,7 @@ export async function reconcileBuckets(db: Database): Promise<ReconcileBucketsRe
     // membership step so a drifted upgrade chains repair → upgrade. Self-gating
     // and lock-serialized; null means "already upgraded or nothing to upgrade".
     const upgraded = await mintRefillConfigUpgradeInTx(tx, {
-      note: "refill config upgrade: slot-overlap gate + audio-weighted cosine + familiarity penalty",
+      note: "refill config upgrade: slot-overlap gate + audio-weighted cosine + familiarity penalty + null-audio coverage gate",
     });
     const refillConfigUpgraded = upgraded !== null;
 
