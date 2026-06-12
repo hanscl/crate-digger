@@ -176,10 +176,10 @@ export async function bumpModelVersionCarryForwardInTx(
 }
 
 /**
- * Idempotent refill-config upgrade for EXISTING installs (LAB-36 + LAB-73):
- * when the ACTIVE refill version's config predates any later config field,
- * mint ONE refill version carrying the present fields forward and filling in
- * whichever are missing — parent-chained, under the app_config lock
+ * Idempotent refill-config upgrade for EXISTING installs (LAB-36 + LAB-73 +
+ * LAB-48): when the ACTIVE refill version's config predates any later config
+ * field, mint ONE refill version carrying the present fields forward and
+ * filling in whichever are missing — parent-chained, under the app_config lock
  * (Constraint #3: a scoring-config change must be a version boundary so
  * ratings collected after it attribute to the new chain):
  *   - `audioWeight` (LAB-36) — from the active config when a Console knob bump
@@ -188,16 +188,18 @@ export async function bumpModelVersionCarryForwardInTx(
  *   - `familiarityPenalty` (LAB-73) — the novelty-scaled artist-familiarity
  *     penalty, derived from `app_config.novelty` (an already-frozen value is
  *     carried forward, never recomputed).
+ *   - `audioCoverageGate: true` (LAB-48) — the null-audio genre-only-cosine
+ *     gate (an already-frozen value is carried forward, never overwritten).
  *
  * The fields are checked INDEPENDENTLY because they can drift apart: a Console
  * audioWeight bump on a still-legacy `{lambda}` config mints `{lambda,
  * audioWeight}` WITHOUT a gate (the knob never invents one — see the params
  * router), and a post-LAB-36 install already carries audioWeight+genreGate but
- * not familiarityPenalty — so keying this upgrade on any single field would
- * strand the others. An already-frozen field is carried forward, never
- * overwritten from app_config.
+ * not familiarityPenalty/audioCoverageGate — so keying this upgrade on any
+ * single field would strand the others. An already-frozen field is carried
+ * forward, never overwritten from app_config.
  *
- * Returns null — complete no-op — when the active config already has ALL three
+ * Returns null — complete no-op — when the active config already has ALL four
  * fields (re-run), or when no active refill version exists (fresh install: the
  * `ensureActiveModelVersion` bootstrap mints the full config directly). The
  * check-and-mint runs entirely under the lock, so concurrent callers serialize
@@ -227,7 +229,8 @@ export async function mintRefillConfigUpgradeInTx(
   if (
     active.config.audioWeight !== undefined &&
     active.config.genreGate !== undefined &&
-    active.config.familiarityPenalty !== undefined
+    active.config.familiarityPenalty !== undefined &&
+    active.config.audioCoverageGate !== undefined
   ) {
     return null;
   }
@@ -240,6 +243,7 @@ export async function mintRefillConfigUpgradeInTx(
       genreGate: active.config.genreGate ?? "slot-overlap",
       familiarityPenalty:
         active.config.familiarityPenalty ?? familiarityPenaltyFromNovelty(cfg.novelty ?? 0.5),
+      audioCoverageGate: active.config.audioCoverageGate ?? true,
     },
     options,
   );
@@ -300,9 +304,10 @@ export async function ensureActiveModelVersionInTx(
 
   const lambda = cfg?.refillLambda ?? DEFAULT_REFILL_LAMBDA;
   if (kind === "refill") {
-    // LAB-36/73 — fresh installs bootstrap straight onto the full refill config
-    // (audio-weighted cosine + slot-overlap gate + novelty-scaled familiarity
-    // penalty), so the reconcile sweep's upgrade step never fires for them.
+    // LAB-36/48/73 — fresh installs bootstrap straight onto the full refill
+    // config (audio-weighted cosine + slot-overlap gate + novelty-scaled
+    // familiarity penalty + null-audio coverage gate), so the reconcile sweep's
+    // upgrade step never fires for them.
     return bumpInTx(
       tx,
       "refill",
@@ -311,6 +316,7 @@ export async function ensureActiveModelVersionInTx(
         audioWeight: cfg?.audioWeight ?? DEFAULT_AUDIO_WEIGHT,
         genreGate: "slot-overlap",
         familiarityPenalty: familiarityPenaltyFromNovelty(cfg?.novelty ?? 0.5),
+        audioCoverageGate: true,
       },
       { note: "initial bootstrap" },
     );
@@ -424,6 +430,7 @@ export async function getActiveConfig<K extends RankerKind>(
       audioWeight: cfg?.audioWeight ?? DEFAULT_AUDIO_WEIGHT,
       genreGate: "slot-overlap",
       familiarityPenalty: familiarityPenaltyFromNovelty(cfg?.novelty ?? 0.5),
+      audioCoverageGate: true,
     };
     return fallback as K extends "refill" ? RefillConfig : BroadConfig;
   }

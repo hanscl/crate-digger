@@ -8,6 +8,7 @@ import {
   derivePrimaryGenre,
   GENRE_DIM,
   GENRE_SLOTS,
+  genreOnlyCosine,
   genreSlotsFromVector,
   genresToHotVector,
   hasSlotOverlap,
@@ -234,6 +235,30 @@ describe("embedding — weightedCosine (LAB-36)", () => {
 
   it("throws on dim mismatch", () => {
     expect(() => weightedCosine([1, 2], [1, 2, 3], 2)).toThrow();
+  });
+
+  it("audioWeight=0 excludes the audio dims (genre-only cosine), and genreOnlyCosine matches it (LAB-48)", () => {
+    // Same genre ('rock'), but one track has populated audio and the other is
+    // null-audio (neutral 0.5 fills). Plain cosine sees the audio block differ;
+    // genre-only cosine excludes it entirely.
+    const popA = buildEmbedding({
+      audioFeatures: {
+        tempo: 140,
+        energy: 0.9,
+        valence: 0.2,
+        danceability: 0.7,
+        acousticness: 0.05,
+        instrumentalness: 0.6,
+      },
+      genres: ["rock"],
+    });
+    const nullA = buildEmbedding({ audioFeatures: null, genres: ["rock"] });
+    // Audio differs → full cosine is strictly below 1.
+    expect(cosine(popA, nullA)).toBeLessThan(1);
+    // Audio excluded → identical genre block → genre-only cosine ≈ 1.
+    expect(genreOnlyCosine(popA, nullA)).toBeCloseTo(1, 12);
+    // genreOnlyCosine is exactly weightedCosine at weight 0.
+    expect(genreOnlyCosine(popA, nullA)).toBe(weightedCosine(popA, nullA, 0));
   });
 });
 
