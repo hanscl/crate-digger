@@ -18,6 +18,13 @@ export type SearchPullParams = PullParamsBase & {
 /** Top/recent chart. */
 export type TrendingPullParams = PullParamsBase & {
   mode: "trending";
+  /**
+   * LAB-84 — Spotify playlist IDs to ingest, read ONLY by the playlist-seed
+   * adapter (other adapters ignore it). The pipeline threads the configured
+   * `app_config.sources.tiktokPlaylistSeed.playlistIds` through here; absent or
+   * empty ⇒ the adapter returns [].
+   */
+  playlistIds?: readonly string[];
 };
 
 /**
@@ -47,6 +54,13 @@ export type RawCandidate = {
   album: string | null;
   releaseYear: number | null;
   durationMs: number | null;
+  /**
+   * LAB-84 — Spotify popularity (0–100), when the source exposes it (Spotify +
+   * playlist-seed). null for sources that don't (Last.fm/Viberate/TikTok).
+   * Persisted widen-only into `track.spotify_popularity`; feeds the explore-lane
+   * inverse-popularity surfacing bias.
+   */
+  popularity: number | null;
   genres: string[];
   rawPayload: unknown;
 };

@@ -213,6 +213,7 @@ function toCandidate(e: Record<string, unknown>, country: string): RawCandidate 
     album: null,
     releaseYear: null,
     durationMs: null,
+    popularity: null,
     genres: [],
     // Keep the raw entry so the real field shape is inspectable on the first
     // live run (the verification aid the docs couldn't give us).

@@ -1536,3 +1536,72 @@ describe("runSurfacingBatch — refill cursor rotation (LAB-38)", () => {
     for (const s of result.surfaced) expect(s.rankerKind).toBe("refill");
   });
 });
+
+describe("runSurfacingBatch — LAB-84 inverse-popularity explore bias", () => {
+  it("biases the limited broad slots toward low-popularity tracks; weight 0 keeps legacy order", async () => {
+    // Two undecided candidates, no buckets (pure broad lane), untrained broad ⇒
+    // both score the prior (0.5) and clear the default broad bar. A binding
+    // queue ceiling (1) leaves exactly one slot. `popular` is inserted first
+    // (lower trackId, so it wins the legacy score/trackId tiebreak); `obscure`
+    // is the long-tail track we want the bias to lift.
+    const popular = await insertTrack({
+      title: "Chart Topper",
+      audioFeatures: audio(),
+      genres: ["pop"],
+    });
+    const obscure = await insertTrack({
+      title: "Long Tail",
+      audioFeatures: audio(),
+      genres: ["pop"],
+    });
+    const candidates: Candidate[] = [
+      { ...(await asCandidate(popular)), popularity: 95 },
+      { ...(await asCandidate(obscure)), popularity: 8 },
+    ];
+
+    // weight 0 → legacy pure-P(keep)/trackId order: the first-inserted track wins.
+    const legacy = await runSurfacingBatch(db, {
+      candidates,
+      queueCeilingOverride: 1,
+      inversePopularityWeightOverride: 0,
+    });
+    expect(legacy.surfaced).toHaveLength(1);
+    expect(legacy.surfaced[0]?.candidate.trackId).toBe(popular.id);
+
+    // Reset the queue so the ceiling headroom is 1 again.
+    await db.execute(sql`TRUNCATE TABLE ${schema.surfaceEvent} RESTART IDENTITY CASCADE`);
+
+    // weight 0.5 → the long-tail track outranks the chart-topper for the slot.
+    const biased = await runSurfacingBatch(db, {
+      candidates,
+      queueCeilingOverride: 1,
+      inversePopularityWeightOverride: 0.5,
+    });
+    expect(biased.surfaced).toHaveLength(1);
+    expect(biased.surfaced[0]?.candidate.trackId).toBe(obscure.id);
+  });
+
+  it("null-popularity candidates take no penalty (only high-popularity tracks sink)", async () => {
+    // `popular` has popularity 95; `unknownPop` has null (most non-playlist-seed
+    // tracks). With the bias on and a single slot, the null-popularity track —
+    // unpenalized — beats the chart-topper.
+    const popular = await insertTrack({ title: "Topper", audioFeatures: audio(), genres: ["pop"] });
+    const unknownPop = await insertTrack({
+      title: "Unknown",
+      audioFeatures: audio(),
+      genres: ["pop"],
+    });
+    const candidates: Candidate[] = [
+      { ...(await asCandidate(popular)), popularity: 95 },
+      { ...(await asCandidate(unknownPop)), popularity: null },
+    ];
+
+    const result = await runSurfacingBatch(db, {
+      candidates,
+      queueCeilingOverride: 1,
+      inversePopularityWeightOverride: 0.5,
+    });
+    expect(result.surfaced).toHaveLength(1);
+    expect(result.surfaced[0]?.candidate.trackId).toBe(unknownPop.id);
+  });
+});

@@ -44,6 +44,8 @@ export type PullEnrichSummary = {
   discogsGenresUpdated: number;
   /** Candidates pulled by the taste-seeded Last.fm `getSimilar` pass (LAB-39). */
   similarPulledCount: number;
+  /** LAB-84 — candidates pulled by the playlist-seed pass (curated-playlist stopgap). */
+  playlistSeedPulledCount: number;
   /** LAB-73 — similar-pull candidates dropped by the per-artist cap (lever 1). */
   similarArtistCappedCount: number;
   /** LAB-73 — similar-pull candidates skipped because the artist already has ≥N keeps (lever 1). */
@@ -151,6 +153,10 @@ export async function pullAndEnrichTrending(
   };
 
   for (const adapter of adapters) {
+    // LAB-84 — playlist-seed is NOT a `year:` trending source: it ingests
+    // configured curated playlists (whole-playlist, ignoring the per-source
+    // trending cap) and is driven by its own pass below.
+    if (adapter.id === "tiktok-playlist-seed") continue;
     const candidates = await adapter.pullCandidates(
       { mode: "trending", limit: trendingLimit },
       env,
@@ -218,6 +224,33 @@ export async function pullAndEnrichTrending(
     }
   }
 
+  // LAB-84 — playlist-seed pass: a TikTok-velocity STOPGAP. Pull the configured
+  // curated Spotify playlists as explore-lane CANDIDATES (provenance
+  // `tiktok-playlist-seed`), resolved + enriched through the SAME `resolveInto`
+  // path as every other source — but NEVER cold-start (these don't bucket-as-
+  // keep). Driven HERE rather than in the generic trending sweep because the
+  // playlist IDs live in `app_config.sources` and the whole-playlist pull
+  // ignores the per-source trending cap. Gated on the `sourcesEnabled` toggle +
+  // a non-empty playlist-ID list; a strict no-op otherwise (incl. when Spotify
+  // creds are absent, so the adapter isn't in `adapters`).
+  let playlistSeedPulled = 0;
+  const playlistSeed = adapters.find((a) => a.id === "tiktok-playlist-seed");
+  if (playlistSeed) {
+    const sourcesCfg = await loadSourcesConfig(db);
+    if (sourcesCfg.playlistSeedEnabled && sourcesCfg.playlistSeedIds.length > 0) {
+      const cands = await playlistSeed.pullCandidates(
+        { mode: "trending", playlistIds: sourcesCfg.playlistSeedIds },
+        env,
+      );
+      playlistSeedPulled = cands.length;
+      for (const c of cands) {
+        await resolveInto(c);
+      }
+      pulledCount += playlistSeedPulled;
+      perSource.push({ source: "tiktok-playlist-seed", pulled: playlistSeedPulled });
+    }
+  }
+
   const ids = [...resolvedIds];
   const enrichResult = await enrichAudioFeaturesForTracks(db, ids);
   const genreResult = await enrichGenresFromLastfm(db, env, ids);
@@ -235,6 +268,7 @@ export async function pullAndEnrichTrending(
     mbGenresUpdated: mbResult.updated,
     discogsGenresUpdated: discogsResult.updated,
     similarPulledCount: similarPulled,
+    playlistSeedPulledCount: playlistSeedPulled,
     similarArtistCappedCount,
     similarFamiliarSkippedCount,
   };
@@ -329,6 +363,27 @@ async function loadPullThrottle(db: Database): Promise<{
     .from(appConfig)
     .limit(1);
   return row ?? {};
+}
+
+/**
+ * LAB-84 — read the playlist-seed source config from `app_config`. Enabled flows
+ * through the existing `sourcesEnabled` toggle map (absent ⇒ on, the active-
+ * stopgap default, matching `sources.list`); the playlist IDs live in the
+ * `sources` jsonb. Returns enabled=true / ids=[] when the singleton row is absent
+ * (tests) so the pass is a no-op rather than pulling.
+ */
+async function loadSourcesConfig(db: Database): Promise<{
+  playlistSeedEnabled: boolean;
+  playlistSeedIds: string[];
+}> {
+  const [row] = await db
+    .select({ sources: appConfig.sources, sourcesEnabled: appConfig.sourcesEnabled })
+    .from(appConfig)
+    .limit(1);
+  return {
+    playlistSeedEnabled: row?.sourcesEnabled?.["tiktok-playlist-seed"] !== false,
+    playlistSeedIds: row?.sources?.tiktokPlaylistSeed?.playlistIds ?? [],
+  };
 }
 
 export type BucketSummary = {
@@ -620,6 +675,8 @@ async function loadCandidates(db: Database, trackIds: readonly number[]): Promis
       primaryGenre: track.primaryGenre,
       // LAB-73 — artist drives the surfacing diversity quota + familiarity penalty.
       artist: track.artist,
+      // LAB-84 — Spotify popularity drives the explore-lane inverse-popularity bias.
+      popularity: track.spotifyPopularity,
     })
     .from(track)
     .where(inArray(track.id, [...trackIds]));
@@ -632,6 +689,7 @@ async function loadCandidates(db: Database, trackIds: readonly number[]): Promis
       audioFeatures: r.audioFeatures as AudioFeatures | null,
       primaryGenre: r.primaryGenre,
       artist: r.artist,
+      popularity: r.popularity,
     });
   }
   return out;

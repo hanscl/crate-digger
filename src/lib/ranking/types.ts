@@ -16,7 +16,7 @@ export type Candidate = {
   trackId: number;
   embedding: readonly number[];
   /** Used by `surfacedReason` text and source-mix bookkeeping; rankers ignore. */
-  source?: "spotify" | "lastfm" | "viberate" | "tiktok";
+  source?: "spotify" | "lastfm" | "viberate" | "tiktok" | "tiktok-playlist-seed";
   /** Used by the refill winner-eligibility gate and human-readable explanations. */
   primaryGenre?: string | null;
   /**
@@ -35,6 +35,13 @@ export type Candidate = {
    * version, degrades to plain cosine over those fills (the old LAB-36 damping).
    */
   audioFeatures?: AudioFeatures | null;
+  /**
+   * LAB-84 — Spotify popularity (0–100) at decision time (`track.spotify_
+   * popularity`). NOT a ranker input: it feeds the SURFACING-layer inverse-
+   * popularity bias, which re-orders already-above-bar broad candidates so the
+   * explore lane favors the long tail. Optional/null ⇒ no bias for that track.
+   */
+  popularity?: number | null;
 };
 
 /** A keep- or dislike-rated track, summarized for ranker math. */

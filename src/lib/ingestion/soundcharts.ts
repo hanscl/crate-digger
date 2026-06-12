@@ -165,6 +165,7 @@ function toCandidate(
     album: null,
     releaseYear: parseReleaseYear(meta?.releaseDate),
     durationMs: durationMsFromSeconds(meta?.duration),
+    popularity: null,
     genres: [],
     rawPayload: { velocity, song: item.song ?? null },
   };

@@ -80,6 +80,7 @@ export function lastfmTrackToCandidate(t: LastfmTrack, unit: DurationUnit): RawC
     album: null,
     releaseYear: null,
     durationMs: parseDurationMs(t.duration, unit),
+    popularity: null,
     genres: [],
     rawPayload: t,
   };

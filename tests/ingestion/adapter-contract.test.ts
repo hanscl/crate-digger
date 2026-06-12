@@ -35,6 +35,8 @@ const credsByAdapter: Record<string, Partial<Env>> = {
   viberate: { VIBERATE_API_KEY: "key" },
   // Exercises the default (Chartmetric) provider; Soundcharts is the fallback.
   tiktok: { CHARTMETRIC_REFRESH_TOKEN: "refresh-token" },
+  // LAB-84 — playlist-seed reuses the Spotify client (no dedicated key).
+  "tiktok-playlist-seed": { SPOTIFY_CLIENT_ID: "id", SPOTIFY_CLIENT_SECRET: "secret" },
 };
 
 beforeEach(() => {
@@ -51,7 +53,7 @@ afterEach(() => {
 describe("source adapter contract", () => {
   it("registers at least the documented adapters", () => {
     const ids = allAdapters.map((a) => a.id).sort();
-    expect(ids).toEqual(["lastfm", "spotify", "tiktok", "viberate"]);
+    expect(ids).toEqual(["lastfm", "spotify", "tiktok", "tiktok-playlist-seed", "viberate"]);
   });
 
   for (const adapter of allAdapters) {

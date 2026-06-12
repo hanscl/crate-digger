@@ -37,7 +37,17 @@ export const recommendationStatusEnum = pgEnum("bucket_recommendation_status", [
   "dismissed",
 ]);
 
-export const sourceKindEnum = pgEnum("source_kind", ["spotify", "lastfm", "viberate", "tiktok"]);
+export const sourceKindEnum = pgEnum("source_kind", [
+  "spotify",
+  "lastfm",
+  "viberate",
+  "tiktok",
+  // LAB-84 — playlist-seed stopgap. Distinct provenance from `tiktok` (LAB-19's
+  // real velocity adapter) so eval can measure keep-rate by source: these are
+  // curated-playlist candidates pulled via the Spotify client, NOT a velocity
+  // feed and NOT cold-start keeps.
+  "tiktok-playlist-seed",
+]);
 
 // LAB-61 — provenance of a bucket membership. Pre-LAB-52, discovery tracks
 // eager-joined buckets, so "member without a rating" was ambiguous between a
@@ -79,6 +89,11 @@ export const track = pgTable(
     releaseYear: integer("release_year"),
     durationMs: integer("duration_ms"),
     audioFeatures: jsonb("audio_features").$type<AudioFeatures | null>(),
+    // LAB-84 — Spotify popularity (0–100). Still on the Track object (NOT part
+    // of the audio-features retirement). Drives the explore-lane inverse-
+    // popularity surfacing bias; null for non-Spotify-sourced tracks (no
+    // penalty). Captured at resolve time, widen-only.
+    spotifyPopularity: integer("spotify_popularity"),
     genres: text("genres")
       .array()
       .notNull()
@@ -311,6 +326,16 @@ export const bucketRecommendation = pgTable(
   ],
 );
 
+/**
+ * LAB-84 — shape of `app_config.sources` (per-source pull config). Open-ended
+ * by design: each adapter that needs pull-time configuration owns a key.
+ */
+export type SourcesConfig = {
+  tiktokPlaylistSeed?: {
+    playlistIds?: string[];
+  };
+};
+
 export const appConfig = pgTable(
   "app_config",
   {
@@ -325,6 +350,13 @@ export const appConfig = pgTable(
     // flagged only per LAB-52). The queue ceiling is the only count bound.
     refillQualityBar: doublePrecision("refill_quality_bar").notNull().default(0.7),
     broadQualityBar: doublePrecision("broad_quality_bar").notNull().default(0.5),
+    // LAB-84 — explore-lane (broad) inverse-popularity bias [0,1]. A SURFACING
+    // selection knob, not a ranker score: it re-orders already-above-bar broad
+    // candidates so low-Spotify-popularity tracks win the limited explore slots
+    // when the queue ceiling binds (the broad P(keep) score and the quality-bar
+    // gate are untouched). Live config like the quality bars / surfaceArtistCap —
+    // NO model_version bump (Constraint #5). 0 = pure-P(keep) order (legacy).
+    inversePopularityWeight: doublePrecision("inverse_popularity_weight").notNull().default(0.5),
     // LAB-51 — per-run ingestion throttle. The trending sweep and the LAB-39
     // taste-seeded similar pass each get their own per-source cap, and
     // similarSeedBuckets caps the similar fan-out (worst case ≈
@@ -371,6 +403,19 @@ export const appConfig = pgTable(
       .notNull()
       .default(
         sql`'{"spotify":true,"lastfm":true,"viberate":false,"reccobeats":true,"tiktok":false}'::jsonb`,
+      ),
+    // LAB-84 — per-source pull configuration (distinct from the on/off
+    // `sourcesEnabled` map). Today only the playlist-seed adapter reads it: the
+    // configurable list of Spotify playlist IDs it ingests as explore-lane
+    // candidates. Seeded with the two "TikTok 2026" playlists; editable via
+    // config/DB (no UI yet). Enabled/disabled still flows through
+    // `sourcesEnabled["tiktok-playlist-seed"]` (absent ⇒ on, the active-stopgap
+    // default).
+    sources: jsonb("sources")
+      .$type<SourcesConfig>()
+      .notNull()
+      .default(
+        sql`'{"tiktokPlaylistSeed":{"playlistIds":["1RWfTxd358hSdujomctsGu","57EG9lWmdn7HHofXuQVsow"]}}'::jsonb`,
       ),
     activeRefillVersionId: integer("active_refill_version_id").references(() => modelVersion.id),
     activeBroadVersionId: integer("active_broad_version_id").references(() => modelVersion.id),

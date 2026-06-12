@@ -39,6 +39,8 @@ export type SpotifyTrack = {
   album: SpotifyAlbum;
   external_ids?: { isrc?: string };
   duration_ms?: number;
+  /** Spotify popularity 0–100. LAB-84 — drives the explore-lane inverse-popularity bias. */
+  popularity?: number;
 };
 
 /** Accepts URL, URI, or bare 22-char Spotify track ID. Returns null if it doesn't parse. */
@@ -158,6 +160,7 @@ export function spotifyTrackToCandidate(t: SpotifyTrack): RawCandidate {
     album: t.album?.name ?? null,
     releaseYear: parseReleaseYear(t.album?.release_date),
     durationMs: t.duration_ms ?? null,
+    popularity: t.popularity ?? null,
     genres: [],
     rawPayload: t,
   };
@@ -192,6 +195,42 @@ export async function searchSpotifyTrack(
     env,
   );
   return data?.tracks?.items ?? [];
+}
+
+/** Hard cap: 2000 tracks per playlist (20 pages × 100). */
+export const SPOTIFY_PLAYLIST_PAGE_SIZE = 100;
+export const SPOTIFY_PLAYLIST_MAX_PAGES = 20;
+
+type SpotifyPlaylistTracksPage = {
+  items: { track: SpotifyTrack | null }[];
+  next: string | null;
+};
+
+/**
+ * Page through a Spotify playlist's tracks, returning the non-null
+ * {@link SpotifyTrack} items (capped at 2000). Reuses {@link spotifyGet} (auth +
+ * graceful null), so a fetch failure on any page stops paging and returns what
+ * we have. Shared by cold-start seeding (LAB-20) and the LAB-84 playlist-seed
+ * adapter — one paging implementation, not two.
+ */
+export async function fetchPlaylistTrackItems(
+  playlistId: string,
+  env: Env,
+): Promise<SpotifyTrack[]> {
+  const out: SpotifyTrack[] = [];
+  for (let page = 0; page < SPOTIFY_PLAYLIST_MAX_PAGES; page++) {
+    const data = await spotifyGet<SpotifyPlaylistTracksPage>(
+      `/playlists/${playlistId}/tracks`,
+      { limit: SPOTIFY_PLAYLIST_PAGE_SIZE, offset: page * SPOTIFY_PLAYLIST_PAGE_SIZE },
+      env,
+    );
+    if (!data) break;
+    for (const item of data.items) {
+      if (item.track) out.push(item.track);
+    }
+    if (!data.next) break;
+  }
+  return out;
 }
 
 /**

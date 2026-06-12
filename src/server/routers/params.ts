@@ -22,6 +22,9 @@ const PARAMS_INPUT = z.object({
   // LAB-53 — per-ranker quality bars (live config; no model_version bump).
   refillQualityBar: z.number().min(0).max(1).optional(),
   broadQualityBar: z.number().min(0).max(1).optional(),
+  // LAB-84 — explore-lane inverse-popularity bias (live config; no model_version
+  // bump). A surfacing selection re-rank, not a ranker score — see pipeline.ts.
+  inversePopularityWeight: z.number().min(0).max(1).optional(),
   spawnThreshold: z.number().min(0).max(1).optional(),
   refillLambda: z.number().min(0).max(5).optional(),
   // LAB-36 — audio-dim weight for membership + refill scoring. ≥1 (1 = plain
@@ -61,6 +64,8 @@ export const paramsRouter = router({
     if (input.queueCeiling !== undefined) update.queueCeiling = input.queueCeiling;
     if (input.refillQualityBar !== undefined) update.refillQualityBar = input.refillQualityBar;
     if (input.broadQualityBar !== undefined) update.broadQualityBar = input.broadQualityBar;
+    if (input.inversePopularityWeight !== undefined)
+      update.inversePopularityWeight = input.inversePopularityWeight;
     if (input.spawnThreshold !== undefined) update.spawnThreshold = input.spawnThreshold;
     if (input.refillLambda !== undefined) update.refillLambda = input.refillLambda;
     if (input.audioWeight !== undefined) update.audioWeight = input.audioWeight;

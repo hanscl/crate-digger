@@ -96,6 +96,11 @@ export type SurfacingParams = {
    * app_config.surface_artist_cap (default 1). <= 0 disables the quota.
    */
   surfaceArtistCapOverride?: number;
+  /**
+   * LAB-84 — explore-lane inverse-popularity bias [0,1] (live surfacing knob).
+   * Falls back to app_config.inverse_popularity_weight (default 0.5).
+   */
+  inversePopularityWeightOverride?: number;
   /** When true, skip writing surface_event rows — useful for previews. Default false. */
   dryRun?: boolean;
 };
@@ -182,6 +187,11 @@ export async function runSurfacingBatch(
   const broadBar = clamp01(params.broadBarOverride ?? cfg.broadBar);
   // LAB-73 — per-artist surfacing quota (lever 2). <= 0 disables it.
   const surfaceArtistCap = params.surfaceArtistCapOverride ?? cfg.surfaceArtistCap;
+  // LAB-84 — explore-lane inverse-popularity bias (broad phase only). 0 = legacy
+  // pure-P(keep) order.
+  const inversePopularityWeight = clamp01(
+    params.inversePopularityWeightOverride ?? cfg.inversePopularityWeight,
+  );
 
   // LAB-53: the queue ceiling is the ONLY count bound — surfacing fills the
   // unrated queue up to the ceiling and stops. No per-day budget (that
@@ -234,9 +244,19 @@ export async function runSurfacingBatch(
   const remainingHeadroom = Math.max(0, effectiveCap - refillResults.surfaced.length);
   const broadPool = scoreBroadBatch(candidates, broadConfig);
   const alreadySurfacedIds = new Set(refillResults.surfaced.map((s) => s.candidate.trackId));
+  // LAB-84 — explore-lane inverse-popularity bias. A SELECTION re-rank ONLY: the
+  // quality-bar filter (`s.score >= broadBar`) and the stored P(keep) score are
+  // untouched, so this is a surfacing knob (Constraint #5), NOT a ranker param —
+  // no model_version bump, and counterfactual replay (which replays SCORING, not
+  // the ceiling/diversity/source-mix selection policy) stays unaffected. Subtract
+  // a popularity penalty from the SORT key so that, when the queue ceiling binds,
+  // low-popularity tracks claim the limited explore slots over the chart-toppers.
+  // Null popularity ⇒ no penalty (most non-playlist-seed tracks are unaffected).
+  const broadRankKey = (s: ScoredCandidate): number =>
+    s.score - inversePopularityWeight * ((s.candidate.popularity ?? 0) / 100);
   const broadEligible = broadPool
     .filter((s) => !alreadySurfacedIds.has(s.candidate.trackId) && s.score >= broadBar)
-    .sort((a, b) => b.score - a.score || a.candidate.trackId - b.candidate.trackId);
+    .sort((a, b) => broadRankKey(b) - broadRankKey(a) || a.candidate.trackId - b.candidate.trackId);
 
   // Dedupe to the per-artist cap (sharing `artistCounts` with refill) BEFORE
   // source-mix selection, so the cap holds across the COMBINED surfaced set and
@@ -618,6 +638,8 @@ type AppConfigSnapshot = {
   refillBar: number;
   broadBar: number;
   surfaceArtistCap: number;
+  /** LAB-84 — explore-lane inverse-popularity bias [0,1] (live surfacing knob). */
+  inversePopularityWeight: number;
   /** LAB-38 — persisted rotating refill cursor (bucket-id the rotation resumes at). */
   refillCursor: number;
 };
@@ -631,6 +653,7 @@ async function loadAppConfig(db: Database): Promise<AppConfigSnapshot> {
       refillBar: appConfig.refillQualityBar,
       broadBar: appConfig.broadQualityBar,
       surfaceArtistCap: appConfig.surfaceArtistCap,
+      inversePopularityWeight: appConfig.inversePopularityWeight,
       refillCursor: appConfig.refillCursor,
     })
     .from(appConfig)
@@ -642,6 +665,7 @@ async function loadAppConfig(db: Database): Promise<AppConfigSnapshot> {
     refillBar: row?.refillBar ?? 0.7,
     broadBar: row?.broadBar ?? 0.5,
     surfaceArtistCap: row?.surfaceArtistCap ?? 1,
+    inversePopularityWeight: row?.inversePopularityWeight ?? 0.5,
     refillCursor: row?.refillCursor ?? 0,
   };
 }

@@ -3,7 +3,12 @@ import { resolveCandidate } from "@/lib/enrichment/resolve";
 import { enrichGenresFromLastfm } from "@/lib/enrichment/lastfm-tags";
 import { enrichGenresFromMusicBrainz } from "@/lib/enrichment/musicbrainz";
 import { enrichAudioFeaturesForTracks } from "@/lib/enrichment/reccobeats";
-import { type SpotifyTrack, spotifyGet, spotifyTrackToCandidate } from "@/lib/ingestion/spotify";
+import {
+  type SpotifyTrack,
+  fetchPlaylistTrackItems,
+  spotifyGet,
+  spotifyTrackToCandidate,
+} from "@/lib/ingestion/spotify";
 import type { Database } from "@/db/client";
 import type { BucketMemberOrigin } from "@/db/schema";
 import type { RawCandidate } from "@/lib/ingestion/types";
@@ -76,14 +81,6 @@ export function parseSpotifyPlaylistRef(ref: string): string | null {
   return null;
 }
 
-const SPOTIFY_PLAYLIST_PAGE_SIZE = 100;
-const SPOTIFY_PLAYLIST_MAX_PAGES = 20; // hard cap: 2000 tracks per playlist seed
-
-type SpotifyPlaylistTracksPage = {
-  items: { track: SpotifyTrack | null }[];
-  next: string | null;
-};
-
 /**
  * Cold-start happy path: fetch a Spotify playlist's tracks, resolve each
  * through enrichment (creating `track` rows), backfill audio features for
@@ -102,19 +99,8 @@ export async function seedBucketsFromSpotifyPlaylist(
   if (!playlistId) return null;
   if (!env.SPOTIFY_CLIENT_ID || !env.SPOTIFY_CLIENT_SECRET) return null;
 
-  const candidates: RawCandidate[] = [];
-  for (let page = 0; page < SPOTIFY_PLAYLIST_MAX_PAGES; page++) {
-    const data = await spotifyGet<SpotifyPlaylistTracksPage>(
-      `/playlists/${playlistId}/tracks`,
-      { limit: SPOTIFY_PLAYLIST_PAGE_SIZE, offset: page * SPOTIFY_PLAYLIST_PAGE_SIZE },
-      env,
-    );
-    if (!data) break;
-    for (const item of data.items) {
-      if (item.track) candidates.push(spotifyTrackToCandidate(item.track));
-    }
-    if (!data.next) break;
-  }
+  const tracks = await fetchPlaylistTrackItems(playlistId, env);
+  const candidates: RawCandidate[] = tracks.map(spotifyTrackToCandidate);
 
   const trackIds: number[] = [];
   for (const c of candidates) {

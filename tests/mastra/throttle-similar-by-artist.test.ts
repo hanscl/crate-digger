@@ -18,6 +18,7 @@ function cand(artist: string, title = artist): RawCandidate {
     album: null,
     releaseYear: null,
     durationMs: null,
+    popularity: null,
     genres: [],
     rawPayload: null,
   };

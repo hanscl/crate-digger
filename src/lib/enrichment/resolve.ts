@@ -189,6 +189,7 @@ export async function resolveCandidate(
           album: candidate.album,
           releaseYear: candidate.releaseYear,
           durationMs: candidate.durationMs,
+          spotifyPopularity: candidate.popularity,
           genres: candidate.genres,
         })
         .returning({ id: track.id });
@@ -205,6 +206,7 @@ export async function resolveCandidate(
           album: sql`COALESCE(${track.album}, ${candidate.album})`,
           releaseYear: sql`COALESCE(${track.releaseYear}, ${candidate.releaseYear})`,
           durationMs: sql`COALESCE(${track.durationMs}, ${candidate.durationMs})`,
+          spotifyPopularity: sql`COALESCE(${track.spotifyPopularity}, ${candidate.popularity})`,
           updatedAt: sql`NOW()`,
         })
         .where(eq(track.id, resolved.trackId));

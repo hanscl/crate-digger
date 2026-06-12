@@ -55,6 +55,7 @@ function spotifyCandidate(overrides: Partial<RawCandidate> = {}): RawCandidate {
     album: "In Rainbows",
     releaseYear: 2007,
     durationMs: 290_000,
+    popularity: null,
     genres: [],
     rawPayload: { id: "spotify:track:1" },
     ...overrides,
@@ -93,6 +94,7 @@ describe("enrichment resolve — idempotency", () => {
       album: null,
       releaseYear: null,
       durationMs: null,
+      popularity: null,
       genres: [],
       rawPayload: { name: "Reckoner" },
     };
@@ -120,6 +122,7 @@ describe("enrichment resolve — idempotency", () => {
       album: null,
       releaseYear: null,
       durationMs: null,
+      popularity: null,
       genres: [],
       rawPayload: {},
     };
@@ -133,6 +136,7 @@ describe("enrichment resolve — idempotency", () => {
       album: "OK Computer",
       releaseYear: 1997,
       durationMs: 261_000,
+      popularity: 55,
       genres: [],
       rawPayload: {},
     };
@@ -147,6 +151,8 @@ describe("enrichment resolve — idempotency", () => {
     expect(row?.album).toBe("OK Computer");
     expect(row?.releaseYear).toBe(1997);
     expect(row?.durationMs).toBe(261_000);
+    // LAB-84 — popularity backfills widen-only (sparse had null).
+    expect(row?.spotifyPopularity).toBe(55);
   });
 
   it("treats distinct ISRCs as distinct tracks even when titles fuzzy-match", async () => {
