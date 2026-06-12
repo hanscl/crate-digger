@@ -169,6 +169,30 @@ describe("evaluateBucketRecommendations — merge heuristic", () => {
     expect(r.merges).toHaveLength(0);
   });
 
+  it("folds two cross-genre SINGLETONS that share a slot — the case the old exact-genre gate blocked", async () => {
+    // Both are 1-member cold-start seeds with DIFFERENT primary_genre but the
+    // same genre slot (slot 0). The old `a.primaryGenre !== b.primaryGenre`
+    // guard blocked this; the singleton path (either side memberCount === 1)
+    // now folds them via slot overlap.
+    const a = await seedBucket({
+      name: "disco (auto)",
+      centroid: vec(0),
+      primaryGenre: "disco",
+      memberCount: 1,
+    });
+    const b = await seedBucket({
+      name: "funk (auto)",
+      centroid: vec(0, 0.001),
+      primaryGenre: "funk",
+      memberCount: 1,
+    });
+    const r = await evaluateBucketRecommendations(db, { mergeThreshold: 0.9 });
+    expect(r.merges).toHaveLength(1);
+    expect(r.merges[0]?.bucketIds.slice().sort((x, y) => x - y)).toEqual(
+      [a, b].sort((x, y) => x - y),
+    );
+  });
+
   it("is idempotent — running twice does not create duplicates", async () => {
     await seedBucket({ name: "a", centroid: vec(0), primaryGenre: "rock" });
     await seedBucket({ name: "b", centroid: vec(0, 0.001), primaryGenre: "rock" });

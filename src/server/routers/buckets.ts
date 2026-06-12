@@ -306,10 +306,16 @@ export const bucketsRouter = router({
           // neighbor must absorb INTO the established shelf so the survivor
           // keeps that shelf's name/identity; keeping min(id) could instead
           // fold a populated lane into a one-track "(auto)" seed bucket.
+          // FOR UPDATE locks both bucket rows for the txn so a concurrent
+          // member recompute (removeMember / reconcile) can't commit between
+          // here and the fold below and flip which bucket is the larger one —
+          // the rec-row lock above only serializes concurrent accepts, not
+          // writers on these two buckets.
           const sizes = await tx
             .select({ id: bucket.id, memberCount: bucket.memberCount })
             .from(bucket)
-            .where(inArray(bucket.id, ids));
+            .where(inArray(bucket.id, ids))
+            .for("update");
           if (sizes.length !== 2) {
             throw new TRPCError({
               code: "NOT_FOUND",
