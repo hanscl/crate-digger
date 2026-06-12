@@ -1,4 +1,4 @@
-import { and, count, eq, inArray, isNull } from "drizzle-orm";
+import { and, count, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Database } from "@/db/client";
 import {
   appConfig,
@@ -130,6 +130,15 @@ export type SurfacingResult = {
    * stay scored in every event's candidate_pool, just not surfaced.
    */
   artistQuotaDeferredCount: number;
+  /**
+   * LAB-38 — the refill cursor AFTER this run (observability/testing). Refill
+   * serves buckets in id order from the persisted `app_config.refill_cursor`
+   * and advances it past the furthest bucket it reached (wrapping), so when the
+   * queue ceiling binds, coverage rotates across all refillable buckets instead
+   * of starving the same low-scoring/high-id ones. Equals the prior cursor when
+   * refill surfaced nothing this run.
+   */
+  nextRefillCursor: number;
 };
 
 export async function runSurfacingBatch(
@@ -203,6 +212,8 @@ export async function runSurfacingBatch(
     familiarArtists,
     refillConfig,
     refillVersionId: refillVersion.id,
+    // LAB-38 — where to START the ceiling-bound winner rotation this run.
+    refillCursor: cfg.refillCursor,
     dryRun,
   });
 
@@ -266,6 +277,7 @@ export async function runSurfacingBatch(
     excludedDecidedCount,
     excludedPendingCount,
     artistQuotaDeferredCount: refillResults.artistQuotaDeferred + broadArtistDeferred,
+    nextRefillCursor: refillResults.nextRefillCursor,
   };
 }
 
@@ -292,6 +304,8 @@ type RefillPhaseInput = {
   familiarArtists?: ReadonlySet<string>;
   refillConfig: RefillConfig;
   refillVersionId: number;
+  /** LAB-38 — bucket-id the ceiling-bound winner rotation starts at this run. */
+  refillCursor: number;
   dryRun: boolean;
 };
 
@@ -303,6 +317,8 @@ type RefillPhaseResult = {
   lastPool: ScoredCandidate[];
   /** LAB-73 — above-bar refill winners the per-artist quota suppressed this run. */
   artistQuotaDeferred: number;
+  /** LAB-38 — the cursor after this run (last bucket served + 1, wrapped); unchanged if nothing surfaced. */
+  nextRefillCursor: number;
 };
 
 async function runRefillPhase(db: Database, input: RefillPhaseInput): Promise<RefillPhaseResult> {
@@ -316,6 +332,7 @@ async function runRefillPhase(db: Database, input: RefillPhaseInput): Promise<Re
     familiarArtists,
     refillConfig,
     refillVersionId,
+    refillCursor,
     dryRun,
   } = input;
   const surfaced: ScoredCandidate[] = [];
@@ -324,7 +341,14 @@ async function runRefillPhase(db: Database, input: RefillPhaseInput): Promise<Re
   let lastPool: ScoredCandidate[] = [];
 
   if (cap <= 0 || buckets.length === 0 || candidates.length === 0) {
-    return { surfaced, events, refilledBucketIds, lastPool, artistQuotaDeferred: 0 };
+    return {
+      surfaced,
+      events,
+      refilledBucketIds,
+      lastPool,
+      artistQuotaDeferred: 0,
+      nextRefillCursor: refillCursor,
+    };
   }
 
   // Score every candidate against every refillable bucket. A candidate is a
@@ -371,34 +395,86 @@ async function runRefillPhase(db: Database, input: RefillPhaseInput): Promise<Re
     }
   }
 
-  // Highest refill score first (the familiarity penalty already pushed
-  // already-kept artists down). The queue ceiling and the per-artist quota are
-  // the count bounds, so ordering matters when either binds.
-  const ranked = [...bestByTrack.values()].sort(
-    (a, b) =>
-      b.scored.score - a.scored.score || a.scored.candidate.trackId - b.scored.candidate.trackId,
-  );
+  // LAB-38 — ROTATE the ceiling-bound winner selection across buckets instead
+  // of letting a global score sort hand every ceiling slot to the same
+  // high-scoring buckets every run (which starves the rest regardless of id).
+  // Group winners by bucket (each group score-sorted), then walk the buckets in
+  // id order STARTING at the persisted cursor (wrapping past the end). The
+  // ceiling slice (below) therefore covers a different band of buckets each run;
+  // when the ceiling has headroom every winner still surfaces (set unchanged).
+  type Hit = { scored: ScoredCandidate; bucketId: number };
+  const byBucket = new Map<number, Hit[]>();
+  for (const hit of bestByTrack.values()) {
+    const list = byBucket.get(hit.bucketId) ?? [];
+    list.push(hit);
+    byBucket.set(hit.bucketId, list);
+  }
+  for (const list of byBucket.values()) {
+    // Within a bucket: highest refill score first (the familiarity penalty
+    // already pushed already-kept artists down), trackId as the tiebreaker.
+    list.sort(
+      (a, b) =>
+        b.scored.score - a.scored.score || a.scored.candidate.trackId - b.scored.candidate.trackId,
+    );
+  }
+  const bucketIdsWithWinners = [...byBucket.keys()].sort((a, b) => a - b);
+  const rotated = rotateFromCursor(bucketIdsWithWinners, refillCursor);
+  const rotatedHits: Hit[] = [];
+  for (const bucketId of rotated) {
+    rotatedHits.push(...(byBucket.get(bucketId) ?? []));
+  }
+
   // LAB-73 — apply the per-artist quota BEFORE the ceiling slice so distinct
   // artists backfill the cap (a local counts map; the caller re-derives the
   // cross-phase counts from the tracks actually surfaced). `artistQuotaDeferred`
-  // counts every above-bar refill candidate the quota held back.
-  const { kept: dedupedRanked, deferred: artistQuotaDeferred } = dedupeByArtist(
-    ranked,
+  // counts every above-bar refill candidate the quota held back. Runs over the
+  // rotation order so the quota and the rotation share one walk.
+  const { kept, deferred: artistQuotaDeferred } = dedupeByArtist(
+    rotatedHits,
     (hit) => hit.scored.candidate.artist,
     new Map<string, number>(),
     artistCap,
   );
-  const chosen = dedupedRanked.slice(0, cap);
+  // `chosen` is a PREFIX of the rotation order, so its last element is the
+  // furthest bucket the ceiling let us reach this run.
+  const chosen = kept.slice(0, cap);
+
+  // LAB-38 — advance the cursor past the last bucket served (wrapping). The next
+  // run resumes from there, so coverage rotates over consecutive runs. When the
+  // ceiling didn't bind, `chosen` already spans every winner bucket and the
+  // cursor lands past the highest id (then wraps), which is the same set again.
+  const nextRefillCursor =
+    chosen.length > 0 ? chosen[chosen.length - 1]!.bucketId + 1 : refillCursor;
 
   // Group winners by bucket so each surface_event carries that bucket's FULL
   // candidate pool (Constraint #2). `logSurfaceEvents` writes one row per
-  // winner with only that winner flagged surfaced.
+  // winner with only that winner flagged surfaced. Grouping is order-independent,
+  // so we group from `chosen` directly. The `surfaced` output array, however, is
+  // iterated from a SCORE-DESC copy of `chosen` so it stays highest-score-first
+  // (existing single-bucket / non-binding tests assert surfaced[0] is the top
+  // scorer); the cursor above is computed from the ROTATION-ordered `chosen`.
+  const surfacedOrder = [...chosen].sort(
+    (a, b) =>
+      b.scored.score - a.scored.score || a.scored.candidate.trackId - b.scored.candidate.trackId,
+  );
+  for (const hit of surfacedOrder) surfaced.push(hit.scored);
+
   const winnersByBucket = new Map<number, ScoredCandidate[]>();
   for (const hit of chosen) {
-    surfaced.push(hit.scored);
     const list = winnersByBucket.get(hit.bucketId) ?? [];
     list.push(hit.scored);
     winnersByBucket.set(hit.bucketId, list);
+  }
+
+  // LAB-38 — persist the advanced cursor so the rotation survives across runs.
+  // The app_config id=1 row always exists here: ensureActiveModelVersion ran
+  // earlier in runSurfacingBatch and lockAppConfig upserts it. Skip the write on
+  // dryRun (previews never mutate state) and when the cursor didn't move.
+  if (!dryRun && nextRefillCursor !== refillCursor) {
+    await db
+      .update(appConfig)
+      .set({ refillCursor: nextRefillCursor, updatedAt: sql`NOW()` })
+      .where(eq(appConfig.id, 1));
   }
 
   for (const [bucketId, winners] of winnersByBucket) {
@@ -417,7 +493,21 @@ async function runRefillPhase(db: Database, input: RefillPhaseInput): Promise<Re
     }
   }
 
-  return { surfaced, events, refilledBucketIds, lastPool, artistQuotaDeferred };
+  return { surfaced, events, refilledBucketIds, lastPool, artistQuotaDeferred, nextRefillCursor };
+}
+
+/**
+ * LAB-38 — rotate a sorted-ascending list of bucket ids so it STARTS at the
+ * first id >= `cursor`, with the ids < `cursor` appended at the end (a wrap).
+ * This is the order the ceiling-bound winner selection walks, so consecutive
+ * runs cover different bands of buckets and no bucket starves. When no id
+ * reaches the cursor (it ran past the highest id), the list is returned
+ * unchanged — restarting at the lowest id, the natural wrap. Pure.
+ */
+function rotateFromCursor(ids: readonly number[], cursor: number): number[] {
+  const start = ids.findIndex((id) => id >= cursor);
+  if (start <= 0) return [...ids];
+  return [...ids.slice(start), ...ids.slice(0, start)];
 }
 
 /**
@@ -515,6 +605,8 @@ type AppConfigSnapshot = {
   refillBar: number;
   broadBar: number;
   surfaceArtistCap: number;
+  /** LAB-38 — persisted rotating refill cursor (bucket-id the rotation resumes at). */
+  refillCursor: number;
 };
 
 async function loadAppConfig(db: Database): Promise<AppConfigSnapshot> {
@@ -526,6 +618,7 @@ async function loadAppConfig(db: Database): Promise<AppConfigSnapshot> {
       refillBar: appConfig.refillQualityBar,
       broadBar: appConfig.broadQualityBar,
       surfaceArtistCap: appConfig.surfaceArtistCap,
+      refillCursor: appConfig.refillCursor,
     })
     .from(appConfig)
     .limit(1);
@@ -536,6 +629,7 @@ async function loadAppConfig(db: Database): Promise<AppConfigSnapshot> {
     refillBar: row?.refillBar ?? 0.7,
     broadBar: row?.broadBar ?? 0.5,
     surfaceArtistCap: row?.surfaceArtistCap ?? 1,
+    refillCursor: row?.refillCursor ?? 0,
   };
 }
 

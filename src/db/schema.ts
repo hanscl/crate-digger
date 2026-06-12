@@ -350,6 +350,11 @@ export const appConfig = pgTable(
     similarArtistCap: integer("similar_artist_cap").notNull().default(2),
     familiarArtistKeepThreshold: integer("familiar_artist_keep_threshold").notNull().default(3),
     surfaceArtistCap: integer("surface_artist_cap").notNull().default(1),
+    // LAB-38 — persisted rotating refill cursor (bucket-id based). Refill serves
+    // buckets in id order starting at this cursor and advances it past the last
+    // bucket served each run (wrapping), so coverage rotates when the queue
+    // ceiling binds instead of starving the same low-scoring/high-id buckets.
+    refillCursor: integer("refill_cursor").notNull().default(0),
     retrainCadence: text("retrain_cadence").notNull().default("daily"),
     spawnThreshold: doublePrecision("spawn_threshold").notNull().default(0.7),
     refillLambda: doublePrecision("refill_lambda").notNull().default(0.3),
