@@ -25,6 +25,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     DISCOGS_KEY: "",
     DISCOGS_SECRET: "",
     VIBERATE_API_KEY: "",
+    VIBERATE_TRENDING_COUNTRY: "US",
     CHARTMETRIC_REFRESH_TOKEN: "refresh-token",
     CHARTMETRIC_TIKTOK_COUNTRY: "US",
     SOUNDCHARTS_APP_ID: "",

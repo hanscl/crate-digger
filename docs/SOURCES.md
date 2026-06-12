@@ -13,7 +13,9 @@ doesn't re-discover it the hard way.
   acousticness, instrumentalness). Free, no API key.
 - **Last.fm** = ingestion (search / similar / chart) **+ genre signal via
   `artist.getTopTags`** (replaces Spotify artist genres, see below).
-- **Viberate** = optional paid trend source.
+- **Viberate** = optional paid trend source — ingestion via the Spotify
+  per-country daily "trending tracks" chart (see "Viberate — trending tracks"
+  below).
 
 ## Spotify Web API cliffs
 
@@ -236,6 +238,59 @@ Caveats baked into `src/lib/enrichment/reccobeats.ts`:
 
 The response envelope is parsed defensively (`parseFeatureEntries`) — confirm
 it against the live API if coverage numbers look wrong.
+
+## Viberate — trending tracks (paid, optional)
+
+Viberate (https://www.viberate.com/music-data-api/) is a paid music-analytics
+platform: 11M+ artists, 100M+ tracks, daily-refreshed from Spotify, YouTube,
+TikTok, Shazam, airplay, etc. Crate Digger uses one slice of it — the Spotify
+per-country **trending tracks** chart — as an ingestion signal, fed through the
+normal enrich → bucket → rank → surface pipeline. Lives in
+`src/lib/ingestion/viberate.ts`; spike artifact `scripts/lab87-viberate-probe.ts`.
+
+### Spike findings (LAB-87, verified live 2026-06-12)
+
+- **Base URL** `https://data.viberate.com/api/v1`; **auth** is a single static
+  header `Access-Key: <VIBERATE_API_KEY>` (no token exchange). OpenAPI (Swagger
+  2.0) spec at `https://api-docs.viberate.com/public-api.json`.
+- **Rate limit** `GET /rate-limit/status` reports `{limit, remaining, status}`.
+  The test key returned **60 / window** (window depends on the API package);
+  the status call itself is free, data calls cost 1 credit each. The adapter
+  paces through a module-scoped limiter (~54/min) and honours `Retry-After`.
+- **Verdict: PASS.** `GET /track/trending/spotify/country` returns ingestible
+  candidates — every sampled row carried `title`, `artists[].name`, `isrc`, AND
+  the Spotify `track_id`, plus a velocity signal (`streams_1d`, `streams_1d_pct`,
+  `ranks.{rank,rank_diff}`). The Spotify id unlocks ReccoBeats audio features
+  immediately; the ISRC dedupes against Spotify/Last.fm in `resolve.ts`.
+
+### What the adapter ships
+
+- **Endpoint** `GET /track/trending/spotify/country?country={c}&sort=streams_1d_pct&order=desc&limit={n}`.
+  Sorted by **1-day stream % gain** so the chart surfaces breakouts (new
+  releases AND catalogue revivals) over perennial top-streamers — the analogue
+  of the TikTok-velocity adapter's "breakout" chart (LAB-19). Territory is
+  `VIBERATE_TRENDING_COUNTRY` (ISO Alpha-2; default `US`).
+- **Mapping** row → `RawCandidate`: `track_id` → both `sourceTrackId` and
+  `spotifyId`; `isrc` (upper-cased); `artists[].name` joined primary-first;
+  `release_date` → `releaseYear`. No `durationMs` (absent on trending rows;
+  ReccoBeats/Spotify fill it) and no `genres` (the search/chart endpoints carry
+  `genre`+`subgenres`, but the trending rows don't — the enrichment layer
+  supplies genres). The velocity signal is stashed on `rawPayload.velocity`.
+- **Trending-only.** Like the TikTok adapter, Viberate is a chart signal:
+  `similar`/`search` modes degrade to an empty pool. The daily pipeline only
+  ever calls trend adapters in `trending` mode (`pipeline-steps.ts`).
+- **Constraint #1.** Paid + optional: absent `VIBERATE_API_KEY` the adapter
+  reports unavailable and the system runs on Spotify + Last.fm. The guard runs
+  before any network call, so an empty key never leaves the process.
+
+### Not used (available on the API, out of scope for v1)
+
+- `GET /track/search?q=` and `GET /track/by-isrc/{isrc}` return richer objects
+  with `genre`+`subgenres` — a future enrichment source, but Last.fm/MB/Discogs
+  already cover genres and Spotify covers search.
+- Artist-level `similar-artists`, the cross-platform `track/viberate/chart`
+  (Viberate score, genre-filterable), and the deep historical/audience
+  analytics — not discovery signals for a personal taste model.
 
 ## Not pursued
 
