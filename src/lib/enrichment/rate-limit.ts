@@ -56,6 +56,13 @@ export type FetchWithRetryOptions = {
   maxRetries?: number;
   baseBackoffMs?: number;
   timeoutMs?: number;
+  /**
+   * Log-line prefix identifying the calling source. Defaults to `reccobeats`
+   * (this module's original caller); other adapters pass their own id so a
+   * Viberate/Chartmetric/etc. retry or failure isn't misattributed to the
+   * ReccoBeats enricher in the logs.
+   */
+  label?: string;
 };
 
 /**
@@ -74,6 +81,7 @@ export async function fetchWithRetry(
   const maxRetries = opts.maxRetries ?? DEFAULT_MAX_RETRIES;
   const baseBackoff = opts.baseBackoffMs ?? DEFAULT_BASE_BACKOFF_MS;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const label = opts.label ?? "reccobeats";
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const controller = new AbortController();
@@ -87,7 +95,7 @@ export async function fetchWithRetry(
       // rather than abandoning the remaining attempts.
       const exhausted = attempt >= maxRetries;
       console.error(
-        `[reccobeats] fetch threw (attempt ${attempt + 1}/${maxRetries + 1}) for ${url}` +
+        `[${label}] fetch threw (attempt ${attempt + 1}/${maxRetries + 1}) for ${url}` +
           (exhausted ? " — retries exhausted" : ""),
         err,
       );
@@ -105,7 +113,7 @@ export async function fetchWithRetry(
       // Log every 429 with the headers — undocumented limits, so the only
       // way to tune later is to see what the server actually returns.
       console.warn(
-        `[reccobeats] 429 rate-limited (attempt ${attempt + 1}/${maxRetries + 1}); ` +
+        `[${label}] 429 rate-limited (attempt ${attempt + 1}/${maxRetries + 1}); ` +
           (exhausted ? "retries exhausted" : `backing off ${backoff}ms`),
         Object.fromEntries(res.headers.entries()),
       );
@@ -115,7 +123,7 @@ export async function fetchWithRetry(
     }
 
     if (!res.ok) {
-      console.error(`[reccobeats] ${url} ${res.status}`);
+      console.error(`[${label}] ${url} ${res.status}`);
       return null;
     }
     return res;

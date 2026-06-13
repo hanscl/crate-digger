@@ -20,7 +20,13 @@ const schema = z.object({
   // enricher to run; degrades gracefully when either is empty.
   DISCOGS_KEY: z.string().optional().default(""),
   DISCOGS_SECRET: z.string().optional().default(""),
+  // Viberate (LAB-88) — paid, OPTIONAL trending-tracks source. The key
+  // authorizes data.viberate.com (sent as the `Access-Key` header); absent it
+  // the `viberate` adapter is skipped and the system runs fully on
+  // Spotify + Last.fm (Constraint #1).
   VIBERATE_API_KEY: z.string().optional().default(""),
+  // Viberate trending chart territory (ISO Alpha-2). Defaults to US.
+  VIBERATE_TRENDING_COUNTRY: z.string().optional().default("US"),
   // Chartmetric (LAB-19) — DEFAULT TikTok-velocity provider. Usage-based
   // (~$0.01/credit, free trial), so the cost-effective choice for a single-user
   // install. This is the long-lived REFRESH token (exchanged for a ~1h bearer);
