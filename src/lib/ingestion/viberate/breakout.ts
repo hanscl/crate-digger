@@ -91,9 +91,13 @@ export function computeBreakout(
     // the "rising" momentum (a low-base track surging hard is breakout-shaped).
     socialMomentum = sat(signals.spotifySurgePct, REF.pct);
   } else {
+    // Recent signals only — momentum, not lifetime popularity. An all-time
+    // total would map a historically-popular-but-now-quiet track onto the
+    // weekly anchor and inflate its momentum: exactly the mainstream bias we
+    // avoid. So no `?? *Total` fallback here.
     socialMomentum = orCombine(
-      sat(signals.shazam1w ?? signals.shazamTotal, REF.shazam),
-      sat(signals.soundcloud1w ?? signals.soundcloudTotal, REF.soundcloud),
+      sat(signals.shazam1w, REF.shazam),
+      sat(signals.soundcloud1w, REF.soundcloud),
       orCombine(
         sat(signals.youtubeViews1w, REF.youtubeWeek),
         sat(signals.youtubeViewsPct, REF.pct),

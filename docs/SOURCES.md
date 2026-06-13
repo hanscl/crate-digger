@@ -305,8 +305,8 @@ never throws (`[]` on any error).
 - **TikTok velocity** — per-track TikTok metrics live only under
   `/requested-track/{uuid}/tiktok/*`, which requires _registering_ the track
   (metered, consumes plan quota). The registration flow was deliberately not
-  exercised in the spike, so the TikTok signal slot ships OFF
-  (`TIKTOK_MAX_REGISTRATIONS = 0`) pending a live verification pass.
+  exercised in the spike, so TikTok is not wired in v1; enabling it (and any
+  budget cap) is tracked in LAB-91, pending a live verification pass.
 - **Ranker integration (PR-2)** — wiring the stored breakout score into the
   broad ranker as a soft down-weight (project `Candidate.source`/breakout, bump
   broad `model_version`, params knob) is a separate focused PR; it touches the

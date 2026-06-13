@@ -119,12 +119,10 @@ export type ViberateStatsAlltime = {
  * provider values; normalization happens in `breakout.ts`.
  */
 export type BreakoutSignals = {
-  /** Recent Shazam count (social leading indicator). */
+  /** Recent (weekly) Shazam count — the social leading indicator. */
   shazam1w?: number | null;
-  shazamTotal?: number | null;
-  /** Recent SoundCloud plays. */
+  /** Recent (weekly) SoundCloud plays. */
   soundcloud1w?: number | null;
-  soundcloudTotal?: number | null;
   /** YouTube weekly views + week-over-week %. */
   youtubeViews1w?: number | null;
   youtubeViewsPct?: number | null;

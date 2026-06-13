@@ -51,10 +51,11 @@ export async function resolveRow(row: PooledRow, env: Env): Promise<PooledRow> {
       if (row.uuid) {
         const stats = await getStatsAlltime(row.uuid, env);
         if (stats) {
+          // Spotify MATURITY only — the all-time Shazam/SoundCloud totals are
+          // lifetime popularity, not current momentum, so they don't feed the
+          // social signal (see breakout.ts).
           row.signals.spotifyStreamsTotal ??= num(stats["spotify-streams"]);
           row.signals.spotifyPlaylistReach ??= num(stats["spotify-playlist_reach"]);
-          row.signals.shazamTotal ??= num(stats["shazam-shazams"]);
-          row.signals.soundcloudTotal ??= num(stats["soundcloud-plays"]);
         }
       }
     }

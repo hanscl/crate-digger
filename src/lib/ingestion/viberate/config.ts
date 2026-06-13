@@ -6,8 +6,6 @@
  * from the existing `VIBERATE_TRENDING_COUNTRY` env var.
  */
 
-import type { ViberateFeed } from "./types";
-
 /** YouTube-trending territories to sweep (Hans: DE/GB/US). */
 export const YOUTUBE_COUNTRIES: readonly string[] = ["US", "GB", "DE"];
 
@@ -34,17 +32,7 @@ export const MAX_RETURN = 50;
 /** Default returned count when the caller gives no (or a junk) limit. */
 export const DEFAULT_RETURN = 12;
 
-/**
- * Metered-TikTok budget. Per-track TikTok velocity lives only under
- * `/requested-track/{uuid}/tiktok/*`, which requires REGISTERING the track
- * (consumes plan quota). The registration flow was deliberately NOT exercised
- * during the spike, so it ships OFF (0): verify the flow live, then raise this.
- */
-export const TIKTOK_MAX_REGISTRATIONS = 0;
-
-/** Feeds the engine pulls. Order is informational only. */
-export const ENGINE_FEEDS: readonly ViberateFeed[] = [
-  "composite-chart",
-  "youtube-trending",
-  "spotify-trending",
-];
+// TikTok is deliberately not wired in v1: per-track TikTok velocity lives only
+// under `/requested-track/{uuid}/tiktok/*`, which REGISTERS the track (consumes
+// plan quota) and was not exercised during the spike. Enabling it — including
+// any budget cap — is tracked in LAB-91, to be added when the flow is verified.

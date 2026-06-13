@@ -93,7 +93,6 @@ function compositeRow(item: CompositeChartItem): PooledRow | null {
   const genreName = typeof item.genre?.name === "string" ? item.genre.name.trim() : "";
   const signals: BreakoutSignals = {
     shazam1w: pickRecent(charts?.shazam?.shazams),
-    shazamTotal: num(charts?.shazam?.shazams?.total),
     soundcloud1w: pickRecent(charts?.soundcloud?.plays),
     youtubeViews1w: pickRecent(charts?.youtube?.views),
     spotifyStreamsWeek: num(charts?.spotify?.streams?.["1w"]),
@@ -184,9 +183,13 @@ export function dedupePool(rows: PooledRow[]): PooledRow[] {
     }
     const [winner, loser] =
       (FEED_WEIGHTS[row.feed] ?? 0) > (FEED_WEIGHTS[prev.feed] ?? 0) ? [row, prev] : [prev, row];
-    winner.signals = mergeSignals(winner.signals, loser.signals);
-    if (winner.genres.length === 0 && loser.genres.length > 0) winner.genres = loser.genres;
-    byKey.set(key, winner);
+    // Stage the merge into a fresh row rather than mutating the input objects —
+    // dedupePool shouldn't have a hidden side-effect on its argument.
+    byKey.set(key, {
+      ...winner,
+      signals: mergeSignals(winner.signals, loser.signals),
+      genres: winner.genres.length === 0 ? loser.genres : winner.genres,
+    });
   }
   return [...byKey.values()];
 }
