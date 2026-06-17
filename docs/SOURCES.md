@@ -13,8 +13,9 @@ doesn't re-discover it the hard way.
   acousticness, instrumentalness). Free, no API key.
 - **Last.fm** = ingestion (search / similar / chart) **+ genre signal via
   `artist.getTopTags`** (replaces Spotify artist genres, see below).
-- **Viberate** = optional paid trend source — ingestion via the Spotify
-  per-country daily "trending tracks" chart (see "Viberate — trending tracks"
+- **Viberate** = optional paid discovery engine — a multi-feed _breakout_ pool
+  (YouTube + Shazam/SoundCloud composite + Spotify), scored to lead the
+  mainstream (see "Viberate — social-breakout discovery engine"
   below).
 
 ## Spotify Web API cliffs
@@ -239,58 +240,79 @@ Caveats baked into `src/lib/enrichment/reccobeats.ts`:
 The response envelope is parsed defensively (`parseFeatureEntries`) — confirm
 it against the live API if coverage numbers look wrong.
 
-## Viberate — trending tracks (paid, optional)
+## Viberate — social-breakout discovery engine (paid, optional)
 
 Viberate (https://www.viberate.com/music-data-api/) is a paid music-analytics
 platform: 11M+ artists, 100M+ tracks, daily-refreshed from Spotify, YouTube,
-TikTok, Shazam, airplay, etc. Crate Digger uses one slice of it — the Spotify
-per-country **trending tracks** chart — as an ingestion signal, fed through the
-normal enrich → bucket → rank → surface pipeline. Lives in
-`src/lib/ingestion/viberate.ts`; spike artifact `scripts/lab87-viberate-probe.ts`.
+TikTok, Shazam, airplay, etc. Crate Digger uses it as a **breakout discovery
+engine** (LAB-90) — the goal is to get OUT of the popular-playlist tail and
+surface tracks breaking out on social/alternative signals _before_ they're
+mainstream. Lives in `src/lib/ingestion/viberate/`; spike artifacts
+`scripts/lab87-viberate-probe.ts` (LAB-87) + `scripts/lab-viberate-engine-probe.ts`
+(LAB-90).
 
-### Spike findings (LAB-87, verified live 2026-06-12)
+### Why not just "trending"
 
-- **Base URL** `https://data.viberate.com/api/v1`; **auth** is a single static
-  header `Access-Key: <VIBERATE_API_KEY>` (no token exchange). OpenAPI (Swagger
-  2.0) spec at `https://api-docs.viberate.com/public-api.json`.
-- **Rate limit** `GET /rate-limit/status` reports `{limit, remaining, status}`.
-  The test key returned **60 / window** (window depends on the API package);
-  the status call itself is free, data calls cost 1 credit each. The adapter
-  paces through a module-scoped limiter (~54/min) and honours `Retry-After`.
-- **Verdict: PASS.** `GET /track/trending/spotify/country` returns ingestible
-  candidates — every sampled row carried `title`, `artists[].name`, `isrc`, AND
-  the Spotify `track_id`, plus a velocity signal (`streams_1d`, `streams_1d_pct`,
-  `ranks.{rank,rank_diff}`). The Spotify id unlocks ReccoBeats audio features
-  immediately; the ISRC dedupes against Spotify/Last.fm in `resolve.ts`.
+The top of _every_ Viberate chart is mainstream — sort the composite chart by
+"Viberate score" and you get Taylor Swift / Bad Bunny. Pulling "trending" off
+any single ranking lands right back in the short tail. The breakout signal is
+**divergence**: high social/alternative momentum (Shazam, SoundCloud, YouTube)
+while Spotify presence (streams, playlist reach) is still LOW. LAB-88's original
+Spotify-trending feed (sorted by 1-day stream % gain) is Spotify-native — kept,
+but down-weighted to one contributor.
 
-### What the adapter ships
+### Spike findings (verified live)
 
-- **Endpoint** `GET /track/trending/spotify/country?country={c}&sort=streams_1d_pct&order=desc&limit={n}`.
-  Sorted by **1-day stream % gain** so the chart surfaces breakouts (new
-  releases AND catalogue revivals) over perennial top-streamers — the analogue
-  of the TikTok-velocity adapter's "breakout" chart (LAB-19). Territory is
-  `VIBERATE_TRENDING_COUNTRY` (ISO Alpha-2; default `US`).
-- **Mapping** row → `RawCandidate`: `track_id` → both `sourceTrackId` and
-  `spotifyId`; `isrc` (upper-cased); `artists[].name` joined primary-first;
-  `release_date` → `releaseYear`. No `durationMs` (absent on trending rows;
-  ReccoBeats/Spotify fill it) and no `genres` (the search/chart endpoints carry
-  `genre`+`subgenres`, but the trending rows don't — the enrichment layer
-  supplies genres). The velocity signal is stashed on `rawPayload.velocity`.
-- **Trending-only.** Like the TikTok adapter, Viberate is a chart signal:
-  `similar`/`search` modes degrade to an empty pool. The daily pipeline only
-  ever calls trend adapters in `trending` mode (`pipeline-steps.ts`).
-- **Constraint #1.** Paid + optional: absent `VIBERATE_API_KEY` the adapter
-  reports unavailable and the system runs on Spotify + Last.fm. The guard runs
-  before any network call, so an empty key never leaves the process.
+- **Base URL** `https://data.viberate.com/api/v1`; **auth** a single static
+  header `Access-Key: <VIBERATE_API_KEY>` (no token exchange). Rate limit
+  ~**60/window** (`GET /rate-limit/status`, free); the engine paces through a
+  module-scoped limiter (~54/min) and honours `Retry-After`.
+- **YouTube trending** `GET /track/trending/youtube/country?sort=views_1w_pct`:
+  rows carry view momentum but no ISRC/uuid (`track_id` is a `G:…` namespace,
+  unusable). Resolve via `GET /track/by-channel/youtube/{youtube_id}` →
+  `{uuid, isrc, genre, subgenres}` in one call.
+- **Composite chart** `GET /track/viberate/chart?sort=shazam-shazams|soundcloud-plays&timeframe=1w`:
+  rows carry `uuid` + `genre` + **inline `charts.{shazam,spotify,viberate}`**
+  timeseries — so the breakout gap (social vs Spotify) is computable from the
+  chart call itself. Surfaces genuinely obscure artists. ISRC via
+  `GET /track/{uuid}/details`.
+- **Resolution/maturity** `GET /track/{uuid}/details` → ISRC; `…/links` →
+  explicit Spotify id; `…/viberate/stats-alltime` → compact cross-platform
+  snapshot (the Spotify-maturity input for YouTube candidates).
 
-### Not used (available on the API, out of scope for v1)
+### What the engine ships (3 stages, `src/lib/ingestion/viberate/`)
 
-- `GET /track/search?q=` and `GET /track/by-isrc/{isrc}` return richer objects
-  with `genre`+`subgenres` — a future enrichment source, but Last.fm/MB/Discogs
-  already cover genres and Spotify covers search.
-- Artist-level `similar-artists`, the cross-platform `track/viberate/chart`
-  (Viberate score, genre-filterable), and the deep historical/audience
-  analytics — not discovery signals for a personal taste model.
+1. **Broad pool** (`pool.ts`) — pull YouTube-trending (DE/GB/US) + composite
+   chart (Shazam + SoundCloud) + Spotify-trending (`VIBERATE_TRENDING_COUNTRY`),
+   map each to a common `PooledRow`, dedup the union.
+2. **Score + select** (`breakout.ts`) — `score = clamp01(socialMomentum −
+0.6·spotifyMaturity)` (heavy-tailed counts log-saturated), then keep the top
+   `limit` weighted by feed (composite 1.0 · youtube 0.9 · spotify 0.45). This
+   is pull **composition within the LAB-51 pull-size throttle** — NOT a surfacing
+   filter; everything returned is still ingested in full (Constraint #5).
+3. **Resolve** (`resolve.ts`) — resolve only the shortlist to an ISRC (+ Spotify
+   maturity for YouTube rows), recompute the final breakout, emit `RawCandidate`s.
+   `resolve.ts`/ReccoBeats/genre enrichers do the rest downstream.
+
+The breakout signal (`{score, socialMomentum, spotifyMaturity, signals}`) rides
+on `track_source.raw_payload` — a **discovery signal only**, never the taste
+model. **Constraint #1:** absent `VIBERATE_API_KEY` the engine is unavailable
+(guard before any network call); trending-only (`similar`/`search` → `[]`);
+never throws (`[]` on any error).
+
+### Deferred / out of scope (v1)
+
+- **TikTok velocity** — per-track TikTok metrics live only under
+  `/requested-track/{uuid}/tiktok/*`, which requires _registering_ the track
+  (metered, consumes plan quota). The registration flow was deliberately not
+  exercised in the spike, so TikTok is not wired in v1; enabling it (and any
+  budget cap) is tracked in LAB-91, pending a live verification pass.
+- **Ranker integration (PR-2)** — wiring the stored breakout score into the
+  broad ranker as a soft down-weight (project `Candidate.source`/breakout, bump
+  broad `model_version`, params knob) is a separate focused PR; it touches the
+  versioned ranker + counterfactual replay.
+- Artist-level `social-rank` chart, `track/search`, deep historical analytics —
+  available, not wired for a personal taste model.
 
 ## Not pursued
 
