@@ -39,15 +39,26 @@ const credsByAdapter: Record<string, Partial<Env>> = {
 };
 
 beforeEach(() => {
+  // Fake timers so adapters that PACE their calls through a rate limiter (e.g.
+  // the multi-feed Viberate engine) don't blow the 5s timeout on real-time
+  // sleeps; tests advance fake time to drive the limiter/backoff to completion.
+  vi.useFakeTimers();
   _resetSpotifyTokenCache();
   _resetChartmetricTokenCache();
   vi.spyOn(console, "error").mockImplementation(() => undefined);
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
+
+/** Drive a paced adapter call to completion under fake timers. */
+async function settle<T>(p: Promise<T>): Promise<T> {
+  await vi.advanceTimersByTimeAsync(120_000);
+  return await p;
+}
 
 describe("source adapter contract", () => {
   it("registers at least the documented adapters", () => {
@@ -69,7 +80,9 @@ describe("source adapter contract", () => {
       });
 
       it("returns an empty pool without credentials (graceful degrade)", async () => {
-        const out = await adapter.pullCandidates({ mode: "trending", limit: 10 }, makeEnv());
+        const out = await settle(
+          adapter.pullCandidates({ mode: "trending", limit: 10 }, makeEnv()),
+        );
         expect(out).toEqual([]);
       });
 
@@ -87,9 +100,9 @@ describe("source adapter contract", () => {
               }),
           ),
         );
-        await expect(adapter.pullCandidates({ mode: "trending", limit: 5 }, env)).resolves.toEqual(
-          [],
-        );
+        await expect(
+          settle(adapter.pullCandidates({ mode: "trending", limit: 5 }, env)),
+        ).resolves.toEqual([]);
       });
 
       it("does not throw when fetch itself rejects (network error)", async () => {
@@ -101,7 +114,7 @@ describe("source adapter contract", () => {
           }),
         );
         await expect(
-          adapter.pullCandidates({ mode: "search", query: "test", limit: 5 }, env),
+          settle(adapter.pullCandidates({ mode: "search", query: "test", limit: 5 }, env)),
         ).resolves.toEqual([]);
       });
     });
