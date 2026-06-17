@@ -1,4 +1,5 @@
 import { AdapterRegistry, type SourceAdapter } from "./adapter";
+import { chartmetricAdapter } from "./chartmetric";
 import { lastfmAdapter } from "./lastfm";
 import { spotifyAdapter } from "./spotify";
 import { tiktokAdapter } from "./tiktok";
@@ -10,6 +11,7 @@ export { spotifyAdapter } from "./spotify";
 export { lastfmAdapter } from "./lastfm";
 export { viberateAdapter } from "./viberate";
 export { tiktokAdapter } from "./tiktok";
+export { chartmetricAdapter } from "./chartmetric";
 
 /** Every adapter shipped in the box. The contract test runs against this list. */
 export const allAdapters: readonly SourceAdapter[] = [
@@ -17,6 +19,7 @@ export const allAdapters: readonly SourceAdapter[] = [
   lastfmAdapter,
   viberateAdapter,
   tiktokAdapter,
+  chartmetricAdapter,
 ];
 
 export function createDefaultRegistry(): AdapterRegistry {

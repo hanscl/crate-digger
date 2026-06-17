@@ -27,14 +27,14 @@ const schema = z.object({
   VIBERATE_API_KEY: z.string().optional().default(""),
   // Viberate trending chart territory (ISO Alpha-2). Defaults to US.
   VIBERATE_TRENDING_COUNTRY: z.string().optional().default("US"),
-  // Chartmetric (LAB-19) — DEFAULT TikTok-velocity provider. Usage-based
-  // (~$0.01/credit, free trial), so the cost-effective choice for a single-user
-  // install. This is the long-lived REFRESH token (exchanged for a ~1h bearer);
-  // absent it, the adapter falls back to Soundcharts, then to unavailable
-  // (system runs on Spotify + Last.fm — Constraint #1).
+  // Chartmetric (LAB-117) — social-breakout discovery engine. Usage-based
+  // (~$0.01/credit, free trial), no monthly floor, so the cost-effective paid
+  // source for a single-user install. This is the long-lived REFRESH token
+  // (exchanged for a ~1h bearer); absent it the `chartmetric` adapter is skipped
+  // and the system runs on Spotify + Last.fm (Constraint #1).
   CHARTMETRIC_REFRESH_TOKEN: z.string().optional().default(""),
-  // TikTok chart territory (ISO Alpha-2). Defaults to US.
-  CHARTMETRIC_TIKTOK_COUNTRY: z.string().optional().default("US"),
+  // Chartmetric chart territory (ISO Alpha-2). Defaults to US.
+  CHARTMETRIC_TRENDING_COUNTRY: z.string().optional().default("US"),
   // Soundcharts (LAB-19) — ALTERNATIVE TikTok-velocity provider ($250/mo floor;
   // live-verified). BOTH the app id and api key are required; the public sandbox
   // creds are `soundcharts` / `soundcharts` (fixed demo data).
@@ -63,7 +63,8 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   return parsed.data;
 }
 
-export function isPaidSourceConfigured(env: Env, source: "viberate"): boolean {
+export function isPaidSourceConfigured(env: Env, source: "viberate" | "chartmetric"): boolean {
   if (source === "viberate") return env.VIBERATE_API_KEY.length > 0;
+  if (source === "chartmetric") return env.CHARTMETRIC_REFRESH_TOKEN.length > 0;
   return false;
 }

@@ -28,6 +28,7 @@ export const setupRouter = router({
         ctx.appEnv.SPOTIFY_CLIENT_ID.length > 0 && ctx.appEnv.SPOTIFY_CLIENT_SECRET.length > 0,
       lastfmConfigured: ctx.appEnv.LASTFM_API_KEY.length > 0,
       viberateConfigured: isPaidSourceConfigured(ctx.appEnv, "viberate"),
+      chartmetricConfigured: isPaidSourceConfigured(ctx.appEnv, "chartmetric"),
       anthropicConfigured: ctx.appEnv.ANTHROPIC_API_KEY.length > 0,
       counts: {
         tracks: Number(trackCount?.n ?? 0),

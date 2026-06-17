@@ -74,6 +74,7 @@ export function SetupScreen() {
               <ConfigRow label="Last.fm" ok={status.data.lastfmConfigured} required />
               <ConfigRow label="Anthropic" ok={status.data.anthropicConfigured} />
               <ConfigRow label="Viberate" ok={status.data.viberateConfigured} />
+              <ConfigRow label="ChartMetric" ok={status.data.chartmetricConfigured} />
               <div className="hr" />
               <div className="grid grid-cols-3 gap-3 text-xs mono">
                 <Stat label="tracks" value={status.data.counts.tracks} />
