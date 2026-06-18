@@ -69,6 +69,12 @@ export async function logSurfaceEvents(
       score: s.score,
       subScores: s.subScores,
       surfaced: s.candidate.trackId === w.candidate.trackId,
+      // LAB-92 — freeze the breakout score the broad ranker scored against, so
+      // counterfactual replay reproduces the mainstream down-weight without
+      // re-reading the mutable `raw_payload` (Constraint #3). Omitted (not
+      // null) when the candidate carried no breakout reading, so legacy pool
+      // rows and non-breakout candidates serialize identically.
+      ...(typeof s.candidate.breakout === "number" ? { breakout: s.candidate.breakout } : {}),
     }));
 
     const features = w.candidate.audioFeatures ?? null;

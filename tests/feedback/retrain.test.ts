@@ -9,7 +9,11 @@ import * as schema from "@/db/schema";
 import { buildEmbedding } from "@/lib/embedding";
 import { ingestRating } from "@/lib/feedback/ingest-rating";
 import { retrainBroad } from "@/lib/feedback/retrain";
-import { ensureActiveModelVersion, getActiveModelVersion } from "@/lib/ranking/version";
+import {
+  bumpModelVersion,
+  ensureActiveModelVersion,
+  getActiveModelVersion,
+} from "@/lib/ranking/version";
 import { isBroadConfig } from "@/lib/ranking/types";
 
 let container: StartedPostgreSqlContainer;
@@ -149,6 +153,43 @@ describe("retrainBroad", () => {
     const active = await getActiveModelVersion(db, "broad");
     expect(active?.id).toBe(result.modelVersion!.id);
     expect(active?.parentId).toBe(bootstrap.id);
+  });
+
+  it("carries the active broad version's breakoutPenalty forward on retrain (LAB-92)", async () => {
+    // trainBroadClassifier emits no breakoutPenalty; the retrain must carry the
+    // active version's FROZEN knob forward, else every nightly retrain would
+    // silently reset the breakout mainstream down-weight to 0 (legacy fallback)
+    // until the next deploy/reconcile re-installed it.
+    for (let i = 0; i < 5; i++) {
+      const k = await seedTrack({
+        title: `K-${i}`,
+        audioFeatures: mkAudio({ energy: 0.85 + i * 0.02, valence: 0.8 }),
+        genres: ["rock"],
+      });
+      await ingestRating(db, { trackId: k, decision: "keep" });
+      const d = await seedTrack({
+        title: `D-${i}`,
+        audioFeatures: mkAudio({ energy: 0.1 + i * 0.02, valence: 0.1 }),
+        genres: ["rock"],
+      });
+      await ingestRating(db, { trackId: d, decision: "dislike" });
+    }
+    // Simulate an operator who tuned the knob: the active broad version carries 0.3.
+    await bumpModelVersion(
+      db,
+      "broad",
+      { weights: null, bias: 0, trainedSampleCount: 0, prior: 0.5, breakoutPenalty: 0.3 },
+      { note: "knob" },
+    );
+
+    const result = await retrainBroad(db, { iterations: 100 });
+    expect(result.skipped).toBe(false);
+    const cfg = result.modelVersion!.config as {
+      weights: number[] | null;
+      breakoutPenalty?: number;
+    };
+    expect(cfg.weights).not.toBeNull(); // actually trained
+    expect(cfg.breakoutPenalty).toBe(0.3); // carried forward from the active version, NOT reset to 0
   });
 
   it("dedupes by trackId — the latest rating wins on re-rated tracks", async () => {

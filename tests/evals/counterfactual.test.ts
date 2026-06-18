@@ -615,3 +615,95 @@ describe("counterfactualReplay — refill familiarity penalty (LAB-73)", () => {
     expect(legFam.subScores.familiarityPenalty).toBe(0);
   });
 });
+
+describe("counterfactualReplay — LAB-92 broad breakout down-weight", () => {
+  it("reproduces the mainstream down-weight from the FROZEN pool entry, not live raw_payload", async () => {
+    // seed() inserts only `track` rows — there is NO track_source for these
+    // tracks, so the breakout score exists only on the Candidate and is frozen
+    // onto the candidate_pool at surface time. If replay re-read live state it
+    // would find no breakout and apply no penalty; reproducing the down-weight
+    // proves it reads the frozen pool entry (Constraint #3). The bootstrap
+    // broad config carries the default knob (0.15). broadBar=0 so the
+    // down-weighted scores still clear the bar and the top one surfaces.
+    const obscureT = await seed({
+      title: "Obscure",
+      audio: audio(),
+      genres: ["rock"],
+      artist: "ObscureBand",
+    });
+    const popT = await seed({ title: "Pop", audio: audio(), genres: ["rock"], artist: "PopBand" });
+    const obscure: Candidate = { ...(await asCand(obscureT)), breakout: 0.95 };
+    const pop: Candidate = { ...(await asCand(popT)), breakout: 0.1 };
+
+    await runSurfacingBatch(db, {
+      candidates: [obscure, pop],
+      noveltyOverride: 1, // pure broad (no buckets seeded → refill surfaces nothing)
+      broadBarOverride: 0,
+      queueCeilingOverride: 1,
+    });
+
+    const active = await getActiveModelVersion(db, "broad");
+    if (!active) throw new Error("expected active broad version");
+    expect((active.config as { breakoutPenalty?: number }).breakoutPenalty).toBe(0.15);
+
+    // The persisted pool froze each candidate's breakout score, and the obscure
+    // track won the single slot (its down-weighted score tops the mainstream one).
+    const event = (await db.select().from(schema.surfaceEvent))[0]!;
+    const obscureEntry = event.candidatePool.find(
+      (p: schema.CandidatePoolEntry) => p.trackId === obscureT.id,
+    )!;
+    const popEntry = event.candidatePool.find(
+      (p: schema.CandidatePoolEntry) => p.trackId === popT.id,
+    )!;
+    expect(obscureEntry.breakout).toBe(0.95);
+    expect(popEntry.breakout).toBe(0.1);
+    expect(event.trackId).toBe(obscureT.id);
+
+    // Replay reproduces the exact down-weighted scores from the frozen inputs.
+    const replay = await counterfactualReplay(db, active.id);
+    const evt = replay.perEvent[0]!;
+    expect(evt.replayedTrackId).toBe(obscureT.id);
+    expect(evt.agreed).toBe(true);
+    const rObscure = evt.replayedPool.find((p) => p.trackId === obscureT.id)!;
+    const rPop = evt.replayedPool.find((p) => p.trackId === popT.id)!;
+    expect(rObscure.score).toBeCloseTo(0.5 - 0.15 * (1 - 0.95), 6); // 0.4925
+    expect(rPop.score).toBeCloseTo(0.5 - 0.15 * (1 - 0.1), 6); // 0.365
+    expect(rObscure.subScores.breakoutPenalty).toBeCloseTo(0.15 * 0.05, 6);
+    expect(rPop.subScores.breakoutPenalty).toBeCloseTo(0.15 * 0.9, 6);
+  });
+
+  it("a legacy broad version (no breakoutPenalty knob) replays the same frozen pool with no down-weight", async () => {
+    const obscureT = await seed({
+      title: "Obscure",
+      audio: audio(),
+      genres: ["rock"],
+      artist: "ObscureBand",
+    });
+    const popT = await seed({ title: "Pop", audio: audio(), genres: ["rock"], artist: "PopBand" });
+    const obscure: Candidate = { ...(await asCand(obscureT)), breakout: 0.95 };
+    const pop: Candidate = { ...(await asCand(popT)), breakout: 0.1 };
+    await runSurfacingBatch(db, {
+      candidates: [obscure, pop],
+      noveltyOverride: 1,
+      broadBarOverride: 0,
+      queueCeilingOverride: 1,
+    });
+
+    // Pin a legacy broad version whose config predates the knob — same frozen
+    // breakout inputs, but no penalty applies (the knob is version-frozen).
+    const legacy = await bumpModelVersion(
+      db,
+      "broad",
+      { weights: null, bias: 0, trainedSampleCount: 0, prior: 0.5 },
+      { note: "legacy broad pin" },
+    );
+    const replay = await counterfactualReplay(db, legacy.id);
+    const evt = replay.perEvent[0]!;
+    const rObscure = evt.replayedPool.find((p) => p.trackId === obscureT.id)!;
+    const rPop = evt.replayedPool.find((p) => p.trackId === popT.id)!;
+    expect(rObscure.score).toBe(0.5);
+    expect(rPop.score).toBe(0.5);
+    expect(rObscure.subScores.breakoutPenalty).toBe(0);
+    expect(rPop.subScores.breakoutPenalty).toBe(0);
+  });
+});

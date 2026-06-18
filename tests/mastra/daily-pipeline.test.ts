@@ -694,3 +694,80 @@ describe("daily-pipeline (Mastra orchestration)", () => {
     expect(result.result.pendingRecommendationCount).toBe(0);
   });
 });
+
+describe("surfaceStep — LAB-92 breakout projection onto candidates", () => {
+  const embedding = () => Array.from({ length: schema.EMBEDDING_DIM }, () => 0);
+
+  async function insertTrack(title: string, artist: string): Promise<number> {
+    const [row] = await db
+      .insert(schema.track)
+      .values({ title, artist, genres: ["rock"], embedding: embedding() })
+      .returning({ id: schema.track.id });
+    if (!row) throw new Error("track insert returned no rows");
+    return row.id;
+  }
+
+  it("projects raw_payload.breakout.score onto each candidate (MAX across sources) and freezes it into the pool", async () => {
+    // loadCandidates does NOT join track_source by default — LAB-92 adds a
+    // correlated MAX subquery. A track scored by two engines takes the
+    // strongest breakout reading; a Spotify/Last.fm track has none.
+    const aId = await insertTrack("Solo Breakout", "BandA"); // one engine, score 0.9
+    const bId = await insertTrack("Mainstream", "BandB"); // Spotify only, no breakout
+    const cId = await insertTrack("Two Engines", "BandC"); // viberate 0.4 + chartmetric 0.7 → MAX 0.7
+
+    await db.insert(schema.trackSource).values([
+      {
+        trackId: aId,
+        source: "viberate",
+        sourceTrackId: "a-vib",
+        rawPayload: { breakout: { provider: "viberate", feed: "composite-chart", score: 0.9 } },
+      },
+      {
+        trackId: bId,
+        source: "spotify",
+        sourceTrackId: "b-spo",
+        rawPayload: { popularity: 88 }, // no breakout key
+      },
+      {
+        trackId: cId,
+        source: "viberate",
+        sourceTrackId: "c-vib",
+        rawPayload: { breakout: { provider: "viberate", feed: "youtube-trending", score: 0.4 } },
+      },
+      {
+        trackId: cId,
+        source: "chartmetric",
+        sourceTrackId: "c-cm",
+        rawPayload: { breakout: { provider: "chartmetric", feed: "soundcloud", score: 0.7 } },
+      },
+    ]);
+
+    // Bootstrap broad config carries the default knob (0.15). Pure broad (no
+    // buckets → refill surfaces nothing): the un-penalized mainstream track
+    // clears the default 0.5 bar and wins, while the down-weighted breakout
+    // tracks stay in the full pool (Constraint #2).
+    const surface = await surfaceStep(db, [aId, bId, cId]);
+    expect(surface.surfacedCount).toBeGreaterThan(0);
+
+    const [event] = await db.select().from(schema.surfaceEvent);
+    if (!event) throw new Error("expected a surface event");
+    const byId = new Map(event.candidatePool.map((p) => [p.trackId, p]));
+    expect(byId.get(aId)?.breakout).toBe(0.9);
+    expect(byId.get(cId)?.breakout).toBe(0.7); // MAX(0.4, 0.7) across the two engines
+    expect(byId.get(bId)?.breakout).toBeUndefined(); // no breakout reading
+    expect(Object.hasOwn(byId.get(bId)!, "breakout")).toBe(false);
+
+    // The down-weight applied: higher breakout → smaller penalty → higher score
+    // among the penalized pair, both below the un-penalized mainstream track.
+    const aScore = byId.get(aId)!.score;
+    const bScore = byId.get(bId)!.score;
+    const cScore = byId.get(cId)!.score;
+    expect(aScore).toBeCloseTo(0.5 - 0.15 * (1 - 0.9), 6); // 0.485
+    expect(cScore).toBeCloseTo(0.5 - 0.15 * (1 - 0.7), 6); // 0.455
+    expect(bScore).toBe(0.5);
+    expect(aScore).toBeGreaterThan(cScore);
+    expect(bScore).toBeGreaterThan(aScore);
+    expect(byId.get(aId)?.subScores?.breakoutPenalty).toBeCloseTo(0.15 * 0.1, 6);
+    expect(byId.get(bId)?.subScores?.breakoutPenalty).toBe(0);
+  });
+});

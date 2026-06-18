@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { EMBEDDING_DIM } from "@/db/schema";
 import { scoreBroad, trainBroadClassifier } from "@/lib/ranking/broad";
 import { isBroadConfig } from "@/lib/ranking/types";
-import type { Candidate } from "@/lib/ranking/types";
+import type { BroadConfig, Candidate } from "@/lib/ranking/types";
 
 function candidate(trackId: number, embedding: number[]): Candidate {
   return { trackId, embedding };
@@ -105,6 +105,75 @@ describe("trainBroadClassifier — logistic regression on embeddings", () => {
   });
 });
 
+describe("scoreBroad — LAB-92 breakout mainstream down-weight", () => {
+  // Untrained config so the base score is a deterministic prior (0.5) and the
+  // penalty arithmetic is exact. The down-weight is branch-agnostic (see the
+  // trained-branch test below).
+  const untrained = (breakoutPenalty: number): BroadConfig => ({
+    weights: null,
+    bias: 0,
+    trainedSampleCount: 0,
+    prior: 0.5,
+    breakoutPenalty,
+  });
+
+  it("subtracts breakoutPenalty·(1 − breakout): mainstream pushed down, obscure left ~untouched", () => {
+    const cfg = untrained(0.2);
+    const obscure = scoreBroad({ trackId: 1, embedding: [0], breakout: 0.95 }, cfg);
+    const mainstream = scoreBroad({ trackId: 2, embedding: [0], breakout: 0.1 }, cfg);
+    // base 0.5: obscure → 0.5 − 0.2·0.05 = 0.49; mainstream → 0.5 − 0.2·0.9 = 0.32.
+    expect(obscure.score).toBeCloseTo(0.49, 6);
+    expect(mainstream.score).toBeCloseTo(0.32, 6);
+    expect(obscure.score).toBeGreaterThan(mainstream.score);
+    expect(obscure.subScores.breakoutPenalty).toBeCloseTo(0.01, 6);
+    expect(mainstream.subScores.breakoutPenalty).toBeCloseTo(0.18, 6);
+  });
+
+  it("applies no penalty to a candidate without a breakout reading (Spotify/Last.fm or legacy pool)", () => {
+    const cfg = untrained(0.2);
+    const absent = scoreBroad({ trackId: 1, embedding: [0] }, cfg);
+    const explicitNull = scoreBroad({ trackId: 2, embedding: [0], breakout: null }, cfg);
+    expect(absent.score).toBe(0.5);
+    expect(explicitNull.score).toBe(0.5);
+    expect(absent.subScores.breakoutPenalty).toBe(0);
+  });
+
+  it("applies no penalty when the version's knob is 0 (legacy broad config) even with a signal", () => {
+    const legacy: BroadConfig = { weights: null, bias: 0, trainedSampleCount: 0, prior: 0.5 };
+    const s = scoreBroad({ trackId: 1, embedding: [0], breakout: 0 }, legacy);
+    expect(s.score).toBe(0.5);
+    expect(s.subScores.breakoutPenalty).toBe(0);
+  });
+
+  it("applies the down-weight in the trained branch too (Δscore = knob·(1 − breakout))", () => {
+    const samples: { embedding: number[]; label: 0 | 1 }[] = [];
+    for (let i = 0; i < 10; i++) {
+      samples.push({ embedding: [1, 0], label: 1 });
+      samples.push({ embedding: [0, 1], label: 0 });
+    }
+    const trained = trainBroadClassifier(samples, { iterations: 200 }).config;
+    const cfg: BroadConfig = { ...trained, breakoutPenalty: 0.2 };
+    const emb = [1, 0]; // keep-shaped → high base score, comfortably above the penalty
+    const base = scoreBroad({ trackId: 1, embedding: emb }, cfg).score;
+    const mature = scoreBroad({ trackId: 2, embedding: emb, breakout: 0.25 }, cfg).score;
+    expect(base - mature).toBeCloseTo(0.2 * (1 - 0.25), 6);
+  });
+
+  it("clamps the down-weighted score at 0 — never negative (soft, never a hard exclude)", () => {
+    const s = scoreBroad({ trackId: 1, embedding: [0], breakout: 0 }, untrained(1));
+    expect(s.score).toBe(0); // 0.5 − 1·1 = −0.5 → clamped to 0
+    expect(s.subScores.breakoutPenalty).toBe(1);
+  });
+
+  it("defensively clamps an out-of-range breakout to [0,1] before penalizing", () => {
+    const cfg = untrained(0.2);
+    const over = scoreBroad({ trackId: 1, embedding: [0], breakout: 1.5 }, cfg); // → 1 → penalty 0
+    const under = scoreBroad({ trackId: 2, embedding: [0], breakout: -0.5 }, cfg); // → 0 → penalty 0.2
+    expect(over.score).toBe(0.5);
+    expect(under.score).toBeCloseTo(0.3, 6);
+  });
+});
+
 describe("isBroadConfig — trust-boundary guard", () => {
   it("rejects weights whose length doesn't match EMBEDDING_DIM", () => {
     // A model trained at a pre-refactor dim (or otherwise mis-shaped) that
@@ -146,6 +215,18 @@ describe("isBroadConfig — trust-boundary guard", () => {
     const boundary1 = { weights: null, bias: 0, trainedSampleCount: 0, prior: 1 };
     expect(isBroadConfig(boundary0)).toBe(true);
     expect(isBroadConfig(boundary1)).toBe(true);
+  });
+
+  it("rejects breakoutPenalty outside [0,1] or non-finite; accepts absent + boundaries (LAB-92)", () => {
+    const base = { weights: null, bias: 0, trainedSampleCount: 0 };
+    expect(isBroadConfig({ ...base, breakoutPenalty: -0.1 })).toBe(false);
+    expect(isBroadConfig({ ...base, breakoutPenalty: 1.1 })).toBe(false);
+    expect(isBroadConfig({ ...base, breakoutPenalty: Number.NaN })).toBe(false);
+    // Absent → valid (legacy broad configs predate the knob → 0).
+    expect(isBroadConfig(base)).toBe(true);
+    expect(isBroadConfig({ ...base, breakoutPenalty: 0 })).toBe(true);
+    expect(isBroadConfig({ ...base, breakoutPenalty: 1 })).toBe(true);
+    expect(isBroadConfig({ ...base, breakoutPenalty: 0.15 })).toBe(true);
   });
 });
 

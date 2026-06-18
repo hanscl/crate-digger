@@ -4,6 +4,7 @@ import { appConfig, type ModelVersion, modelVersion, type NewModelVersion } from
 import {
   type BroadConfig,
   DEFAULT_AUDIO_WEIGHT,
+  DEFAULT_BREAKOUT_PENALTY,
   familiarityPenaltyFromNovelty,
   isBroadConfig,
   isRefillConfig,
@@ -250,6 +251,52 @@ export async function mintRefillConfigUpgradeInTx(
 }
 
 /**
+ * LAB-92 — idempotent broad-config upgrade for EXISTING installs: when the
+ * ACTIVE broad version's config predates the breakout-penalty knob, mint ONE
+ * broad version carrying the present config (weights/bias/prior) forward and
+ * filling in `breakoutPenalty` from `app_config.breakout_penalty` (an
+ * already-frozen value is carried forward, never overwritten). Parent-chained,
+ * under the app_config lock — a scoring-config change must be a version
+ * boundary (Constraint #3) so ratings collected after it attribute to the new
+ * chain, and the broad ranker starts preferring breakouts without a manual
+ * Console nudge.
+ *
+ * Returns null — complete no-op — when the active config already carries
+ * `breakoutPenalty` (re-run), or when no active broad version exists (fresh
+ * install: the `ensureActiveModelVersion` bootstrap mints the knob directly).
+ * The check-and-mint runs entirely under the lock, so concurrent callers
+ * serialize and exactly one mints. Mirrors {@link mintRefillConfigUpgradeInTx}.
+ */
+export async function mintBroadConfigUpgradeInTx(
+  tx: Tx,
+  options: BumpOptions = {},
+): Promise<ModelVersion | null> {
+  await lockAppConfig(tx);
+  const [cfg] = await tx
+    .select({
+      activeBroad: appConfig.activeBroadVersionId,
+      breakoutPenalty: appConfig.breakoutPenalty,
+    })
+    .from(appConfig)
+    .where(eq(appConfig.id, 1))
+    .limit(1);
+  if (!cfg?.activeBroad) return null;
+  const [active] = await tx
+    .select()
+    .from(modelVersion)
+    .where(eq(modelVersion.id, cfg.activeBroad))
+    .limit(1);
+  if (!active || !isBroadConfig(active.config)) return null;
+  if (active.config.breakoutPenalty !== undefined) return null;
+  return bumpInTx(
+    tx,
+    "broad",
+    { ...active.config, breakoutPenalty: cfg.breakoutPenalty ?? DEFAULT_BREAKOUT_PENALTY },
+    options,
+  );
+}
+
+/**
  * Idempotent bootstrap: ensures both rankers have an active model_version
  * row at first surfacing time. Called by the surfacing pipeline so a fresh
  * install can rank without the user having to manually retrain.
@@ -287,6 +334,7 @@ export async function ensureActiveModelVersionInTx(
       refillLambda: appConfig.refillLambda,
       audioWeight: appConfig.audioWeight,
       novelty: appConfig.novelty,
+      breakoutPenalty: appConfig.breakoutPenalty,
     })
     .from(appConfig)
     .where(eq(appConfig.id, 1))
@@ -321,10 +369,19 @@ export async function ensureActiveModelVersionInTx(
       { note: "initial bootstrap" },
     );
   }
+  // LAB-92 — fresh installs bootstrap straight onto the breakout-penalty knob
+  // (frozen from app_config, default 0.15), so the broad-config upgrade step
+  // never fires for them — mirrors the refill bootstrap above.
   return bumpInTx(
     tx,
     "broad",
-    { weights: null, bias: 0, trainedSampleCount: 0, prior: DEFAULT_BROAD_PRIOR },
+    {
+      weights: null,
+      bias: 0,
+      trainedSampleCount: 0,
+      prior: DEFAULT_BROAD_PRIOR,
+      breakoutPenalty: cfg?.breakoutPenalty ?? DEFAULT_BREAKOUT_PENALTY,
+    },
     { note: "initial bootstrap (untrained)" },
   );
 }
@@ -437,11 +494,18 @@ export async function getActiveConfig<K extends RankerKind>(
   if (active && isBroadConfig(active.config)) {
     return active.config as K extends "refill" ? RefillConfig : BroadConfig;
   }
+  // No active broad version yet — mirror the fresh-install bootstrap so a
+  // pre-bootstrap breakout-penalty change doesn't mint a knob-less version.
+  const [broadCfg] = await db
+    .select({ breakoutPenalty: appConfig.breakoutPenalty })
+    .from(appConfig)
+    .limit(1);
   const fallback: BroadConfig = {
     weights: null,
     bias: 0,
     trainedSampleCount: 0,
     prior: DEFAULT_BROAD_PRIOR,
+    breakoutPenalty: broadCfg?.breakoutPenalty ?? DEFAULT_BREAKOUT_PENALTY,
   };
   return fallback as K extends "refill" ? RefillConfig : BroadConfig;
 }

@@ -547,3 +547,57 @@ describe("reconcileBuckets — LAB-36/73 refill config upgrade step", () => {
     expect(second.refillConfigUpgraded).toBe(false);
   });
 });
+
+describe("reconcileBuckets — LAB-92 broad config upgrade step", () => {
+  it("freezes the breakout-penalty knob onto a legacy broad config exactly once; re-run is a no-op", async () => {
+    // Pre-LAB-92 install: the active broad version predates the knob. The
+    // app_config knob (deliberately non-default) supplies the frozen value;
+    // weights/bias/prior are carried forward unchanged.
+    const legacy = await bumpModelVersion(
+      db,
+      "broad",
+      { weights: null, bias: 0, trainedSampleCount: 0, prior: 0.5 },
+      { note: "legacy broad" },
+    );
+    await db.update(schema.appConfig).set({ breakoutPenalty: 0.25 });
+
+    const first = await reconcileBuckets(db);
+    expect(first.repaired).toBe(false); // config upgrade is not a repair
+    expect(first.broadConfigUpgraded).toBe(true);
+
+    const active = await getActiveModelVersion(db, "broad");
+    expect(active?.id).not.toBe(legacy.id);
+    expect(active?.parentId).toBe(legacy.id);
+    expect(active?.config).toEqual({
+      weights: null,
+      bias: 0,
+      trainedSampleCount: 0,
+      prior: 0.5,
+      breakoutPenalty: 0.25,
+    });
+    expect(active?.note).toBe("broad config upgrade: breakout mainstream down-weight (LAB-92)");
+
+    const second = await reconcileBuckets(db);
+    expect(second.broadConfigUpgraded).toBe(false);
+    const broadVersions = await db
+      .select()
+      .from(schema.modelVersion)
+      .where(eq(schema.modelVersion.kind, "broad"));
+    expect(broadVersions).toHaveLength(2);
+  });
+
+  it("never fires for a fresh bootstrap (its config already carries breakoutPenalty) or with no active broad version", async () => {
+    const bare = await reconcileBuckets(db);
+    expect(bare.broadConfigUpgraded).toBe(false);
+
+    const bootstrap = await ensureActiveModelVersion(db, "broad");
+    expect((bootstrap.config as { breakoutPenalty?: number }).breakoutPenalty).toBeDefined();
+    const result = await reconcileBuckets(db);
+    expect(result.broadConfigUpgraded).toBe(false);
+    const broadVersions = await db
+      .select()
+      .from(schema.modelVersion)
+      .where(eq(schema.modelVersion.kind, "broad"));
+    expect(broadVersions).toHaveLength(1);
+  });
+});

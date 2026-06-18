@@ -370,6 +370,12 @@ export const appConfig = pgTable(
     // with DEFAULT_AUDIO_WEIGHT (src/lib/ranking/types.ts), chosen from the
     // scripts/lab36-grid.ts sweep.
     audioWeight: doublePrecision("audio_weight").notNull().default(2.5),
+    // LAB-92 — strength of the broad ranker's soft mainstream down-weight (the
+    // "Balanced" lever). Version-frozen like refillLambda/audioWeight: changes
+    // bump the BROAD model_version and freeze into its config as
+    // `breakoutPenalty` (not read live during scoring/replay). Default must
+    // stay in lock-step with DEFAULT_BREAKOUT_PENALTY (src/lib/ranking/types.ts).
+    breakoutPenalty: doublePrecision("breakout_penalty").notNull().default(0.15),
     mergeThreshold: doublePrecision("merge_threshold").notNull().default(0.92),
     splitDislikeRate: doublePrecision("split_dislike_rate").notNull().default(0.5),
     sourcesEnabled: jsonb("sources_enabled")
@@ -407,6 +413,15 @@ export type CandidatePoolEntry = {
   score: number;
   subScores?: Record<string, number>;
   surfaced: boolean;
+  /**
+   * LAB-92 — the candidate's social-breakout score in [0,1] at surface time,
+   * FROZEN here so `counterfactualReplay` reproduces the broad ranker's
+   * mainstream down-weight without re-reading the (mutable, re-ingested)
+   * `track_source.raw_payload` (Constraints #2/#3). Optional: absent on
+   * non-breakout candidates and on legacy pool rows written before LAB-92 —
+   * both replay as "no signal → no penalty".
+   */
+  breakout?: number;
 };
 
 export type RatingDecision = (typeof ratingDecisionEnum.enumValues)[number];

@@ -35,6 +35,19 @@ export type Candidate = {
    * version, degrades to plain cosine over those fills (the old LAB-36 damping).
    */
   audioFeatures?: AudioFeatures | null;
+  /**
+   * LAB-92 — the social-breakout score in [0,1] persisted by a paid discovery
+   * engine on `track_source.raw_payload.breakout.score` (Viberate LAB-90 /
+   * ChartMetric LAB-117 — identical shape). HIGH = surging-but-still-obscure;
+   * LOW = mainstream. Drives the broad ranker's soft mainstream down-weight
+   * ({@link scoreBroad} via {@link broadBreakoutPenalty}). Optional/nullable:
+   * Spotify/Last.fm candidates carry no breakout reading, and legacy
+   * `candidate_pool` rows predate the field — both mean "no signal → no
+   * penalty" (Constraint #4). FROZEN at surface time onto the pool entry so
+   * counterfactual replay reads it back rather than the (mutable, re-ingested)
+   * `raw_payload` (Constraint #3).
+   */
+  breakout?: number | null;
 };
 
 /** A keep- or dislike-rated track, summarized for ranker math. */
@@ -173,7 +186,36 @@ export type BroadConfig = {
   trainedSampleCount: number;
   /** Class prior used when untrained. Defaults to 0.5. */
   prior?: number;
+  /**
+   * LAB-92 — strength of the soft mainstream down-weight applied to candidates
+   * carrying a paid-engine breakout score (see {@link Candidate.breakout}). A
+   * candidate's broad P(keep) is lowered by `breakoutPenalty · (1 − breakout)`,
+   * so a mainstream (low-breakout) find is pushed down while a surging-but-
+   * obscure (high-breakout) one is left ~untouched — never an exclude
+   * (Constraint #4). This is the operator-facing "Balanced" lever, frozen into
+   * the version like {@link RefillConfig.familiarityPenalty} so scoring never
+   * reads the live `app_config` knob and counterfactual replay stays exact
+   * (Constraints #2/#3). Optional: legacy broad configs predate it and MUST
+   * keep replaying byte-identically, so absence means 0 (no penalty) — see
+   * {@link broadBreakoutPenalty}.
+   */
+  breakoutPenalty?: number;
 };
+
+/**
+ * LAB-92 — default broad breakout-penalty knob: the "Balanced" mainstream
+ * down-weight Hans selected. Soft (≈ the LAB-73 familiarity penalty magnitude):
+ * at full mainstream (breakout 0) it shaves 0.15 off P(keep), tapering to ~0 as
+ * breakout → 1, so it reorders near-ties toward obscurer finds without ever
+ * excluding a candidate. Pinned in lock-step with the `app_config.breakout_penalty`
+ * column default.
+ */
+export const DEFAULT_BREAKOUT_PENALTY = 0.15;
+
+/** Effective broad breakout penalty; legacy configs → 0 (no down-weight). */
+export function broadBreakoutPenalty(config: BroadConfig): number {
+  return config.breakoutPenalty ?? 0;
+}
 
 /**
  * Structural narrowing helpers — model_version.config is jsonb<unknown> from
@@ -234,6 +276,15 @@ export function isBroadConfig(x: unknown): x is BroadConfig {
   // produce nonsense untrained scores and skew the surfacing pipeline.
   if (c.prior !== undefined) {
     if (!Number.isFinite(c.prior) || c.prior < 0 || c.prior > 1) return false;
+  }
+  // LAB-92 — breakoutPenalty optional (legacy configs predate it → 0). When
+  // present it's a score downweight in [0,1]: a negative would UP-weight
+  // mainstream (the opposite of the intent) and a >1 could drive P(keep)
+  // negative, so reject both at the trust boundary.
+  if (c.breakoutPenalty !== undefined) {
+    if (!Number.isFinite(c.breakoutPenalty) || c.breakoutPenalty < 0 || c.breakoutPenalty > 1) {
+      return false;
+    }
   }
   return true;
 }
