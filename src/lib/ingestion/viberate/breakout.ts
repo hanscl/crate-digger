@@ -13,12 +13,28 @@
  * Hans chose (down-weight the mainstream, never hard-exclude it; Constraint #4).
  * Raw provider counts are heavy-tailed, so each is mapped through a saturating
  * log curve against a reference "this is a big number" anchor.
+ *
+ * UNKNOWN maturity (LAB-91): a track whose Spotify-maturity signals never
+ * resolved (e.g. a YouTube-feed row whose `/by-channel` lookup 404s) has NO
+ * maturity evidence — which is NOT the same as evidence of low maturity. Scoring
+ * absence as 0 let high-social tracks with unresolved maturity claim a perfect
+ * breakout (a 1.5M-Shazam mainstream hit scoring 1.0). So when no maturity signal
+ * is present we impute a neutral `UNKNOWN_MATURITY` discount rather than 0 — we
+ * can't assert "obscure" without evidence. A genuinely low but KNOWN maturity
+ * (a present signal that maps near 0) is untouched and still scores high.
  */
 
 import type { BreakoutSignals, ChartTimeframes, ViberateBreakout, ViberateFeed } from "./types";
 
 /** Maturity discount weight. Balanced ⇒ mainstream is penalized, not excluded. */
 export const BREAKOUT_BALANCE = 0.6;
+
+/**
+ * Neutral maturity imputed when a candidate carries NO Spotify-maturity signal
+ * at all (unresolved), so absence-of-evidence is treated as uncertainty (a
+ * moderate discount) rather than evidence-of-obscurity (no discount). Tunable.
+ */
+export const UNKNOWN_MATURITY = 0.5;
 
 /**
  * Feed selection weights. The Spotify-trending feed is Spotify-native by
@@ -106,13 +122,23 @@ export function computeBreakout(
   }
 
   // Each Spotify-stream timeframe scored against its OWN anchor so a weekly
-  // value isn't judged on the daily curve (which over-discounts breakouts).
-  const spotifyMaturity = orCombine(
-    sat(signals.spotifyStreamsTotal, REF.spotifyTotal),
-    sat(signals.spotifyStreamsWeek, REF.spotifyWeek),
-    sat(signals.spotifyStreamsDay, REF.spotifyDay),
-    sat(signals.spotifyPlaylistReach, REF.playlistReach),
-  );
+  // value isn't judged on the daily curve (which over-discounts breakouts). With
+  // no maturity signal at all, impute the neutral UNKNOWN_MATURITY discount — a
+  // present-but-zero signal (`num` !== null) still counts as KNOWN-low and is
+  // scored on the curve below.
+  const maturityKnown =
+    num(signals.spotifyStreamsTotal) !== null ||
+    num(signals.spotifyStreamsWeek) !== null ||
+    num(signals.spotifyStreamsDay) !== null ||
+    num(signals.spotifyPlaylistReach) !== null;
+  const spotifyMaturity = maturityKnown
+    ? orCombine(
+        sat(signals.spotifyStreamsTotal, REF.spotifyTotal),
+        sat(signals.spotifyStreamsWeek, REF.spotifyWeek),
+        sat(signals.spotifyStreamsDay, REF.spotifyDay),
+        sat(signals.spotifyPlaylistReach, REF.playlistReach),
+      )
+    : UNKNOWN_MATURITY;
 
   const score = clamp01(socialMomentum - BREAKOUT_BALANCE * spotifyMaturity);
   return { score, socialMomentum, spotifyMaturity };

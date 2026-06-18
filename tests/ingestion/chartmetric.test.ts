@@ -223,6 +223,37 @@ describe("chartmetric discovery engine (LAB-117)", () => {
     expect(breakoutOf(shazam).signals.spotifyPlaylistReach).toBe(800_000);
   });
 
+  it("fails loud when every chart feed is unreachable — logs SOURCE DEGRADED, returns [] (LAB-86)", async () => {
+    // Token exchange succeeds but every chart 400s. With CHARTMETRIC_REFRESH_TOKEN
+    // set this must announce the source is dark, not silently return [].
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL) => {
+        const url = String(input);
+        if (url.includes("/api/token")) {
+          return jsonResponse({ token: "access-abc", expires_in: 3600 });
+        }
+        return new Response("bad request", { status: 400 });
+      }),
+    );
+    const out = await settle(
+      chartmetricAdapter.pullCandidates({ mode: "trending", limit: 10 }, makeEnv()),
+    );
+    expect(out).toEqual([]);
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining("SOURCE DEGRADED"));
+  });
+
+  it("stays quiet when SoundCloud is empty but other feeds return rows (partial)", async () => {
+    // The live case: SoundCloud's date-ladder misses (empty) while Shazam/TikTok/
+    // Spotify return rows ⇒ reachable, not dark ⇒ no degraded banner.
+    stubChartmetric(); // soundcloud → {obj: []}, others populated
+    const out = await settle(
+      chartmetricAdapter.pullCandidates({ mode: "trending", limit: 10 }, makeEnv()),
+    );
+    expect(out.length).toBeGreaterThan(0);
+    expect(console.error).not.toHaveBeenCalledWith(expect.stringContaining("SOURCE DEGRADED"));
+  });
+
   it("exchanges the refresh token once and sends a bearer on chart calls", async () => {
     const mock = stubChartmetric();
     await settle(chartmetricAdapter.pullCandidates({ mode: "trending", limit: 10 }, makeEnv()));

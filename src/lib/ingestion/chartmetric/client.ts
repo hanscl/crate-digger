@@ -123,21 +123,28 @@ function qs(params: Record<string, string>): string {
  * reliable "latest", so walk the cadence's date ladder and return the first
  * date that yields rows (sliced to POOL_ROWS_PER_FEED). `now` is injected so
  * the engine is testable without a clock.
+ *
+ * Returns `null` when the feed is UNREACHABLE — not one date-rung call returned
+ * a successful response (`cmGet` null = token/HTTP/parse failure on every rung,
+ * e.g. an expired refresh token or a 400 storm). That's distinct from `[]` (at
+ * least one rung succeeded but the chart was empty), so `gatherPool` can fail
+ * loud when every feed is unreachable rather than silent-zero-fill (LAB-86).
  */
 export async function getChart(
   feed: ChartmetricFeed,
   country: string,
   now: Date,
   env: Env,
-): Promise<ChartRow[]> {
+): Promise<ChartRow[] | null> {
+  let reached = false;
   for (const daysAgo of DATE_LADDER[feed.cadence]) {
     const date = isoDaysAgo(now, daysAgo);
-    const rows = parseChartEntries(
-      await cmGet(`${feed.path}?${qs(feed.query(country, date))}`, env),
-    );
+    const json = await cmGet(`${feed.path}?${qs(feed.query(country, date))}`, env);
+    if (json !== null) reached = true;
+    const rows = parseChartEntries(json);
     if (rows.length > 0) return rows.slice(0, POOL_ROWS_PER_FEED);
   }
-  return [];
+  return reached ? [] : null;
 }
 
 /**

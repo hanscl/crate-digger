@@ -240,6 +240,37 @@ describe("viberate breakout engine", () => {
     expect(feeds).not.toContain("youtube-trending"); // the failed feed contributes nothing
   });
 
+  it("fails loud when EVERY feed request fails — logs SOURCE DEGRADED, returns [] (LAB-86)", async () => {
+    // Every feed endpoint 400s (the live LAB-91 case: trial-tier `limit>20` cap;
+    // or an expired key). With VIBERATE_API_KEY set this must NOT silently
+    // zero-fill — the source has gone dark and must announce it.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse("bad request", 400)),
+    );
+    const out = await drivePull({ mode: "trending", limit: 10 }, makeEnv());
+    expect(out).toEqual([]);
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining("SOURCE DEGRADED"));
+  });
+
+  it("stays quiet on a PARTIAL feed failure — no degraded banner (some feeds work)", async () => {
+    // youtube 500s but composite + spotify return rows ⇒ reachable, not dark.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL) => {
+        const url = String(input);
+        if (url.includes("trending/youtube")) return jsonResponse("boom", 500);
+        if (url.includes("/details")) return jsonResponse(DETAILS_COMP1);
+        if (url.includes("trending/spotify")) return jsonResponse(SPOTIFY_TRENDING);
+        if (url.includes("viberate/chart")) return jsonResponse(COMPOSITE_CHART);
+        return jsonResponse({ data: [] });
+      }),
+    );
+    const out = await drivePull({ mode: "trending", limit: 10 }, makeEnv());
+    expect(out.length).toBeGreaterThan(0);
+    expect(console.error).not.toHaveBeenCalledWith(expect.stringContaining("SOURCE DEGRADED"));
+  });
+
   it("bounds the shortlist + resolution to the throttle limit (pull composition)", async () => {
     // Composite returns 4 distinct breakout rows; limit=2 ⇒ only the top 2 emit
     // and only 2 resolution (/details) calls fire.
