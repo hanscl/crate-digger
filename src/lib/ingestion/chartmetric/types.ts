@@ -15,7 +15,12 @@
  * `sp_streams`) comes from ONE per-shortlisted-row `/api/track/{cm_track}` call.
  */
 
-/** Which broad-pool feed a pooled row came from. */
+/**
+ * Which broad-pool feed a pooled row came from. `applemusic` is a forward-looking
+ * stub: it is NOT in `FEEDS` (config.ts), so no chart row ever carries it today.
+ * It rides here to keep `pool.ts#feedSignals` switch-exhaustive and to pre-seed a
+ * `FEED_WEIGHTS` default for when an Apple Music chart feed is wired up.
+ */
 export type ChartmetricFeedId = "spotify" | "shazam" | "tiktok" | "soundcloud" | "applemusic";
 
 /** A feed's role in the breakout gap: a social leading indicator vs Spotify maturity. */
