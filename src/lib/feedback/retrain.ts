@@ -6,7 +6,8 @@ import {
   type BroadTrainingSample,
   trainBroadClassifier,
 } from "@/lib/ranking/broad";
-import { bumpModelVersion } from "@/lib/ranking/version";
+import type { BroadConfig } from "@/lib/ranking/types";
+import { bumpModelVersion, getActiveConfig } from "@/lib/ranking/version";
 
 /**
  * Broad classifier retrain entrypoint. Phase 6's daily cron and the Console
@@ -103,7 +104,21 @@ export async function retrainBroad(
     };
   }
 
-  const newVersion = await bumpModelVersion(db, "broad", training.config, {
+  // LAB-92 — carry the active broad version's frozen breakout-penalty knob
+  // forward. `trainBroadClassifier` only emits weights/bias/prior/
+  // trainedSampleCount, so without this every retrain would drop
+  // `breakoutPenalty` (→ 0 via the legacy fallback) and silently disable the
+  // mainstream down-weight until the next deploy/reconcile re-installed it.
+  // Mirrors the params router carrying config forward on a knob bump (a frozen
+  // value is preserved, never recomputed; absent on a legacy config stays absent).
+  const activeBroad = await getActiveConfig(db, "broad");
+  const config: BroadConfig = {
+    ...training.config,
+    ...(activeBroad.breakoutPenalty !== undefined
+      ? { breakoutPenalty: activeBroad.breakoutPenalty }
+      : {}),
+  };
+  const newVersion = await bumpModelVersion(db, "broad", config, {
     note: options.note ?? `retrain n=${samples.length} loss=${training.finalLoss.toFixed(4)}`,
     trainingWindowStart: windowStart ?? undefined,
     trainingWindowEnd: windowEnd,

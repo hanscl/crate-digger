@@ -146,6 +146,42 @@ describe("logSurfaceEvents — eval-substrate guard (Constraint #2)", () => {
     }
   });
 
+  it("freezes candidate.breakout onto the pool entry when present, omits it when absent (LAB-92)", async () => {
+    // Determinism carrier: the breakout score the broad ranker scored against
+    // must round-trip into candidate_pool so counterfactual replay reproduces
+    // the down-weight. A candidate with no breakout reading serializes WITHOUT
+    // the key (not null), so legacy/non-breakout entries stay identical.
+    const withId = await insertTrackId("breakout");
+    const noneId = await insertTrackId("plain");
+    const broadVer = await ensureActiveModelVersion(db, "broad");
+
+    const pool = [
+      {
+        candidate: { trackId: withId, embedding: [0], breakout: 0.83 },
+        score: 0.4,
+        subScores: { breakoutPenalty: 0.0255 } as Record<string, number>,
+        rankerKind: "broad" as const,
+      },
+      {
+        candidate: { trackId: noneId, embedding: [0] }, // no breakout reading
+        score: 0.5,
+        subScores: { breakoutPenalty: 0 } as Record<string, number>,
+        rankerKind: "broad" as const,
+      },
+    ];
+    const events = await logSurfaceEvents(db, {
+      pool,
+      winners: [pool[1]!],
+      modelVersionId: broadVer.id,
+    });
+    const event = events[0]!;
+    const withEntry = event.candidatePool.find((p: CandidatePoolEntry) => p.trackId === withId)!;
+    const noneEntry = event.candidatePool.find((p: CandidatePoolEntry) => p.trackId === noneId)!;
+    expect(withEntry.breakout).toBe(0.83);
+    expect(noneEntry.breakout).toBeUndefined();
+    expect(Object.hasOwn(noneEntry, "breakout")).toBe(false);
+  });
+
   it("throws when a winner is not present in the recorded pool", async () => {
     // Sanity guard at the eval-substrate boundary: a winner that isn't in the
     // pool means the snapshot would be inconsistent. Refuse to write rather

@@ -16,7 +16,8 @@ import { createCallerFactory } from "@/server/trpc-base";
  * Params router — Constraint #3 coverage for the version-frozen knobs:
  * `refillLambda` (pre-existing) and `audioWeight` (LAB-36) bump the refill
  * model_version on CHANGE, exactly once per update, with no bump on a
- * same-value write.
+ * same-value write. LAB-92 — `breakoutPenalty` does the same on the BROAD
+ * chain, independent of the refill knobs.
  */
 
 let container: StartedPostgreSqlContainer;
@@ -162,5 +163,48 @@ describe("params.update — novelty (LAB-73)", () => {
     expect(result.bumped).toBe(false);
     const versions = await db.select().from(schema.modelVersion);
     expect(versions.filter((v) => v.kind === "refill")).toHaveLength(1);
+  });
+});
+
+describe("params.update — breakoutPenalty (LAB-92)", () => {
+  it("a changed breakoutPenalty bumps the BROAD version once, freezing the knob into its config", async () => {
+    const v1 = await ensureActiveModelVersion(db, "broad"); // bootstrap, breakoutPenalty 0.15
+    const result = await caller().update({ breakoutPenalty: 0.3 });
+    expect(result.bumped).toBe(true);
+    expect(result.broadVersionId).not.toBeNull();
+    expect(result.refillVersionId).toBeNull(); // a broad knob never touches the refill chain
+
+    const [cfg] = await db.select().from(schema.appConfig).limit(1);
+    expect(cfg?.breakoutPenalty).toBe(0.3);
+
+    const active = await getActiveModelVersion(db, "broad");
+    expect(active?.id).toBe(result.broadVersionId);
+    expect(active?.parentId).toBe(v1.id);
+    expect(active?.config).toMatchObject({ breakoutPenalty: 0.3 });
+    expect(active?.note).toContain("breakoutPenalty update: 0.15 → 0.3");
+  });
+
+  it("a same-value breakoutPenalty write does not bump", async () => {
+    await ensureActiveModelVersion(db, "broad");
+    const result = await caller().update({ breakoutPenalty: 0.15 }); // column default
+    expect(result.bumped).toBe(false);
+    const broadVersions = (await db.select().from(schema.modelVersion)).filter(
+      (v) => v.kind === "broad",
+    );
+    expect(broadVersions).toHaveLength(1);
+  });
+
+  it("a breakoutPenalty change bumps ONLY broad, leaving the refill chain untouched", async () => {
+    const refillV1 = await ensureActiveModelVersion(db, "refill");
+    await ensureActiveModelVersion(db, "broad");
+    const result = await caller().update({ breakoutPenalty: 0.4 });
+    expect(result.broadVersionId).not.toBeNull();
+    expect(result.refillVersionId).toBeNull();
+    const refillActive = await getActiveModelVersion(db, "refill");
+    expect(refillActive?.id).toBe(refillV1.id);
+    const refillVersions = (await db.select().from(schema.modelVersion)).filter(
+      (v) => v.kind === "refill",
+    );
+    expect(refillVersions).toHaveLength(1);
   });
 });

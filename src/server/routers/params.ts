@@ -12,7 +12,8 @@ import { protectedProcedure, router } from "../trpc-base";
  * (LAB-73, which scales the frozen familiarity penalty) — bumps the refill
  * model_version (Constraint #3) so subsequent ratings tag the new chain —
  * that's how the Analyzer can later compare "before tightening lambda" vs
- * "after."
+ * "after." LAB-92 — `breakoutPenalty` is the equivalent for the BROAD ranker
+ * (the breakout mainstream down-weight); a change bumps the broad chain.
  */
 
 const PARAMS_INPUT = z.object({
@@ -27,6 +28,10 @@ const PARAMS_INPUT = z.object({
   // LAB-36 — audio-dim weight for membership + refill scoring. ≥1 (1 = plain
   // cosine); 8 caps runaway audio dominance.
   audioWeight: z.number().min(1).max(8).optional(),
+  // LAB-92 — broad ranker breakout mainstream down-weight strength. [0,1];
+  // version-frozen like audioWeight but on the BROAD chain (changes bump the
+  // broad model_version, not refill).
+  breakoutPenalty: z.number().min(0).max(1).optional(),
   mergeThreshold: z.number().min(0).max(1).optional(),
   splitDislikeRate: z.number().min(0).max(1).optional(),
   // LAB-51 — per-run pull throttle. min(0) allows disabling a pull mode
@@ -64,6 +69,7 @@ export const paramsRouter = router({
     if (input.spawnThreshold !== undefined) update.spawnThreshold = input.spawnThreshold;
     if (input.refillLambda !== undefined) update.refillLambda = input.refillLambda;
     if (input.audioWeight !== undefined) update.audioWeight = input.audioWeight;
+    if (input.breakoutPenalty !== undefined) update.breakoutPenalty = input.breakoutPenalty;
     if (input.mergeThreshold !== undefined) update.mergeThreshold = input.mergeThreshold;
     if (input.splitDislikeRate !== undefined) update.splitDislikeRate = input.splitDislikeRate;
     if (input.trendingLimitPerSource !== undefined)
@@ -77,7 +83,7 @@ export const paramsRouter = router({
       update.familiarArtistKeepThreshold = input.familiarArtistKeepThreshold;
     if (input.surfaceArtistCap !== undefined) update.surfaceArtistCap = input.surfaceArtistCap;
     if (Object.keys(update).length === 0) {
-      return { ok: true, bumped: false, refillVersionId: null };
+      return { ok: true, bumped: false, refillVersionId: null, broadVersionId: null };
     }
 
     update.updatedAt = sql`NOW()`;
@@ -92,6 +98,7 @@ export const paramsRouter = router({
       const priorLambda = prior?.refillLambda;
       const priorAudioWeight = prior?.audioWeight;
       const priorNovelty = prior?.novelty;
+      const priorBreakoutPenalty = prior?.breakoutPenalty;
 
       await tx
         .insert(appConfig)
@@ -113,8 +120,14 @@ export const paramsRouter = router({
       // novelty change is a refill scoring-config change (Constraint #3).
       const noveltyChanged =
         input.novelty !== undefined && priorNovelty !== undefined && input.novelty !== priorNovelty;
+      // LAB-92 — breakoutPenalty is a BROAD scoring-config change (Constraint
+      // #3): version-frozen on the broad chain, independent of the refill knobs.
+      const breakoutPenaltyChanged =
+        input.breakoutPenalty !== undefined &&
+        priorBreakoutPenalty !== undefined &&
+        input.breakoutPenalty !== priorBreakoutPenalty;
 
-      let bumpedVersionId: number | null = null;
+      let refillVersionId: number | null = null;
       if (lambdaChanged || audioWeightChanged || noveltyChanged) {
         const config = await getActiveConfig(tx, "refill");
         const notes: string[] = [];
@@ -136,10 +149,30 @@ export const paramsRouter = router({
           },
           { note: notes.join("; ") },
         );
-        bumpedVersionId = newVersion.id;
+        refillVersionId = newVersion.id;
       }
 
-      return { ok: true, bumped: bumpedVersionId !== null, refillVersionId: bumpedVersionId };
+      // LAB-92 — a breakoutPenalty change mints a new BROAD version freezing
+      // the knob into its config, so scoring/replay read the frozen value and
+      // ratings after the change attribute to the new broad chain.
+      let broadVersionId: number | null = null;
+      if (breakoutPenaltyChanged) {
+        const broadConfig = await getActiveConfig(tx, "broad");
+        const newBroad = await bumpModelVersion(
+          tx,
+          "broad",
+          { ...broadConfig, breakoutPenalty: input.breakoutPenalty as number },
+          { note: `breakoutPenalty update: ${priorBreakoutPenalty} → ${input.breakoutPenalty}` },
+        );
+        broadVersionId = newBroad.id;
+      }
+
+      return {
+        ok: true,
+        bumped: refillVersionId !== null || broadVersionId !== null,
+        refillVersionId,
+        broadVersionId,
+      };
     });
   }),
 });

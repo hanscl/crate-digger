@@ -1,0 +1,1 @@
+ALTER TABLE "app_config" ADD COLUMN "breakout_penalty" double precision DEFAULT 0.15 NOT NULL;
