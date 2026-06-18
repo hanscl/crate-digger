@@ -35,6 +35,9 @@ try {
       "bucket reconcile: refill config upgraded (slot-overlap gate + audio-weighted cosine + familiarity penalty + null-audio coverage gate)",
     );
   }
+  if (result.broadConfigUpgraded) {
+    console.log("bucket reconcile: broad config upgraded (breakout mainstream down-weight)");
+  }
 } catch (err) {
   console.error("bucket reconcile failed:", err);
   process.exitCode = 1;

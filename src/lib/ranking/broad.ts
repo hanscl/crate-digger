@@ -1,4 +1,5 @@
 import { EMBEDDING_DIM } from "@/db/schema";
+import { broadBreakoutPenalty } from "./types";
 import type { BroadConfig, Candidate, ScoredCandidate } from "./types";
 
 /**
@@ -164,17 +165,49 @@ export function trainBroadClassifier(
   };
 }
 
+function clamp01(x: number): number {
+  return x < 0 ? 0 : x > 1 ? 1 : x;
+}
+
+/**
+ * LAB-92 — the soft mainstream down-weight for one candidate:
+ * `breakoutPenalty · (1 − breakout)`. Returns 0 when the version's knob is 0
+ * or the candidate carries no breakout reading (Spotify/Last.fm, or a legacy
+ * pool entry) — "no signal → no penalty" (Constraints #3/#4). `breakout` is
+ * clamped to [0,1] defensively: it is clamp01'd at ingestion, but the value
+ * arrives via jsonb (`raw_payload`/`candidate_pool`), a trust boundary.
+ */
+function breakoutDownweight(candidate: Candidate, config: BroadConfig): number {
+  const knob = broadBreakoutPenalty(config);
+  const breakout = candidate.breakout;
+  if (knob <= 0 || breakout === null || breakout === undefined || !Number.isFinite(breakout)) {
+    return 0;
+  }
+  return knob * (1 - clamp01(breakout));
+}
+
 /**
  * Score a single candidate. Untrained config → emits the prior so surfacing
  * still has a usable score. Sub-scores include the raw logit for evals.
+ *
+ * LAB-92 — after the base P(keep), a soft mainstream down-weight is subtracted
+ * for candidates carrying a paid-engine breakout score (see
+ * {@link breakoutDownweight}): a surging-but-obscure find is left ~untouched
+ * while a mainstream one is pushed down, clamped to [0,1] — never an exclude
+ * (Constraint #4). The breakout input is read off the candidate (frozen onto
+ * the pool entry at surface time), never live, so replay stays exact
+ * (Constraint #3). Applied in BOTH branches so breakouts are preferred from
+ * day 0 (untrained), and exposed as `subScores.breakoutPenalty` for
+ * why-surfaced + evals.
  */
 export function scoreBroad(candidate: Candidate, config: BroadConfig): ScoredCandidate {
+  const breakoutPenalty = breakoutDownweight(candidate, config);
   if (!config.weights) {
     const p = config.prior ?? DEFAULT_PRIOR;
     return {
       candidate,
-      score: p,
-      subScores: { logit: 0, prior: p, untrained: 1 },
+      score: clamp01(p - breakoutPenalty),
+      subScores: { logit: 0, prior: p, untrained: 1, breakoutPenalty },
       rankerKind: "broad",
     };
   }
@@ -182,8 +215,8 @@ export function scoreBroad(candidate: Candidate, config: BroadConfig): ScoredCan
   const p = sigmoid(z);
   return {
     candidate,
-    score: p,
-    subScores: { logit: z, prior: config.prior ?? DEFAULT_PRIOR, untrained: 0 },
+    score: clamp01(p - breakoutPenalty),
+    subScores: { logit: z, prior: config.prior ?? DEFAULT_PRIOR, untrained: 0, breakoutPenalty },
     rankerKind: "broad",
   };
 }

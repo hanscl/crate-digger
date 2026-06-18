@@ -3,6 +3,7 @@ import type { Database } from "@/db/client";
 import { bucket, bucketMember, bucketRecommendation } from "@/db/schema";
 import {
   bumpModelVersionCarryForwardInTx,
+  mintBroadConfigUpgradeInTx,
   mintRefillConfigUpgradeInTx,
 } from "@/lib/ranking/version";
 import { evaluateBucketRecommendations } from "./recommendations";
@@ -53,6 +54,14 @@ import { recomputeBucketStats } from "./recompute";
  * chained in that order. Both steps are no-ops on re-run, so `db:migrate`
  * stays exactly-once. Fresh installs never fire it (their bootstrap mints the
  * full config directly).
+ *
+ * LAB-92 — a third idempotent step runs alongside the refill upgrade: when the
+ * ACTIVE broad version's config predates the breakout-penalty knob, mint ONE
+ * broad version carrying its weights/bias/prior forward and freezing
+ * `breakoutPenalty` from `app_config.breakout_penalty` (see
+ * `mintBroadConfigUpgradeInTx`). This is what lights up the broad ranker's
+ * mainstream down-weight on an existing install, on its own broad version
+ * chain — no-op on re-run and on fresh installs (their bootstrap mints it).
  */
 export type ReconcileBucketsResult = {
   /** Buckets whose member_count disagreed with the actual row count. */
@@ -67,6 +76,8 @@ export type ReconcileBucketsResult = {
   refillVersionBumped: boolean;
   /** LAB-36/73 — true when the active refill config was upgraded with a missing field (audioWeight/genreGate/familiarityPenalty) this run. */
   refillConfigUpgraded: boolean;
+  /** LAB-92 — true when the active broad config was upgraded with the breakout-penalty knob this run. */
+  broadConfigUpgraded: boolean;
   /** True when anything at all was repaired this run (config upgrade excluded — it is not a repair). */
   repaired: boolean;
 };
@@ -143,6 +154,15 @@ export async function reconcileBuckets(db: Database): Promise<ReconcileBucketsRe
     });
     const refillConfigUpgraded = upgraded !== null;
 
+    // LAB-92 — broad config upgrade for existing installs: freeze the
+    // breakout-penalty knob into a new broad version so the mainstream
+    // down-weight goes live. Independent broad version chain; self-gating and
+    // lock-serialized; null means "already upgraded or nothing to upgrade".
+    const broadUpgraded = await mintBroadConfigUpgradeInTx(tx, {
+      note: "broad config upgrade: breakout mainstream down-weight (LAB-92)",
+    });
+    const broadConfigUpgraded = broadUpgraded !== null;
+
     return {
       driftedBucketIds,
       prunedBucketIds,
@@ -150,6 +170,7 @@ export async function reconcileBuckets(db: Database): Promise<ReconcileBucketsRe
       recommendationsRebuilt,
       refillVersionBumped,
       refillConfigUpgraded,
+      broadConfigUpgraded,
       repaired,
     };
   });

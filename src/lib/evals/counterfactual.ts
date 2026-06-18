@@ -353,6 +353,11 @@ function poolToCandidates(
       primaryGenre: t.primaryGenre,
       artist: t.artist,
       audioFeatures: t.audioFeatures ? (t.audioFeatures as Candidate["audioFeatures"]) : null,
+      // LAB-92 — the breakout score FROZEN onto the pool entry at surface time
+      // (NOT re-read from `track_source.raw_payload`, which is overwritten on
+      // re-ingest). Absent on legacy rows → undefined → scoreBroad applies no
+      // mainstream down-weight, so those events replay byte-identically.
+      breakout: entry.breakout,
     });
   }
   return out;

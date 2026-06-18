@@ -1,6 +1,14 @@
 import { count, eq, inArray, sql } from "drizzle-orm";
 import type { Database } from "@/db/client";
-import { type AudioFeatures, appConfig, bucket, bucketMember, rating, track } from "@/db/schema";
+import {
+  type AudioFeatures,
+  appConfig,
+  bucket,
+  bucketMember,
+  rating,
+  track,
+  trackSource,
+} from "@/db/schema";
 import { flagCandidateBucket } from "@/lib/bucketing/assign";
 import { evaluateBucketRecommendations } from "@/lib/bucketing/recommendations";
 import { cosine } from "@/lib/embedding";
@@ -612,6 +620,30 @@ export async function surfaceStep(
 
 async function loadCandidates(db: Database, trackIds: readonly number[]): Promise<Candidate[]> {
   if (trackIds.length === 0) return [];
+  // LAB-92 — the paid-engine social-breakout score for the broad ranker's
+  // mainstream down-weight. A track may carry several `track_source` rows
+  // (Spotify + a paid engine, or both paid engines); aggregate the MAX breakout
+  // across them — the strongest "this is a breakout" reading, so we never
+  // over-penalize a track one engine still flags as obscure. Non-breakout
+  // sources (Spotify/Last.fm) hold no `breakout` key, contribute SQL NULL, and
+  // are skipped by MAX; a track with none LEFT-JOINs to NULL → no penalty.
+  // A grouped derived table + join, NOT a correlated subquery: drizzle renders
+  // bare column names in `sql`, so a correlated `WHERE track_source.track_id =
+  // track.id` would bind `track.id` to track_source's OWN `id` column instead
+  // of the outer track — silently uncorrelated. The join condition is qualified.
+  const breakoutByTrack = db
+    .select({
+      trackId: trackSource.trackId,
+      breakout: sql<
+        number | null
+      >`MAX((${trackSource.rawPayload} -> 'breakout' ->> 'score')::double precision)`.as(
+        "breakout",
+      ),
+    })
+    .from(trackSource)
+    .groupBy(trackSource.trackId)
+    .as("breakout_by_track");
+
   const rows = await db
     .select({
       id: track.id,
@@ -620,8 +652,10 @@ async function loadCandidates(db: Database, trackIds: readonly number[]): Promis
       primaryGenre: track.primaryGenre,
       // LAB-73 — artist drives the surfacing diversity quota + familiarity penalty.
       artist: track.artist,
+      breakout: breakoutByTrack.breakout,
     })
     .from(track)
+    .leftJoin(breakoutByTrack, eq(breakoutByTrack.trackId, track.id))
     .where(inArray(track.id, [...trackIds]));
   const out: Candidate[] = [];
   for (const r of rows) {
@@ -632,6 +666,7 @@ async function loadCandidates(db: Database, trackIds: readonly number[]): Promis
       audioFeatures: r.audioFeatures as AudioFeatures | null,
       primaryGenre: r.primaryGenre,
       artist: r.artist,
+      breakout: r.breakout == null ? null : Number(r.breakout),
     });
   }
   return out;
