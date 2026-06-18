@@ -30,7 +30,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     VIBERATE_API_KEY: "vib-key",
     VIBERATE_TRENDING_COUNTRY: "US",
     CHARTMETRIC_REFRESH_TOKEN: "",
-    CHARTMETRIC_TIKTOK_COUNTRY: "US",
+    CHARTMETRIC_TRENDING_COUNTRY: "US",
     SOUNDCHARTS_APP_ID: "",
     SOUNDCHARTS_API_KEY: "",
     SOUNDCHARTS_TIKTOK_CHART_SLUG: "tiktok-breakout-us",

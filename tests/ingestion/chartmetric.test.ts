@@ -1,15 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { _resetChartmetricTokenCache, type ChartmetricVelocity } from "@/lib/ingestion/chartmetric";
-import { tiktokAdapter } from "@/lib/ingestion/tiktok";
+import { chartmetricAdapter } from "@/lib/ingestion/chartmetric";
+import { _resetChartmetricTokenCache } from "@/lib/ingestion/chartmetric/client";
+import type { ChartmetricBreakout } from "@/lib/ingestion/chartmetric/types";
+import type { RawCandidate } from "@/lib/ingestion/types";
 import type { Env } from "@/server/env";
 
 /**
- * Round-trip test for the TikTok adapter via its DEFAULT provider, Chartmetric.
+ * Round-trip test for the Chartmetric social-breakout discovery engine (LAB-117).
  *
- * ⚠️ Chartmetric has no open sandbox, so these fixtures model the documented
- * shape, not a live response. The test pins the adapter's defensive parsing
- * (envelope + field extraction) and the refresh-token → bearer flow; the field
- * NAMES are verified against the live API post-merge (see the provider's note).
+ * Fixtures mirror the LIVE shapes verified in the spike
+ * (`scripts/lab-chartmetric-engine-probe.ts`): chart rows carry ISRC + cm_track
+ * + spotify_popularity + a per-platform social count inline; `/api/track/{id}`
+ * returns `cm_statistics` (sp_playlist_total_reach / sp_streams) for the
+ * continuous-maturity resolve hop. The engine paces calls through a rate limiter,
+ * so the suite runs on fake timers (mirrors the contract test).
  */
 
 function makeEnv(overrides: Partial<Env> = {}): Env {
@@ -27,7 +31,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     VIBERATE_API_KEY: "",
     VIBERATE_TRENDING_COUNTRY: "US",
     CHARTMETRIC_REFRESH_TOKEN: "refresh-token",
-    CHARTMETRIC_TIKTOK_COUNTRY: "US",
+    CHARTMETRIC_TRENDING_COUNTRY: "US",
     SOUNDCHARTS_APP_ID: "",
     SOUNDCHARTS_API_KEY: "",
     SOUNDCHARTS_TIKTOK_CHART_SLUG: "tiktok-breakout-us",
@@ -38,29 +42,80 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
   };
 }
 
-const CHART = {
-  obj: [
-    {
-      id: 111,
-      name: "Viral Smash",
-      artist_names: ["Nova", "Guest MC"],
-      isrc: "usabc1234567",
-      rank: 1,
-      pre_rank: 4,
-      spotify_track_id: "spfy111",
+// A mainstream Spotify-regional hit: high maturity inline (current_plays +
+// popularity), no social count → breakout ≈ 0. Resolve is skipped (it already
+// has continuous maturity).
+const SPOTIFY_ROWS = [
+  {
+    id: 1,
+    cm_track: 100,
+    isrc: "usmain0000001",
+    name: "Megahit",
+    spotify_track_id: "spmain",
+    artist_names: ["Superstar"],
+    spotify_popularity: 95,
+    current_plays: 5_000_000,
+    velocity: 0,
+    rank: 1,
+    pre_rank: 1,
+  },
+];
+
+// A Shazam breakout: huge social count, tiny Spotify presence → high breakout.
+const SHAZAM_ROWS = [
+  {
+    id: 2,
+    cm_track: 900,
+    isrc: "ushaz0000001",
+    name: "Underground Anthem",
+    artist_names: ["Newcomer"],
+    num_of_shazams: 40_000,
+    spotify_popularity: 12,
+    velocity: 3.2,
+    rank: 2,
+    pre_rank: 9,
+  },
+];
+
+const TIKTOK_ROWS = [
+  {
+    id: 3,
+    cm_track: 901,
+    isrc: "ustik0000001",
+    name: "Viral Sound",
+    artist_names: ["TikToker"],
+    weekly_posts: 80_000,
+    spotify_popularity: 20,
+    velocity: 5,
+    rank: 3,
+    pre_rank: 15,
+  },
+];
+
+// cm_statistics for the resolved social rows — low reach/streams = low maturity.
+const TRACK_DETAILS: Record<string, unknown> = {
+  "900": {
+    id: 900,
+    isrc: "ushaz0000001",
+    genres: [{ id: 1, name: "hyperpop" }],
+    cm_statistics: {
+      sp_playlist_total_reach: 800_000,
+      sp_streams: 300_000,
+      sp_popularity: 12,
+      shazam_counts: 40_000,
     },
-    {
-      // no isrc; title via `track_title`; artist via `artists: [{name}]`
-      cm_track: 222,
-      track_title: "Sleeper Hit",
-      artists: [{ name: "The Quiet" }],
-      rank: 2,
+  },
+  "901": {
+    id: 901,
+    isrc: "ustik0000001",
+    genres: [{ id: 2, name: "phonk" }],
+    cm_statistics: {
+      sp_playlist_total_reach: 1_200_000,
+      sp_streams: 500_000,
+      sp_popularity: 20,
+      num_tt_videos: 80_000,
     },
-    {
-      // unresolvable — no title — must be dropped
-      artist_names: ["Ghost"],
-    },
-  ],
+  },
 };
 
 function jsonResponse(body: unknown): Response {
@@ -70,116 +125,112 @@ function jsonResponse(body: unknown): Response {
   });
 }
 
-/** Mock the token exchange + the TikTok chart GET. */
+/** Mock the token exchange + the four chart endpoints + the per-track resolve. */
 function stubChartmetric() {
-  const mock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+  const mock = vi.fn(async (input: string | URL, _init?: RequestInit) => {
     const url = String(input);
     if (url.includes("/api/token")) return jsonResponse({ token: "access-abc", expires_in: 3600 });
-    if (url.includes("/charts/tiktok")) {
-      // assert auth on the data call by surfacing it through the mock record
-      void init;
-      return jsonResponse(CHART);
-    }
+    if (url.includes("/api/charts/spotify")) return jsonResponse({ obj: SPOTIFY_ROWS });
+    if (url.includes("/api/charts/shazam")) return jsonResponse({ obj: SHAZAM_ROWS });
+    if (url.includes("/api/charts/tiktok/tracks")) return jsonResponse({ obj: TIKTOK_ROWS });
+    if (url.includes("/api/charts/soundcloud")) return jsonResponse({ obj: [] });
+    const trackId = /\/api\/track\/(\d+)/.exec(url)?.[1];
+    if (trackId) return jsonResponse({ obj: TRACK_DETAILS[trackId] ?? {} });
     return new Response("unexpected", { status: 404 });
   });
   vi.stubGlobal("fetch", mock);
   return mock;
 }
 
+/** Drive the rate-limiter-paced engine to completion under fake timers. */
+async function settle<T>(p: Promise<T>): Promise<T> {
+  await vi.advanceTimersByTimeAsync(120_000);
+  return await p;
+}
+
+function breakoutOf(c: RawCandidate): ChartmetricBreakout {
+  return (c.rawPayload as { breakout: ChartmetricBreakout }).breakout;
+}
+
 beforeEach(() => {
+  vi.useFakeTimers();
   _resetChartmetricTokenCache();
   vi.spyOn(console, "error").mockImplementation(() => undefined);
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
-describe("tiktok adapter (Chartmetric, default provider)", () => {
-  it("is available with a refresh token; unavailable (and paid) without one", () => {
-    expect(tiktokAdapter.isAvailable(makeEnv())).toBe(true);
-    // No Chartmetric token AND no Soundcharts creds (both empty in makeEnv) ⇒ unavailable.
-    expect(tiktokAdapter.isAvailable(makeEnv({ CHARTMETRIC_REFRESH_TOKEN: "" }))).toBe(false);
-    expect(tiktokAdapter.isPaid).toBe(true);
+describe("chartmetric discovery engine (LAB-117)", () => {
+  it("is available with a refresh token and is paid; unavailable without one", () => {
+    expect(chartmetricAdapter.isAvailable(makeEnv())).toBe(true);
+    expect(chartmetricAdapter.isAvailable(makeEnv({ CHARTMETRIC_REFRESH_TOKEN: "" }))).toBe(false);
+    expect(chartmetricAdapter.isPaid).toBe(true);
   });
 
-  it("takes precedence over Soundcharts when BOTH providers are configured", async () => {
-    // Both vendors have credentials; Chartmetric is first in PROVIDERS so it must
-    // win — proven by Chartmetric's token exchange firing while Soundcharts's
-    // chart endpoint is never touched.
+  it("returns [] for non-trending modes without hitting the network", async () => {
     const mock = stubChartmetric();
-    await tiktokAdapter.pullCandidates(
-      { mode: "trending", limit: 5 },
-      makeEnv({ SOUNDCHARTS_APP_ID: "app", SOUNDCHARTS_API_KEY: "key" }),
+    const out = await settle(
+      chartmetricAdapter.pullCandidates({ mode: "search", query: "x", limit: 5 }, makeEnv()),
     );
-    const urls = mock.mock.calls.map((c) => String(c[0]));
-    expect(urls.some((u) => u.includes("/api/token"))).toBe(true); // Chartmetric selected
-    expect(urls.some((u) => u.includes("/ranking/latest"))).toBe(false); // Soundcharts untouched
+    expect(out).toEqual([]);
+    expect(mock).not.toHaveBeenCalled();
   });
 
-  it("exchanges the refresh token, then pulls the chart with a bearer token", async () => {
+  it("maps charts into chartmetric candidates with ISRC + breakout on rawPayload", async () => {
+    stubChartmetric();
+    const out = await settle(
+      chartmetricAdapter.pullCandidates({ mode: "trending", limit: 10 }, makeEnv()),
+    );
+
+    expect(out.length).toBeGreaterThanOrEqual(3);
+    for (const c of out) {
+      expect(c.source).toBe("chartmetric");
+      expect(breakoutOf(c).provider).toBe("chartmetric");
+    }
+    const mega = out.find((c) => c.title === "Megahit");
+    expect(mega).toMatchObject({
+      source: "chartmetric",
+      isrc: "USMAIN0000001",
+      spotifyId: "spmain",
+    });
+  });
+
+  it("scores low-Spotify-maturity social tracks ABOVE a mainstream Spotify hit (the breakout gap)", async () => {
+    stubChartmetric();
+    const out = await settle(
+      chartmetricAdapter.pullCandidates({ mode: "trending", limit: 10 }, makeEnv()),
+    );
+    const score = (title: string) => breakoutOf(out.find((c) => c.title === title)!).score;
+
+    expect(score("Underground Anthem")).toBeGreaterThan(score("Megahit"));
+    expect(score("Viral Sound")).toBeGreaterThan(score("Megahit"));
+    // The mainstream hit has no social signal and saturated maturity → ~0.
+    expect(score("Megahit")).toBeLessThan(0.05);
+  });
+
+  it("resolves social rows to continuous maturity + genres via one /api/track call", async () => {
+    stubChartmetric();
+    const out = await settle(
+      chartmetricAdapter.pullCandidates({ mode: "trending", limit: 10 }, makeEnv()),
+    );
+    const shazam = out.find((c) => c.title === "Underground Anthem");
+    if (!shazam) throw new Error("expected the shazam breakout candidate");
+    expect(shazam.genres).toContain("hyperpop");
+    expect(breakoutOf(shazam).signals.spotifyPlaylistReach).toBe(800_000);
+  });
+
+  it("exchanges the refresh token once and sends a bearer on chart calls", async () => {
     const mock = stubChartmetric();
-    await tiktokAdapter.pullCandidates({ mode: "trending", limit: 5 }, makeEnv());
-
-    const tokenCall = mock.mock.calls.find((c) => String(c[0]).includes("/api/token"));
-    if (!tokenCall) throw new Error("expected a token exchange call");
-    const tokenBody = JSON.parse(String((tokenCall[1] as RequestInit).body));
-    expect(tokenBody).toMatchObject({ refreshtoken: "refresh-token" });
-
-    const chartCall = mock.mock.calls.find((c) => String(c[0]).includes("/charts/tiktok"));
-    const chartUrl = String(chartCall?.[0]);
-    expect(chartUrl).toContain("type=tracks");
-    expect(chartUrl).toContain("interval=weekly");
-    expect(chartUrl).toContain("country_code=US");
+    await settle(chartmetricAdapter.pullCandidates({ mode: "trending", limit: 10 }, makeEnv()));
+    const tokenCalls = mock.mock.calls.filter((c) => String(c[0]).includes("/api/token"));
+    expect(tokenCalls).toHaveLength(1);
+    const chartCall = mock.mock.calls.find((c) => String(c[0]).includes("/api/charts/shazam"));
     expect((chartCall?.[1] as RequestInit | undefined)?.headers).toMatchObject({
       authorization: "Bearer access-abc",
     });
-  });
-
-  it("maps chart entries into candidates with ISRC, artist + velocity, dropping titleless rows", async () => {
-    stubChartmetric();
-    const out = await tiktokAdapter.pullCandidates({ mode: "trending", limit: 5 }, makeEnv());
-
-    expect(out).toHaveLength(2); // the titleless third row is dropped
-    const top = out[0];
-    if (!top) throw new Error("expected a charted candidate");
-    expect(top).toMatchObject({
-      source: "tiktok",
-      sourceTrackId: "111",
-      isrc: "USABC1234567",
-      spotifyId: "spfy111",
-      title: "Viral Smash",
-      artist: "Nova, Guest MC", // artist_names array joined
-    });
-    const velocity = (top.rawPayload as { velocity: ChartmetricVelocity }).velocity;
-    expect(velocity).toMatchObject({ provider: "chartmetric", country: "US", rank: 1, preRank: 4 });
-
-    const second = out[1];
-    expect(second).toMatchObject({
-      sourceTrackId: "222", // cm_track
-      isrc: null,
-      artist: "The Quiet", // artists: [{name}]
-      title: "Sleeper Hit", // track_title
-      spotifyId: null,
-    });
-  });
-
-  it("caches the access token across pulls (one token exchange for two pulls)", async () => {
-    const mock = stubChartmetric();
-    await tiktokAdapter.pullCandidates({ mode: "trending", limit: 5 }, makeEnv());
-    await tiktokAdapter.pullCandidates({ mode: "trending", limit: 5 }, makeEnv());
-    const tokenCalls = mock.mock.calls.filter((c) => String(c[0]).includes("/api/token"));
-    expect(tokenCalls).toHaveLength(1);
-  });
-
-  it("honours a configured country", async () => {
-    const mock = stubChartmetric();
-    await tiktokAdapter.pullCandidates(
-      { mode: "trending", limit: 5 },
-      makeEnv({ CHARTMETRIC_TIKTOK_COUNTRY: "GB" }),
-    );
-    const chartCall = mock.mock.calls.find((c) => String(c[0]).includes("/charts/tiktok"));
-    expect(String(chartCall?.[0])).toContain("country_code=GB");
   });
 });

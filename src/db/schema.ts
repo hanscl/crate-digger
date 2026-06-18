@@ -37,7 +37,13 @@ export const recommendationStatusEnum = pgEnum("bucket_recommendation_status", [
   "dismissed",
 ]);
 
-export const sourceKindEnum = pgEnum("source_kind", ["spotify", "lastfm", "viberate", "tiktok"]);
+export const sourceKindEnum = pgEnum("source_kind", [
+  "spotify",
+  "lastfm",
+  "viberate",
+  "tiktok",
+  "chartmetric",
+]);
 
 // LAB-61 — provenance of a bucket membership. Pre-LAB-52, discovery tracks
 // eager-joined buckets, so "member without a rating" was ambiguous between a
@@ -370,7 +376,7 @@ export const appConfig = pgTable(
       .$type<Record<string, boolean>>()
       .notNull()
       .default(
-        sql`'{"spotify":true,"lastfm":true,"viberate":false,"reccobeats":true,"tiktok":false}'::jsonb`,
+        sql`'{"spotify":true,"lastfm":true,"viberate":false,"reccobeats":true,"tiktok":false,"chartmetric":false}'::jsonb`,
       ),
     activeRefillVersionId: integer("active_refill_version_id").references(() => modelVersion.id),
     activeBroadVersionId: integer("active_broad_version_id").references(() => modelVersion.id),
