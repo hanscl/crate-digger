@@ -83,9 +83,14 @@ export async function resolveSpotifyId(candidate: RawCandidate, env: Env): Promi
   try {
     if (candidate.isrc) {
       // ISRC is globally unique → the hit is the canonical recording. No fuzzy
-      // gate: stamp the id directly. Keep `candidate.isrc` as-is (already set).
+      // gate: stamp the id directly. Normalize the stored ISRC to the canonical
+      // upper/trimmed form (the same `searchSpotifyTrackByIsrc` applies to the
+      // query) so a lower-case upstream value can't slip past the case-sensitive
+      // `eq(track.isrc, …)` dedup in resolveCandidate and mint a duplicate row.
       const [byIsrc] = await searchSpotifyTrackByIsrc(candidate.isrc, env);
-      if (byIsrc) return { ...candidate, spotifyId: byIsrc.id };
+      if (byIsrc) {
+        return { ...candidate, spotifyId: byIsrc.id, isrc: candidate.isrc.trim().toUpperCase() };
+      }
     }
     const hits = await searchSpotifyTrack(candidate.artist, candidate.title, env);
     // Score every returned hit and keep the best (LAB-62): Spotify's own

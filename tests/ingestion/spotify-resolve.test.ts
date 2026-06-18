@@ -207,6 +207,23 @@ describe("resolveSpotifyId — ISRC-first (LAB-118)", () => {
     expect(out.isrc).toBe("FRX202682466"); // unchanged
   });
 
+  it("normalizes a lower-case / untrimmed ISRC to canonical form when stamping (dedup safety)", async () => {
+    // A lower-case upstream ISRC stored as-is would miss the case-sensitive
+    // eq(track.isrc, …) dedup in resolveCandidate and mint a duplicate row. The
+    // stamp must upper/trim it to match what the ISRC search already queries.
+    const fn = stubFetchByQuery([spotifyTrack({ id: "sp-norm" })], []);
+    const out = await resolveSpotifyId(
+      lastfmCandidate({ isrc: "  frx202682466 " }),
+      envWithCreds(),
+    );
+    expect(out.spotifyId).toBe("sp-norm");
+    expect(out.isrc).toBe("FRX202682466"); // canonical upper/trimmed
+    const searchQs = fn.mock.calls
+      .filter(([input]) => String(input).includes("/v1/search"))
+      .map(([input]) => new URL(String(input)).searchParams.get("q") ?? "");
+    expect(searchQs).toEqual(["isrc:FRX202682466"]);
+  });
+
   it("queries ISRC BEFORE the field-scoped search and short-circuits on a hit", async () => {
     const fn = stubFetchByQuery(
       [spotifyTrack({ id: "sp-isrc" })],
