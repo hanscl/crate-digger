@@ -210,7 +210,12 @@ describe("viberate breakout engine", () => {
     const fetchFn = routeFetch();
     await drivePull({ mode: "trending", limit: 10 }, makeEnv());
     const urls = fetchFn.mock.calls.map((c) => String(c[0]));
-    expect(urls.filter((u) => u.includes("trending/youtube/country"))).toHaveLength(3); // US/GB/DE
+    // YouTube curtailed to US-only (LAB-118): its `/by-channel` resolution 404s
+    // for ~2/3 of rows and the `G:…` track_id is unresolvable, so sweeping 3
+    // territories just flooded the pool with unresolvable rows. One feed pull now.
+    const ytFeedCalls = urls.filter((u) => u.includes("trending/youtube/country"));
+    expect(ytFeedCalls).toHaveLength(1);
+    expect(ytFeedCalls[0]).toContain("country=US");
     expect(urls.filter((u) => u.includes("viberate/chart"))).toHaveLength(2); // shazam + soundcloud
     expect(urls.filter((u) => u.includes("trending/spotify/country"))).toHaveLength(1);
     const init = fetchFn.mock.calls[0]![1] as RequestInit;

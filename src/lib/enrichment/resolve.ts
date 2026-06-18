@@ -2,7 +2,7 @@ import { and, eq, ilike, isNull, or, sql } from "drizzle-orm";
 import { fuzzy } from "fast-fuzzy";
 import type { Database } from "@/db/client";
 import { track, trackSource } from "@/db/schema";
-import { searchSpotifyTrack } from "@/lib/ingestion/spotify";
+import { searchSpotifyTrack, searchSpotifyTrackByIsrc } from "@/lib/ingestion/spotify";
 import type { Env } from "@/server/env";
 import type { RawCandidate } from "../ingestion/types";
 
@@ -66,6 +66,14 @@ function fuzzyKey(c: { artist: string; title: string }): string {
  * design: any miss/low-confidence/error path returns the candidate unchanged
  * (graceful null over mis-resolve). No-op when Spotify creds are absent
  * (Constraint #1).
+ *
+ * ISRC-first (LAB-118): when the candidate carries an ISRC, look it up FIRST
+ * (`isrc:` search). An ISRC is a global recording identifier, so a hit IS the
+ * canonical Spotify track — stamp it directly, bypassing the fuzzy 0.9 gate (no
+ * scoring). This recovers tracks that ARE on Spotify but whose messy (often
+ * YouTube-derived) artist/title fuzzy-miss the field-scoped search (live miss:
+ * Kodes — "WAWA", ISRC FRX202682466). Only on no ISRC / no ISRC hit do we fall
+ * back to the existing artist+title fuzzy path (unchanged).
  */
 export async function resolveSpotifyId(candidate: RawCandidate, env: Env): Promise<RawCandidate> {
   // Already resolved, or itself a Spotify-sourced candidate → nothing to do.
@@ -73,6 +81,12 @@ export async function resolveSpotifyId(candidate: RawCandidate, env: Env): Promi
   // Mirror `spotifyAdapter.isAvailable`: no creds → no-op (Constraint #1).
   if (!env.SPOTIFY_CLIENT_ID || !env.SPOTIFY_CLIENT_SECRET) return candidate;
   try {
+    if (candidate.isrc) {
+      // ISRC is globally unique → the hit is the canonical recording. No fuzzy
+      // gate: stamp the id directly. Keep `candidate.isrc` as-is (already set).
+      const [byIsrc] = await searchSpotifyTrackByIsrc(candidate.isrc, env);
+      if (byIsrc) return { ...candidate, spotifyId: byIsrc.id };
+    }
     const hits = await searchSpotifyTrack(candidate.artist, candidate.title, env);
     // Score every returned hit and keep the best (LAB-62): Spotify's own
     // relevance order frequently puts a reissue or wrong version first.
