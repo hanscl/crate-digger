@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { _resetChartmetricTokenCache } from "@/lib/ingestion/chartmetric";
+import { _resetChartmetricTokenCache } from "@/lib/ingestion/chartmetric/client";
 import { _resetSpotifyTokenCache } from "@/lib/ingestion/spotify";
 import { allAdapters } from "@/lib/ingestion";
 import type { Env } from "@/server/env";
@@ -19,7 +19,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     VIBERATE_API_KEY: "",
     VIBERATE_TRENDING_COUNTRY: "US",
     CHARTMETRIC_REFRESH_TOKEN: "",
-    CHARTMETRIC_TIKTOK_COUNTRY: "US",
+    CHARTMETRIC_TRENDING_COUNTRY: "US",
     SOUNDCHARTS_APP_ID: "",
     SOUNDCHARTS_API_KEY: "",
     SOUNDCHARTS_TIKTOK_CHART_SLUG: "tiktok-breakout-us",
@@ -34,8 +34,9 @@ const credsByAdapter: Record<string, Partial<Env>> = {
   spotify: { SPOTIFY_CLIENT_ID: "id", SPOTIFY_CLIENT_SECRET: "secret" },
   lastfm: { LASTFM_API_KEY: "key" },
   viberate: { VIBERATE_API_KEY: "key" },
-  // Exercises the default (Chartmetric) provider; Soundcharts is the fallback.
-  tiktok: { CHARTMETRIC_REFRESH_TOKEN: "refresh-token" },
+  chartmetric: { CHARTMETRIC_REFRESH_TOKEN: "refresh-token" },
+  // Soundcharts is now the TikTok adapter's only provider (Chartmetric → LAB-117).
+  tiktok: { SOUNDCHARTS_APP_ID: "app", SOUNDCHARTS_API_KEY: "key" },
 };
 
 beforeEach(() => {
@@ -63,7 +64,7 @@ async function settle<T>(p: Promise<T>): Promise<T> {
 describe("source adapter contract", () => {
   it("registers at least the documented adapters", () => {
     const ids = allAdapters.map((a) => a.id).sort();
-    expect(ids).toEqual(["lastfm", "spotify", "tiktok", "viberate"]);
+    expect(ids).toEqual(["chartmetric", "lastfm", "spotify", "tiktok", "viberate"]);
   });
 
   for (const adapter of allAdapters) {

@@ -1,6 +1,5 @@
 import type { Env } from "@/server/env";
 import type { SourceAdapter } from "./adapter";
-import { chartmetricProvider } from "./chartmetric";
 import { soundchartsProvider } from "./soundcharts";
 import type { RawCandidate } from "./types";
 
@@ -12,10 +11,12 @@ import type { RawCandidate } from "./types";
  * behind a thin internal `TikTokTrendingProvider` interface and selects one at
  * runtime by which credentials are present.
  *
- * Provider precedence (the first configured one wins):
- *   1. Chartmetric — usage-based (~$0.01/credit, free trial); the default for
- *      a single-user install.
- *   2. Soundcharts — $250/mo floor, but live-verified; the reference / fallback.
+ * Provider: Soundcharts (live-verified; $250/mo floor). Chartmetric was the
+ * original default here, but LAB-117 promoted it to a full social-breakout
+ * discovery engine (`ingestion/chartmetric/`) that subsumes the TikTok chart as
+ * one feed — so it's no longer wired as a TikTok-velocity provider. (The retired
+ * provider also called the wrong endpoint — `/charts/tiktok` 404s; the real path
+ * is `/charts/tiktok/tracks` — and was never live-verified.)
  *
  * Constraint #1: paid + optional. With no provider configured the adapter
  * reports unavailable and the system runs unchanged on Spotify + Last.fm.
@@ -28,8 +29,8 @@ export interface TikTokTrendingProvider {
   pullTrending(limit: number, env: Env): Promise<RawCandidate[]>;
 }
 
-/** Provider precedence: the first configured one wins (Chartmetric preferred on cost). */
-const PROVIDERS: readonly TikTokTrendingProvider[] = [chartmetricProvider, soundchartsProvider];
+/** Soundcharts is the remaining TikTok-velocity provider (Chartmetric → LAB-117 engine). */
+const PROVIDERS: readonly TikTokTrendingProvider[] = [soundchartsProvider];
 
 function activeProvider(env: Env): TikTokTrendingProvider | undefined {
   return PROVIDERS.find((p) => p.isConfigured(env));

@@ -314,6 +314,81 @@ never throws (`[]` on any error).
 - Artist-level `social-rank` chart, `track/search`, deep historical analytics —
   available, not wired for a personal taste model.
 
+## ChartMetric — social-breakout discovery engine (paid, optional)
+
+ChartMetric (https://chartmetric.com) is a paid music-analytics platform with
+per-platform charts (Spotify, Apple Music, Shazam, TikTok, SoundCloud, …) and a
+rich per-track cross-platform stats snapshot. Crate Digger uses it as a second
+**breakout discovery engine** (LAB-117) — the ChartMetric-powered sibling of the
+Viberate engine — so the two run head-to-head and QA + ratings (per-source
+keep-rate) decide which surfaces better. Lives in `src/lib/ingestion/chartmetric/`;
+spike artifact `scripts/lab-chartmetric-engine-probe.ts`. Same objective and shape
+as Viberate: pull a pool that LEADS Spotify, score the divergence, surface before
+mainstream.
+
+### Billing
+
+ChartMetric has two models. The **public** API tier is a flat **~$350/mo**
+subscription (rate-limit tiers). A personal account, though, can run on a
+**prepaid usage-based** plan (~**$0.01/credit** ≈ 1 credit per API call) — a daily
+breakout run is ~4–16 calls (a few cents), which is what makes it viable for a
+single-user install. (Viberate, by contrast, is a flat ~$250/mo subscription.)
+Stay on the prepaid plan for personal use.
+
+### Spike findings (verified live, 2026-06-17)
+
+- **Base URL** `https://api.chartmetric.com`; **auth** a refresh-token exchange:
+  `POST /api/token {refreshtoken}` → a ~1h bearer (`Authorization: Bearer`); 429s
+  carry `X-RateLimit-*` headers. The refresh token is long-lived.
+- **Every chart row carries ISRC + `cm_track` + `spotify_popularity` (0–100) +
+  `rank`/`pre_rank`/`velocity` INLINE** — dedup needs no resolution hop (an
+  improvement over Viberate), and a coarse maturity proxy is free on every row.
+- **Charts** (verified params; they reject `limit`/`offset`, so we slice):
+  `/api/charts/shazam?country_code&date` (`num_of_shazams`),
+  `/api/charts/tiktok/tracks?interval=weekly&date` (`weekly_posts`),
+  `/api/charts/soundcloud?country_code&kind=trending&genre&interval&date`,
+  `/api/charts/spotify?type=regional&country_code&interval=daily&date`
+  (`current_plays` — the maturity feed). Charts require a `date` and lag a few
+  days, so the client walks a small date ladder and takes the first non-empty.
+- **Continuous maturity** `GET /api/track/{cm_track}` → `cm_statistics`
+  (`sp_playlist_total_reach`, `sp_streams`, `sp_popularity`, `shazam_counts`,
+  `num_tt_videos`) + `genres` — one call gives the full cross-platform gap (a
+  richer analog of Viberate's `stats-alltime`).
+- **ISRC → ids** `GET /api/track/isrc/{isrc}/get-ids` → `chartmetric_ids` +
+  `spotify_ids` (not needed in v1 — ISRC + the Spotify id are inline).
+
+### What the engine ships (3 stages, `src/lib/ingestion/chartmetric/`)
+
+1. **Broad pool** (`pool.ts`) — pull Shazam + SoundCloud + TikTok (social) +
+   Spotify-regional (maturity, `CHARTMETRIC_TRENDING_COUNTRY`) charts; map each to
+   a common `PooledRow` (ISRC/cm_track/signals inline); dedup the union, folding
+   signals so a track seen on a social AND the Spotify chart gets the full gap
+   with no resolve hop.
+2. **Score + select** (`breakout.ts`) — the SAME model as Viberate, so the A/B is
+   apples-to-apples: `score = clamp01(socialMomentum − 0.6·spotifyMaturity)`,
+   social from Shazam/TikTok/SoundCloud counts + chart velocity, maturity from
+   `spotify_popularity` + streams + playlist reach. Keep the top `limit` weighted
+   by feed (social 1.0 · tiktok 0.9 · spotify 0.45). Pull composition, not a
+   surfacing filter (Constraint #5).
+3. **Resolve** (`resolve.ts`) — for shortlisted social rows lacking continuous
+   maturity, one `GET /api/track/{cm_track}` upgrades `spotify_popularity` to
+   `sp_playlist_total_reach`/`sp_streams` + folds genres; recompute, emit.
+
+The breakout signal rides on `track_source.raw_payload` (discovery signal only,
+never the taste model). **Constraint #1:** absent `CHARTMETRIC_REFRESH_TOKEN` the
+engine is unavailable (guard before any network call); trending-only; never throws.
+
+### A/B with Viberate
+
+Both engines are key-gated and run in the same daily pipeline when configured, so
+with both keys set they pull every day and `surface_event.candidate_pool` logs the
+full context (Constraint #2). Attribution rides on `track_source.source` (per-source
+provenance); `evals/metrics.ts → keepRate().bySource` already reports per-source
+keep/dislike rate — `viberate` vs `chartmetric` head-to-head, no extra plumbing.
+The LAB-19 ChartMetric _TikTok-velocity provider_ was retired here (it called the
+wrong endpoint — `/charts/tiktok` 404s, the real path is `/charts/tiktok/tracks` —
+and was never live-verified); this engine subsumes the TikTok chart as one feed.
+
 ## Not pursued
 
 - **Self-hosting Essentia / Meyda** for local audio extraction — out of scope.

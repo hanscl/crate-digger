@@ -5,6 +5,7 @@ const SOURCE_LABEL: Record<string, string> = {
   lastfm: "Last.fm",
   viberate: "Viberate",
   tiktok: "TikTok",
+  chartmetric: "Chartmetric",
 };
 
 export function SourcePill({
