@@ -36,11 +36,18 @@ export const FEEDS: readonly ChartmetricFeed[] = [
     weight: 1.0,
     // `kind=trending` is SoundCloud's breakout chart; `genre` is required and
     // `all-music` is the cross-genre rollup (one of the API's allowed slugs).
+    //
+    // LAB-118: NO `interval`. The live probe found the SoundCloud endpoint
+    // REJECTS `interval` (HTTP 400 `'interval' is not allowed`, same as Shazam) —
+    // that 400 (not the date ladder) was what failed the feed on every run, so it
+    // never even reached a date rung. Dropping it makes the endpoint reachable
+    // (HTTP 200) and the weekly date ladder actually run. The chart can still be
+    // legitimately empty (probed empty across dates/genres/countries on
+    // 2026-06-18); that's a quiet reachable-empty `[]`, not a degrade.
     query: (country, date) => ({
       country_code: country,
       kind: "trending",
       genre: "all-music",
-      interval: "weekly",
       date,
     }),
   },

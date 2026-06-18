@@ -3,6 +3,7 @@ import { resolveSpotifyId } from "@/lib/enrichment/resolve";
 import {
   _resetSpotifyTokenCache,
   searchSpotifyTrack,
+  searchSpotifyTrackByIsrc,
   type SpotifyTrack,
 } from "@/lib/ingestion/spotify";
 import type { RawCandidate } from "@/lib/ingestion/types";
@@ -106,6 +107,29 @@ function stubFetch(searchItems: SpotifyTrack[] | null): ReturnType<typeof vi.fn>
   return fn;
 }
 
+/**
+ * LAB-118 ISRC-path stub: route by the `q` param so an `isrc:` search and a
+ * field-scoped `artist:"…" track:"…"` search return different item sets. Either
+ * may be `null` (→ that search 404s). Lets us assert the ISRC-first ordering.
+ */
+function stubFetchByQuery(
+  isrcItems: SpotifyTrack[] | null,
+  fieldItems: SpotifyTrack[] | null,
+): ReturnType<typeof vi.fn> {
+  const fn = vi.fn(async (input: string | URL) => {
+    const url = String(input);
+    if (url.includes("accounts.spotify.com")) return tokenResponse();
+    if (url.includes("/v1/search")) {
+      const q = new URL(url).searchParams.get("q") ?? "";
+      const items = q.startsWith("isrc:") ? isrcItems : fieldItems;
+      return items === null ? new Response("nope", { status: 404 }) : searchResponse(items);
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  });
+  vi.stubGlobal("fetch", fn);
+  return fn;
+}
+
 beforeEach(() => {
   _resetSpotifyTokenCache();
   vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -145,6 +169,94 @@ describe("searchSpotifyTrack", () => {
     // No raw double-quote should survive inside the q value's field phrases.
     const q = new URL(String(searchCall?.[0])).searchParams.get("q") ?? "";
     expect(q).toBe('artist:"Weird Al Yankovic" track:"Foil parody"');
+  });
+});
+
+describe("searchSpotifyTrackByIsrc (LAB-118)", () => {
+  it("queries `isrc:<ISRC>` (uppercased) and returns the hits", async () => {
+    const fn = stubFetchByQuery([spotifyTrack({ id: "sp-isrc" })], []);
+    const out = await searchSpotifyTrackByIsrc("frx202682466", envWithCreds());
+    expect(out.map((t) => t.id)).toEqual(["sp-isrc"]);
+    const searchCall = fn.mock.calls.find(([input]) => String(input).includes("/v1/search"));
+    const q = new URL(String(searchCall?.[0])).searchParams.get("q") ?? "";
+    expect(q).toBe("isrc:FRX202682466"); // trimmed + uppercased
+  });
+
+  it("returns [] and does not throw on a 404 from the ISRC search", async () => {
+    stubFetchByQuery(null, []);
+    await expect(searchSpotifyTrackByIsrc("FRX202682466", envWithCreds())).resolves.toEqual([]);
+  });
+});
+
+describe("resolveSpotifyId — ISRC-first (LAB-118)", () => {
+  it("stamps the ISRC hit directly, bypassing the fuzzy gate (the Kodes/WAWA miss)", async () => {
+    // The ISRC search returns the canonical recording; the artist+title here is
+    // deliberately a poor fuzzy match (YouTube-derived) that would fail the 0.9
+    // gate. The ISRC path must stamp it regardless and must NOT widen the isrc.
+    stubFetchByQuery(
+      [spotifyTrack({ id: "sp-wawa", name: "WAWA", artists: [{ id: "k", name: "Kodes" }] })],
+      [], // field-scoped search would find nothing
+    );
+    const candidate = lastfmCandidate({
+      isrc: "FRX202682466",
+      title: "WAWA (Official Video) [prod. xyz]",
+      artist: "Kodes - Topic",
+    });
+    const out = await resolveSpotifyId(candidate, envWithCreds());
+    expect(out.spotifyId).toBe("sp-wawa");
+    expect(out.isrc).toBe("FRX202682466"); // unchanged
+  });
+
+  it("normalizes a lower-case / untrimmed ISRC to canonical form when stamping (dedup safety)", async () => {
+    // A lower-case upstream ISRC stored as-is would miss the case-sensitive
+    // eq(track.isrc, …) dedup in resolveCandidate and mint a duplicate row. The
+    // stamp must upper/trim it to match what the ISRC search already queries.
+    const fn = stubFetchByQuery([spotifyTrack({ id: "sp-norm" })], []);
+    const out = await resolveSpotifyId(
+      lastfmCandidate({ isrc: "  frx202682466 " }),
+      envWithCreds(),
+    );
+    expect(out.spotifyId).toBe("sp-norm");
+    expect(out.isrc).toBe("FRX202682466"); // canonical upper/trimmed
+    const searchQs = fn.mock.calls
+      .filter(([input]) => String(input).includes("/v1/search"))
+      .map(([input]) => new URL(String(input)).searchParams.get("q") ?? "");
+    expect(searchQs).toEqual(["isrc:FRX202682466"]);
+  });
+
+  it("queries ISRC BEFORE the field-scoped search and short-circuits on a hit", async () => {
+    const fn = stubFetchByQuery(
+      [spotifyTrack({ id: "sp-isrc" })],
+      [spotifyTrack({ id: "sp-field" })],
+    );
+    const out = await resolveSpotifyId(lastfmCandidate({ isrc: "FRX202682466" }), envWithCreds());
+    expect(out.spotifyId).toBe("sp-isrc"); // ISRC hit wins
+    const searchQs = fn.mock.calls
+      .filter(([input]) => String(input).includes("/v1/search"))
+      .map(([input]) => new URL(String(input)).searchParams.get("q") ?? "");
+    // Only the ISRC search fired; no field-scoped fallback on an ISRC hit.
+    expect(searchQs).toEqual(["isrc:FRX202682466"]);
+  });
+
+  it("falls back to the fuzzy artist+title path when the ISRC search misses", async () => {
+    const fn = stubFetchByQuery([] /* ISRC miss */, [spotifyTrack()]);
+    const out = await resolveSpotifyId(lastfmCandidate({ isrc: "FRX202682466" }), envWithCreds());
+    expect(out.spotifyId).toBe("sp-reckoner"); // came from the field-scoped fallback
+    const searchQs = fn.mock.calls
+      .filter(([input]) => String(input).includes("/v1/search"))
+      .map(([input]) => new URL(String(input)).searchParams.get("q") ?? "");
+    expect(searchQs[0]).toBe("isrc:FRX202682466");
+    expect(searchQs[1]).toContain('artist:"Radiohead"'); // then the fuzzy path
+  });
+
+  it("does not call the ISRC search when the candidate has no ISRC", async () => {
+    const fn = stubFetchByQuery([spotifyTrack({ id: "sp-isrc" })], [spotifyTrack()]);
+    const out = await resolveSpotifyId(lastfmCandidate(), envWithCreds()); // no isrc
+    expect(out.spotifyId).toBe("sp-reckoner"); // straight to the fuzzy path
+    const searchQs = fn.mock.calls
+      .filter(([input]) => String(input).includes("/v1/search"))
+      .map(([input]) => new URL(String(input)).searchParams.get("q") ?? "");
+    expect(searchQs.some((q) => q.startsWith("isrc:"))).toBe(false);
   });
 });
 

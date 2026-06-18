@@ -195,6 +195,24 @@ export async function searchSpotifyTrack(
 }
 
 /**
+ * Lookup by ISRC (LAB-118): the Spotify `/search` API accepts `q=isrc:<ISRC>`,
+ * and an ISRC is a globally-unique recording identifier — so a hit IS the
+ * canonical Spotify recording, no fuzzy confidence-check needed. Returns the
+ * raw top hit (limit 1; 0 or 1 result in practice) so the caller can stamp the
+ * id directly. Reuses `spotifyGet` (null on auth/rate-limit/non-200). Used by
+ * the ingest-time resolution pass to recover tracks whose messy (often
+ * YouTube-derived) artist/title would fuzzy-miss the field-scoped search.
+ */
+export async function searchSpotifyTrackByIsrc(isrc: string, env: Env): Promise<SpotifyTrack[]> {
+  const data = await spotifyGet<{ tracks: { items: SpotifyTrack[] } }>(
+    "/search",
+    { q: `isrc:${isrc.trim().toUpperCase()}`, type: "track", limit: 1 },
+    env,
+  );
+  return data?.tracks?.items ?? [];
+}
+
+/**
  * Search, paging with `offset` to assemble up to `limit` results out of
  * 10-track pages (the Feb 2026 Dev Mode cap). Stops early on an empty/short
  * page or a missing `next` cursor.
