@@ -6,8 +6,24 @@
  * from the existing `VIBERATE_TRENDING_COUNTRY` env var.
  */
 
-/** YouTube-trending territories to sweep (Hans: DE/GB/US). */
-export const YOUTUBE_COUNTRIES: readonly string[] = ["US", "GB", "DE"];
+/**
+ * YouTube-trending territories to sweep. CURTAILED to US-only (LAB-118).
+ *
+ * Live probe (lab-viberate-engine-probe + a fresh-row sweep, 2026-06-18):
+ * YouTube rows resolve only via `/track/by-channel/youtube/{id}`, which 404s for
+ * ~2 of every 3 rows (resolved=4, failed=8 across US/GB/DE). The row's only other
+ * id — the Viberate-native `track_id` ("G:…") — is NOT resolvable: both
+ * `/track/{track_id}/details` and `/track/{track_id}/links` return HTTP 400. So
+ * the majority of YouTube rows can't get an ISRC or Spotify-maturity signal and
+ * sit at the imputed UNKNOWN_MATURITY discount, crowding the shortlist out from
+ * the fully-resolvable composite (Shazam/SoundCloud) + Spotify feeds. Sweeping 3
+ * territories tripled that unresolvable footprint (3 chart pulls vs 1 each for
+ * the others). Dropping to US-only is the smallest change that meaningfully
+ * rebalances the pull toward resolvable feeds while keeping YouTube's
+ * leading-indicator signal in play; the 404/miss path stays graceful (the row is
+ * not dropped — it's still scored on its free inline YouTube momentum).
+ */
+export const YOUTUBE_COUNTRIES: readonly string[] = ["US"];
 
 /**
  * Composite-chart lead signals to pull. Shazam + SoundCloud skew far less

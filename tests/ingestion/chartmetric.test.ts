@@ -244,7 +244,7 @@ describe("chartmetric discovery engine (LAB-117)", () => {
   });
 
   it("stays quiet when SoundCloud is empty but other feeds return rows (partial)", async () => {
-    // The live case: SoundCloud's date-ladder misses (empty) while Shazam/TikTok/
+    // The live case: SoundCloud is reachable but empty while Shazam/TikTok/
     // Spotify return rows ⇒ reachable, not dark ⇒ no degraded banner.
     stubChartmetric(); // soundcloud → {obj: []}, others populated
     const out = await settle(
@@ -252,6 +252,21 @@ describe("chartmetric discovery engine (LAB-117)", () => {
     );
     expect(out.length).toBeGreaterThan(0);
     expect(console.error).not.toHaveBeenCalledWith(expect.stringContaining("SOURCE DEGRADED"));
+  });
+
+  it("does NOT send `interval` on the SoundCloud chart query (LAB-118 — endpoint rejects it)", async () => {
+    // The live probe found `/api/charts/soundcloud` 400s on `interval`
+    // ('interval' is not allowed), which silently degraded the feed every run.
+    // The query must carry kind=trending + genre=all-music + date, and NO interval.
+    const mock = stubChartmetric();
+    await settle(chartmetricAdapter.pullCandidates({ mode: "trending", limit: 10 }, makeEnv()));
+    const scCall = mock.mock.calls.find((c) => String(c[0]).includes("/api/charts/soundcloud"));
+    expect(scCall).toBeDefined();
+    const sp = new URL(String(scCall?.[0])).searchParams;
+    expect(sp.has("interval")).toBe(false);
+    expect(sp.get("kind")).toBe("trending");
+    expect(sp.get("genre")).toBe("all-music");
+    expect(sp.get("date")).toBeTruthy();
   });
 
   it("exchanges the refresh token once and sends a bearer on chart calls", async () => {
