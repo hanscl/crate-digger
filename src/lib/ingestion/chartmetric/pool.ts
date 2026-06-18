@@ -70,14 +70,37 @@ function toPooledRow(feed: ChartmetricFeed, e: ChartRow): PooledRow | null {
   return isResolvable(row) ? row : null;
 }
 
-/** Pull every configured feed. Each client call already degrades to [] on error. */
+/**
+ * Pull every configured feed. `getChart` returns `null` when a feed is
+ * unreachable (every date-rung call failed) — distinct from `[]` (reachable but
+ * empty). If EVERY feed is unreachable while the refresh token is set, the source
+ * has gone dark — fail LOUD rather than silent-zero-fill (LAB-86), so a lapsed
+ * refresh token or a rate limit can't quietly hide. A partial failure (e.g. the
+ * SoundCloud date-ladder missing while Shazam/TikTok work) stays quiet.
+ */
 export async function gatherPool(env: Env, country: string, now: Date): Promise<PooledRow[]> {
   const rows: PooledRow[] = [];
+  let attempted = 0;
+  let failed = 0;
   for (const feed of FEEDS) {
-    for (const item of await getChart(feed, country, now, env)) {
+    attempted += 1;
+    const chart = await getChart(feed, country, now, env);
+    if (chart === null) {
+      failed += 1;
+      continue;
+    }
+    for (const item of chart) {
       const r = toPooledRow(feed, item);
       if (r) rows.push(r);
     }
+  }
+
+  if (attempted > 0 && failed === attempted) {
+    console.error(
+      `[chartmetric] SOURCE DEGRADED — all ${attempted} chart feed(s) unreachable (HTTP/transport ` +
+        `error or token-exchange failure) while CHARTMETRIC_REFRESH_TOKEN is set; pulled 0 candidates. ` +
+        `Likely an expired refresh token or a rate limit. The source went dark — not silently empty.`,
+    );
   }
   return rows;
 }

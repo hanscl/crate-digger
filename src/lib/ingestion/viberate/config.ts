@@ -18,8 +18,14 @@ export const COMPOSITE_SORTS: readonly string[] = ["shazam-shazams", "soundcloud
 /** Composite-chart window — recent week, to catch what's surging now. */
 export const COMPOSITE_TIMEFRAME = "1w";
 
-/** Rows to pull per feed for scoring (cheap — one chart call each). */
-export const POOL_ROWS_PER_FEED = 50;
+/**
+ * Rows to pull per feed for scoring (cheap — one chart call each). Capped at 20:
+ * the trial/entry tier rejects `limit > 20` on every feed endpoint with HTTP 400
+ * (verified live — limit=20 → 200, limit=25 → 400), which silently emptied the
+ * pool. Raise (or paginate via offset) only against a tier whose per-request cap
+ * is confirmed higher.
+ */
+export const POOL_ROWS_PER_FEED = 20;
 
 /**
  * Hard ceiling on candidates returned per run, regardless of the throttle limit.

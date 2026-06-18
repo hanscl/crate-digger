@@ -87,14 +87,26 @@ function qs(params: Record<string, string | number>): string {
 // Feeds (Stage 1)
 // ---------------------------------------------------------------------------
 
+/**
+ * Each feed returns the parsed rows, or `null` when the HTTP call itself FAILED
+ * (transport error / non-2xx — `vibGet` returns null). `null` is distinct from
+ * `[]` (a successful but empty response): `gatherPool` counts the nulls to tell
+ * "source went dark" (all feeds failed → fail loud, LAB-86) from "nothing
+ * trending right now" (reachable, empty). A non-array-but-present body (200 with
+ * `data: null`) is a reachable empty, not a failure → `[]`.
+ */
+function feedRows<T>(json: unknown | null): T[] | null {
+  return json === null ? null : asArray<T>(json);
+}
+
 /** Spotify per-country trending (LAB-88 feed), momentum-sorted. */
 export async function getSpotifyTrending(
   country: string,
   limit: number,
   env: Env,
-): Promise<SpotifyTrendingItem[]> {
+): Promise<SpotifyTrendingItem[] | null> {
   const q = qs({ country, sort: "streams_1d_pct", order: "desc", offset: 0, limit });
-  return asArray<SpotifyTrendingItem>(await vibGet(`/track/trending/spotify/country?${q}`, env));
+  return feedRows<SpotifyTrendingItem>(await vibGet(`/track/trending/spotify/country?${q}`, env));
 }
 
 /** YouTube per-country trending, sorted by 1-week view momentum. */
@@ -102,9 +114,9 @@ export async function getYoutubeTrending(
   country: string,
   limit: number,
   env: Env,
-): Promise<YoutubeTrendingItem[]> {
+): Promise<YoutubeTrendingItem[] | null> {
   const q = qs({ country, sort: "views_1w_pct", order: "desc", offset: 0, limit });
-  return asArray<YoutubeTrendingItem>(await vibGet(`/track/trending/youtube/country?${q}`, env));
+  return feedRows<YoutubeTrendingItem>(await vibGet(`/track/trending/youtube/country?${q}`, env));
 }
 
 /**
@@ -117,9 +129,9 @@ export async function getCompositeChart(
   timeframe: string,
   limit: number,
   env: Env,
-): Promise<CompositeChartItem[]> {
+): Promise<CompositeChartItem[] | null> {
   const q = qs({ sort, timeframe, order: "desc", offset: 0, limit });
-  return asArray<CompositeChartItem>(await vibGet(`/track/viberate/chart?${q}`, env));
+  return feedRows<CompositeChartItem>(await vibGet(`/track/viberate/chart?${q}`, env));
 }
 
 // ---------------------------------------------------------------------------

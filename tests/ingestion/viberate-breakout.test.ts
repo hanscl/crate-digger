@@ -8,6 +8,7 @@ import {
   selectionScore,
   selectTop,
   toBreakout,
+  UNKNOWN_MATURITY,
 } from "@/lib/ingestion/viberate/breakout";
 import type { BreakoutSignals, ViberateBreakout } from "@/lib/ingestion/viberate/types";
 
@@ -66,14 +67,31 @@ describe("computeBreakout", () => {
     expect(mega.spotifyMaturity).toBeGreaterThan(0.9);
   });
 
-  it("youtube feed scores from view momentum with neutral (0) maturity pre-resolution", () => {
+  it("youtube feed with unresolved maturity imputes UNKNOWN_MATURITY, not 0 (LAB-91)", () => {
     const b = computeBreakout(
       { youtubeViews1w: 800_000, youtubeViewsPct: 400 },
       "youtube-trending",
     );
     expect(b.socialMomentum).toBeGreaterThan(0.4);
-    expect(b.spotifyMaturity).toBe(0); // no Spotify signal yet
-    expect(b.score).toBeCloseTo(b.socialMomentum, 5);
+    // No Spotify-maturity signal resolved (live: /by-channel 404s) → absence is
+    // imputed as the neutral discount, NOT scored as 0, so a high-social YouTube
+    // row can't claim a perfect undiscounted breakout (the LAB-91 inflation bug).
+    expect(b.spotifyMaturity).toBe(UNKNOWN_MATURITY);
+    expect(b.score).toBeCloseTo(b.socialMomentum - BREAKOUT_BALANCE * UNKNOWN_MATURITY, 5);
+  });
+
+  it("imputes unknown maturity neutrally — unknown ranks below KNOWN-low (LAB-91)", () => {
+    const unknown = computeBreakout({ shazam1w: 40_000 }, "composite-chart"); // no maturity signal
+    // A present-but-zero signal is KNOWN-low (genuine obscurity), not imputed.
+    const knownLow = computeBreakout(
+      { shazam1w: 40_000, spotifyStreamsTotal: 0 },
+      "composite-chart",
+    );
+    expect(unknown.spotifyMaturity).toBe(UNKNOWN_MATURITY);
+    expect(knownLow.spotifyMaturity).toBe(0);
+    expect(unknown.socialMomentum).toBeCloseTo(knownLow.socialMomentum, 5);
+    expect(unknown.score).toBeLessThan(knownLow.score); // unresolved maturity is discounted
+    expect(knownLow.score - unknown.score).toBeCloseTo(BREAKOUT_BALANCE * UNKNOWN_MATURITY, 5);
   });
 
   it("spotify-trending: low-base surge beats high-absolute megahit", () => {
@@ -89,13 +107,19 @@ describe("computeBreakout", () => {
   });
 
   it("applies the maturity discount with weight BREAKOUT_BALANCE", () => {
-    // social only ⇒ score == socialMomentum; add full maturity ⇒ minus BALANCE.
-    const socialOnly = computeBreakout({ shazam1w: 5_000 }, "composite-chart");
+    // KNOWN-zero maturity baseline (a present 0 signal) ⇒ score == socialMomentum;
+    // add full maturity ⇒ minus BALANCE. The explicit 0 pins KNOWN-low so the
+    // discount is measured against 0, not the imputed UNKNOWN_MATURITY (LAB-91).
+    const knownLow = computeBreakout(
+      { shazam1w: 5_000, spotifyStreamsTotal: 0 },
+      "composite-chart",
+    );
     const withMaturity = computeBreakout(
       { shazam1w: 5_000, spotifyStreamsTotal: 1_000_000_000, spotifyPlaylistReach: 1_000_000_000 },
       "composite-chart",
     );
-    const drop = socialOnly.score - withMaturity.score;
+    expect(knownLow.spotifyMaturity).toBe(0); // present-but-zero ⇒ known, not imputed
+    const drop = knownLow.score - withMaturity.score;
     expect(drop).toBeCloseTo(BREAKOUT_BALANCE * withMaturity.spotifyMaturity, 5);
   });
 });
