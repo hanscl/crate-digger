@@ -115,30 +115,48 @@ function compositeRow(item: CompositeChartItem): PooledRow | null {
   return isResolvable(row) ? row : null;
 }
 
-/** Pull every configured feed. Each client call already degrades to [] on error. */
+/**
+ * Pull every configured feed. Each client call returns `null` on an HTTP/
+ * transport failure (distinct from `[]` — a successful empty response). We tally
+ * those: if EVERY feed request failed while the key is set, the source has gone
+ * dark — fail LOUD rather than silent-zero-fill (LAB-86), so trial-key expiry /
+ * rate-limit / a tier limit (the LAB-91 `limit>20` 400) can't quietly hide. A
+ * partial failure (some feeds still return rows) is normal degradation and stays
+ * quiet — the pool just carries fewer feeds.
+ */
 export async function gatherPool(env: Env, spotifyCountry: string): Promise<PooledRow[]> {
   const rows: PooledRow[] = [];
-
-  for (const item of await getSpotifyTrending(spotifyCountry, POOL_ROWS_PER_FEED, env)) {
-    const r = spotifyRow(item);
-    if (r) rows.push(r);
-  }
-  for (const country of YOUTUBE_COUNTRIES) {
-    for (const item of await getYoutubeTrending(country, POOL_ROWS_PER_FEED, env)) {
-      const r = youtubeRow(item);
+  let attempted = 0;
+  let failed = 0;
+  const ingest = <T>(result: T[] | null, map: (item: T) => PooledRow | null): void => {
+    attempted += 1;
+    if (result === null) {
+      failed += 1;
+      return;
+    }
+    for (const item of result) {
+      const r = map(item);
       if (r) rows.push(r);
     }
+  };
+
+  ingest(await getSpotifyTrending(spotifyCountry, POOL_ROWS_PER_FEED, env), spotifyRow);
+  for (const country of YOUTUBE_COUNTRIES) {
+    ingest(await getYoutubeTrending(country, POOL_ROWS_PER_FEED, env), youtubeRow);
   }
   for (const sort of COMPOSITE_SORTS) {
-    for (const item of await getCompositeChart(
-      sort,
-      COMPOSITE_TIMEFRAME,
-      POOL_ROWS_PER_FEED,
-      env,
-    )) {
-      const r = compositeRow(item);
-      if (r) rows.push(r);
-    }
+    ingest(
+      await getCompositeChart(sort, COMPOSITE_TIMEFRAME, POOL_ROWS_PER_FEED, env),
+      compositeRow,
+    );
+  }
+
+  if (attempted > 0 && failed === attempted) {
+    console.error(
+      `[viberate] SOURCE DEGRADED — all ${attempted} feed request(s) failed (HTTP/transport error) ` +
+        `while VIBERATE_API_KEY is set; pulled 0 candidates. Likely trial-key expiry, a rate limit, ` +
+        `or a tier request-size cap. The source went dark — this is not a silently-empty result.`,
+    );
   }
   return rows;
 }
