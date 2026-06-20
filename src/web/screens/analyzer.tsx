@@ -23,7 +23,11 @@ export function AnalyzerScreen() {
 
   const kpis = trpc.evals.kpis.useQuery({ start });
   const recent = trpc.evals.recentSurface.useQuery({ limit: 60 });
-  const versions = trpc.evals.versions.useQuery({ kind: "broad", limit: 20 });
+
+  // Counterfactual replay supports both ranker kinds. Refill versions (v7/v10/v11)
+  // carry the LAB-73 novelty-scaled familiarity penalty — selectable here too.
+  const [replayKind, setReplayKind] = useState<"refill" | "broad">("broad");
+  const versions = trpc.evals.versions.useQuery({ kind: replayKind, limit: 20 });
 
   const [targetVersion, setTargetVersion] = useState<number | null>(null);
   const counterfactual = trpc.evals.counterfactual.useQuery(
@@ -155,16 +159,29 @@ export function AnalyzerScreen() {
           <div className="col-span-6 panel p-5">
             <div className="cap text-ink-3 mb-2">counterfactual replay</div>
             <div className="text-ink-3 text-xs mb-3">
-              Re-rank historical surface events under a target broad version. Diffs come from the
-              FULL candidate pool stored at decision time (Constraint #2).
+              Re-rank historical surface events under a target {replayKind} version. Diffs come from
+              the FULL candidate pool stored at decision time (Constraint #2).
             </div>
             <div className="flex items-center gap-2 mb-3">
+              <select
+                value={replayKind}
+                onChange={(e) => {
+                  // Version ids differ across kinds — reset selection so a stale
+                  // broad id can never leak into a refill replay (or vice versa).
+                  setReplayKind(e.target.value as "refill" | "broad");
+                  setTargetVersion(null);
+                }}
+                className="bg-bg-3 border border-line-strong rounded-2 px-2 py-1 text-xs mono text-ink-1"
+              >
+                <option value="broad">broad</option>
+                <option value="refill">refill</option>
+              </select>
               <select
                 value={targetVersion ?? ""}
                 onChange={(e) => setTargetVersion(e.target.value ? Number(e.target.value) : null)}
                 className="bg-bg-3 border border-line-strong rounded-2 px-2 py-1 text-xs mono text-ink-1"
               >
-                <option value="">— select broad version —</option>
+                <option value="">— select {replayKind} version —</option>
                 {(versions.data ?? []).map((v) => (
                   <option key={v.id} value={v.id}>
                     v{v.id} • {new Date(v.trainedAt).toLocaleDateString()}
