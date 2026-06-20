@@ -211,6 +211,14 @@ export async function pullAndEnrichTrending(
   let similarPulled = 0;
   let similarArtistCappedCount = 0;
   let similarFamiliarSkippedCount = 0;
+  // Taste-seeded "similar" is an EXPLICIT, ORDERED allowlist wired here by id —
+  // NOT derived from the registry. Two reasons: (1) not every registered adapter
+  // supports a meaningful `mode:"similar"` pull (the trending sweep above is the
+  // uniform path; this subset is curated), and (2) the order is load-bearing
+  // (Last.fm before Spotify — see the deterministic cap-fill note above), whereas
+  // the registry registers Spotify first. A future similar-capable source must be
+  // added to this list; the `SourceAdapter` doc flags this as the one exception
+  // to the "register and nothing else in the pipeline changes" contract.
   const lastfm = adapters.find((a) => a.id === "lastfm");
   const spotify = adapters.find((a) => a.id === "spotify");
   const similarSources = [lastfm, spotify].filter((a): a is SourceAdapter => a !== undefined);
@@ -249,14 +257,18 @@ export async function pullAndEnrichTrending(
       }
       similarPulled += sourcePulled;
       // Keep the `pulledCount === sum(perSource.pulled)` invariant: fold this
-      // source's similar pulls into ITS OWN per-source entry (it already pushed
-      // one during the trending sweep) rather than adding a second row.
+      // source's similar pulls into ITS OWN per-source entry rather than adding a
+      // second row. The trending sweep above pushed an entry for every adapter and
+      // similarSources ⊆ adapters, so the entry always exists — fail loud if a
+      // future refactor ever decouples the loops, rather than silently dropping
+      // the count and breaking the invariant.
       const entry = perSource.find((p) => p.source === source.id);
-      if (entry) {
-        entry.pulled += sourcePulled;
-      } else {
-        perSource.push({ source: source.id, pulled: sourcePulled });
+      if (!entry) {
+        throw new Error(
+          `similar source "${source.id}" has no trending perSource entry — invariant broken`,
+        );
       }
+      entry.pulled += sourcePulled;
     }
     pulledCount += similarPulled;
   }
