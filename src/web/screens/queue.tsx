@@ -296,9 +296,13 @@ function CurrentTrack({
  * `<button>`, and nesting a button inside a rating button is invalid HTML.
  * Instead the rating `<button>` itself is the trigger: it carries
  * `aria-describedby` pointing at a sibling `role="tooltip"` span (revealed on
- * onMouseEnter/Leave + onFocus/onBlur, `aria-hidden` while collapsed). The tip
- * styling/positioning/tokens mirror `InfoTip` (Cyan Tape: bg-bg-3,
- * border-line-strong, the invisible-bridge trick, transition-opacity).
+ * onMouseEnter/Leave + onFocus/onBlur). The tip stays in the accessibility tree
+ * at all times and is hidden only visually (`opacity-0`), NOT via `aria-hidden`
+ * — a node referenced by `aria-describedby` that is `aria-hidden` is dropped
+ * from the a11y tree, so the description would not be announced when the button
+ * first takes focus (WAI-ARIA tooltip pattern). The tip styling/positioning/
+ * tokens mirror `InfoTip` (Cyan Tape: bg-bg-3, border-line-strong, the
+ * invisible-bridge trick, transition-opacity).
  */
 function RatingButton({
   onClick,
@@ -340,7 +344,6 @@ function RatingButton({
       <span
         id={tipId}
         role="tooltip"
-        aria-hidden={!open}
         className={clsx(
           "absolute left-1/2 bottom-full z-20 mb-2 -translate-x-1/2",
           // Invisible bridge across the mb-2 gap so sliding the cursor from the
@@ -350,8 +353,9 @@ function RatingButton({
           "w-52 rounded-2 border border-line-strong bg-bg-3 px-3 py-2",
           "text-left text-xs leading-snug text-ink-2 normal-case tracking-normal font-sans",
           "shadow-[var(--shadow-2)] transition-opacity duration-100",
-          // While collapsed the tip is invisible and inert (matches aria-hidden);
-          // while open it captures pointer events so the cursor can rest on it.
+          // Hidden only visually (opacity-0) so the node stays in the a11y tree
+          // and `aria-describedby` is announced on focus; pointer-events are off
+          // while collapsed and re-enabled when open so the cursor can rest on it.
           open ? "opacity-100" : "pointer-events-none opacity-0",
         )}
       >
