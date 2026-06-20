@@ -4,7 +4,10 @@ import type { PullParams, RawCandidate, SourceId } from "./types";
 /**
  * Common interface every source adapter implements. New sources land as
  * one file in this directory + a registration in the default registry —
- * nothing else in the pipeline changes.
+ * nothing else in the pipeline changes. (One deliberate exception: the
+ * taste-seeded "similar" pull in `pipeline-steps.ts` consumes an explicit,
+ * ORDERED allowlist of similar-capable sources, so a new source that supports
+ * a meaningful `mode:"similar"` pull must also be wired into that list.)
  *
  * Constraint #1: paid sources are optional; the system runs fully on the
  * free adapters when paid credentials are absent. Adapters MUST signal

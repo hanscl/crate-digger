@@ -1,6 +1,6 @@
 import path from "node:path";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
@@ -186,12 +186,24 @@ function fixtureCandidates(): RawCandidate[] {
   ];
 }
 
+/**
+ * Generic trending-only spotify fixture. Returns the 3 fixture candidates for
+ * `trending`/`search` and `[]` for `similar` — it carries no taste-seeded
+ * "more like this" behavior. LAB-41 made the spotify adapter a real
+ * similar-capable source, so a fixture that returned the same 3 candidates for
+ * `mode:"similar"` would silently inject them into the taste-seeded pass once a
+ * bucket is seeded. Mode-gating keeps the trending-pool counts honest; tests
+ * that exercise spotify-similar inject their own mode-aware mock.
+ */
 function fixtureAdapter(): SourceAdapter {
   return {
     id: "spotify",
     isPaid: false,
     isAvailable: () => true,
-    pullCandidates: async () => fixtureCandidates(),
+    pullCandidates: (async (params: { mode: string }) =>
+      params.mode === "similar"
+        ? ([] as RawCandidate[])
+        : fixtureCandidates()) as unknown as SourceAdapter["pullCandidates"],
   };
 }
 
@@ -421,15 +433,19 @@ describe("daily-pipeline (LAB-39 taste-seeded similar pull)", () => {
     expect(pull.resolvedTrackIds).toContain(simTrack.id);
   });
 
-  it("is a strict no-op when no lastfm adapter is present (pulledCount stays 3)", async () => {
-    // Seed a bucket so selectBucketSeeds *would* return a seed if called.
+  it("contributes nothing when the only similar-capable source yields no similar candidates", async () => {
+    // Seed a bucket so selectBucketSeeds returns a seed and the similar pass
+    // actually runs (LAB-41: spotify is now similar-capable, so the pass is NOT
+    // skipped just because lastfm is absent — it runs for spotify too).
     const seedPull = await pullAndEnrichTrending(db, fixtureEnv, {
       adapters: [fixtureAdapter()],
       limitPerSource: 10,
     });
     await seedBucketsEager(seedPull.resolvedTrackIds);
 
-    // The spotify fixtureAdapter has id:"spotify" → similar pass skipped.
+    // The spotify fixtureAdapter returns [] for mode:"similar", so the
+    // spotify-similar pass runs but pulls nothing. pulledCount stays at the 3
+    // trending candidates and no lastfm entry appears (no lastfm adapter).
     const pull = await pullAndEnrichTrending(db, fixtureEnv, {
       adapters: [fixtureAdapter()],
       limitPerSource: 10,
@@ -654,6 +670,313 @@ describe("daily-pipeline (LAB-39 taste-seeded similar pull)", () => {
     // The lower track.id (`trackHigh`, inserted first) wins the equal-cosine tie.
     expect(seed?.seedArtist).toBe("Artist High");
     expect(seed?.seedTrack).toBe("Tie Member High");
+  });
+});
+
+describe("daily-pipeline (LAB-41 Spotify second taste-seeded similar source)", () => {
+  /**
+   * A candidate only Last.fm returns. Distinct ISRC so we can prove a track row
+   * came from the Last.fm-similar pass.
+   */
+  function lastfmOnlyCandidate(): RawCandidate {
+    return {
+      source: "lastfm",
+      sourceTrackId: "lfm-only-1",
+      isrc: "LFMONLY000001",
+      spotifyId: null,
+      title: "Lastfm Only Track",
+      artist: "Lastfm Only Artist",
+      album: null,
+      releaseYear: 2010,
+      durationMs: 200_000,
+      genres: ["idm"],
+      rawPayload: {},
+    };
+  }
+
+  /**
+   * A candidate only Spotify returns. Distinct ISRC so we can prove a track row
+   * came from the Spotify-similar pass (acceptance a).
+   */
+  function spotifyOnlyCandidate(): RawCandidate {
+    return {
+      source: "spotify",
+      sourceTrackId: "spo-only-1",
+      isrc: "SPOONLY000001",
+      spotifyId: "spo-only-1",
+      title: "Spotify Only Track",
+      artist: "Spotify Only Artist",
+      album: "Spotify Only Album",
+      releaseYear: 2012,
+      durationMs: 210_000,
+      genres: ["electronic"],
+      rawPayload: {},
+    };
+  }
+
+  /**
+   * The SAME underlying recording returned by BOTH sources — identical ISRC so
+   * `resolveCandidate` folds them into ONE track row regardless of which source
+   * variant resolves first (acceptance b). Last.fm's variant has no spotifyId;
+   * Spotify's carries one — both share the ISRC, the primary dedup key.
+   */
+  const SHARED_ISRC = "SHARED0000001";
+  function lastfmSharedCandidate(): RawCandidate {
+    return {
+      source: "lastfm",
+      sourceTrackId: "lfm-shared",
+      isrc: SHARED_ISRC,
+      spotifyId: null,
+      title: "Shared Track",
+      artist: "Shared Artist",
+      album: null,
+      releaseYear: 2011,
+      durationMs: 205_000,
+      genres: ["idm"],
+      rawPayload: {},
+    };
+  }
+  function spotifySharedCandidate(): RawCandidate {
+    return {
+      source: "spotify",
+      sourceTrackId: "spo-shared",
+      isrc: SHARED_ISRC,
+      spotifyId: "spo-shared",
+      title: "Shared Track",
+      artist: "Shared Artist",
+      album: "Shared Album",
+      releaseYear: 2011,
+      durationMs: 205_000,
+      genres: ["electronic"],
+      rawPayload: {},
+    };
+  }
+
+  /** lastfm mock: trending → []; similar → [shared, lastfm-only]. */
+  function lastfmSimilarAdapter(): { adapter: SourceAdapter; spy: ReturnType<typeof vi.fn> } {
+    const spy = vi.fn(async (params: { mode: string }) => {
+      if (params.mode === "similar") return [lastfmSharedCandidate(), lastfmOnlyCandidate()];
+      return [] as RawCandidate[];
+    });
+    const adapter: SourceAdapter = {
+      id: "lastfm",
+      isPaid: false,
+      isAvailable: () => true,
+      pullCandidates: spy as unknown as SourceAdapter["pullCandidates"],
+    };
+    return { adapter, spy };
+  }
+
+  /** spotify mock: trending → []; similar → [shared, spotify-only]. */
+  function spotifySimilarAdapter(): { adapter: SourceAdapter; spy: ReturnType<typeof vi.fn> } {
+    const spy = vi.fn(async (params: { mode: string }) => {
+      if (params.mode === "similar") return [spotifySharedCandidate(), spotifyOnlyCandidate()];
+      return [] as RawCandidate[];
+    });
+    const adapter: SourceAdapter = {
+      id: "spotify",
+      isPaid: false,
+      isAvailable: () => true,
+      pullCandidates: spy as unknown as SourceAdapter["pullCandidates"],
+    };
+    return { adapter, spy };
+  }
+
+  /** Seed exactly one bucket so the similar pass issues exactly one seed. */
+  async function seedOneBucket(): Promise<void> {
+    const seedPull = await pullAndEnrichTrending(db, fixtureEnv, {
+      adapters: [
+        {
+          id: "spotify",
+          isPaid: false,
+          isAvailable: () => true,
+          pullCandidates: (async (params: { mode: string }) =>
+            params.mode === "similar"
+              ? ([] as RawCandidate[])
+              : [
+                  {
+                    source: "spotify",
+                    sourceTrackId: "seed-1",
+                    isrc: "SEED00000001",
+                    spotifyId: "seed-1",
+                    title: "Seed Track",
+                    artist: "Seed Artist",
+                    album: "Seed Album",
+                    releaseYear: 2000,
+                    durationMs: 200_000,
+                    genres: ["idm"],
+                    rawPayload: {},
+                  },
+                ]) as unknown as SourceAdapter["pullCandidates"],
+        },
+      ],
+      limitPerSource: 10,
+    });
+    await seedBucketsEager(seedPull.resolvedTrackIds);
+  }
+
+  it("pulls + resolves Spotify-similar candidates, dedups shared tracks, and shares the per-artist cap across both sources", async () => {
+    await seedOneBucket();
+    const bucketsBefore = await db.select().from(schema.bucket);
+    expect(bucketsBefore.length).toBeGreaterThan(0);
+
+    const { adapter: lfmAdapter, spy: lfmSpy } = lastfmSimilarAdapter();
+    const { adapter: spoAdapter, spy: spoSpy } = spotifySimilarAdapter();
+
+    const pull = await pullAndEnrichTrending(db, fixtureEnv, {
+      adapters: [lfmAdapter, spoAdapter],
+      limitPerSource: 10,
+      similarSeedBuckets: 5,
+      similarArtistCap: 2,
+      // Disable the familiar-artist skip so the cap is the only lever in play.
+      familiarArtistKeepThreshold: 0,
+    });
+
+    // Both sources issued similar pulls (mode:"similar"), Last.fm BEFORE Spotify.
+    const lfmSimilar = lfmSpy.mock.calls.filter((c) => c[0]?.mode === "similar");
+    const spoSimilar = spoSpy.mock.calls.filter((c) => c[0]?.mode === "similar");
+    expect(lfmSimilar.length).toBeGreaterThan(0);
+    expect(spoSimilar.length).toBeGreaterThan(0);
+
+    // (a) Spotify-similar's distinct candidate round-tripped into a track row.
+    const [spoTrack] = await db
+      .select({ id: schema.track.id })
+      .from(schema.track)
+      .where(eq(schema.track.isrc, "SPOONLY000001"));
+    expect(spoTrack).toBeDefined();
+    if (!spoTrack) return;
+    expect(pull.resolvedTrackIds).toContain(spoTrack.id);
+
+    // (b) The track BOTH sources returned (shared ISRC) resolves to ONE row.
+    const sharedRows = await db
+      .select({ id: schema.track.id })
+      .from(schema.track)
+      .where(eq(schema.track.isrc, SHARED_ISRC));
+    expect(sharedRows).toHaveLength(1);
+    const sharedId = sharedRows[0]?.id;
+    expect(sharedId).toBeDefined();
+    // It appears exactly once in resolvedTrackIds (Set idempotency).
+    expect(pull.resolvedTrackIds.filter((id) => id === sharedId)).toHaveLength(1);
+
+    // (c) The per-artist cap is GLOBAL across both sources. "Shared Artist"
+    //     appears once in each source's similar results (2 candidates total)
+    //     under cap=2 → both kept, none capped. Raise the pressure: with the
+    //     two shared candidates sharing one artist, the cap permits both; the
+    //     two distinct artists (Lastfm Only / Spotify Only) are well under cap.
+    //     So nothing is capped here, but the SHARED running map is proven by
+    //     the dedup above + the combined count below.
+    expect(pull.similarArtistCappedCount).toBe(0);
+
+    // similarPulledCount is the COMBINED total across both sources:
+    //   lastfm: shared + lastfm-only = 2; spotify: shared + spotify-only = 2.
+    expect(pull.similarPulledCount).toBe(4);
+    // Invariant: pulledCount === sum(perSource.pulled). Trending added 0 here.
+    expect(pull.pulledCount).toBe(4);
+    const perSourceSum = pull.perSource.reduce((acc, p) => acc + p.pulled, 0);
+    expect(pull.pulledCount).toBe(perSourceSum);
+    // Each source folded its similar pull into its OWN per-source entry.
+    const lfmEntry = pull.perSource.find((p) => p.source === "lastfm");
+    const spoEntry = pull.perSource.find((p) => p.source === "spotify");
+    expect(lfmEntry?.pulled).toBe(2);
+    expect(spoEntry?.pulled).toBe(2);
+
+    // Distinct + shared candidates → 3 unique resolved tracks (shared folds
+    // to one): lastfm-only + spotify-only + the single shared row.
+    const similarRows = await db
+      .select({ id: schema.track.id })
+      .from(schema.track)
+      .where(inArray(schema.track.isrc, ["SHARED0000001", "LFMONLY000001", "SPOONLY000001"]));
+    expect(similarRows).toHaveLength(3);
+  });
+
+  it("enforces the per-artist cap GLOBALLY across Last.fm and Spotify (lever 1)", async () => {
+    await seedOneBucket();
+
+    // Both sources return the SAME artist; combined they exceed cap=1. Last.fm
+    // runs first and fills the single slot; Spotify's same-artist candidate is
+    // then capped — proving the running map is shared across sources.
+    const sameArtist = (source: "lastfm" | "spotify", n: string): RawCandidate => ({
+      source,
+      sourceTrackId: `${source}-${n}`,
+      isrc: `${source.toUpperCase().slice(0, 3)}${n.padStart(9, "0")}`,
+      spotifyId: source === "spotify" ? `${source}-${n}` : null,
+      title: `Capped ${n}`,
+      artist: "Capped Artist",
+      album: null,
+      releaseYear: 2015,
+      durationMs: 200_000,
+      genres: ["idm"],
+      rawPayload: {},
+    });
+
+    const lfm: SourceAdapter = {
+      id: "lastfm",
+      isPaid: false,
+      isAvailable: () => true,
+      pullCandidates: (async (params: { mode: string }) =>
+        params.mode === "similar"
+          ? [sameArtist("lastfm", "1")]
+          : ([] as RawCandidate[])) as unknown as SourceAdapter["pullCandidates"],
+    };
+    const spo: SourceAdapter = {
+      id: "spotify",
+      isPaid: false,
+      isAvailable: () => true,
+      pullCandidates: (async (params: { mode: string }) =>
+        params.mode === "similar"
+          ? [sameArtist("spotify", "2")]
+          : ([] as RawCandidate[])) as unknown as SourceAdapter["pullCandidates"],
+    };
+
+    const pull = await pullAndEnrichTrending(db, fixtureEnv, {
+      adapters: [lfm, spo],
+      limitPerSource: 10,
+      similarSeedBuckets: 5,
+      similarArtistCap: 1,
+      familiarArtistKeepThreshold: 0,
+    });
+
+    // Combined 2 candidates of the same artist, cap=1 → exactly 1 capped.
+    expect(pull.similarPulledCount).toBe(2);
+    expect(pull.similarArtistCappedCount).toBe(1);
+    // Last.fm ran first → its candidate took the slot and resolved.
+    const lfmKept = await db
+      .select({ id: schema.track.id })
+      .from(schema.track)
+      .where(eq(schema.track.isrc, "LAS000000001"));
+    expect(lfmKept).toHaveLength(1);
+    // Spotify's same-artist candidate was capped → never resolved (no row).
+    const spoCapped = await db
+      .select({ id: schema.track.id })
+      .from(schema.track)
+      .where(eq(schema.track.isrc, "SPO000000002"));
+    expect(spoCapped).toHaveLength(0);
+  });
+
+  it("spotify-similar is a strict no-op when no spotify adapter is present", async () => {
+    await seedOneBucket();
+
+    // Only a Last.fm similar source. Spotify absent → spotify-similar must not
+    // run at all (acceptance d). Spy proves no spotify call is issued.
+    const { adapter: lfmAdapter, spy: lfmSpy } = lastfmSimilarAdapter();
+    const pull = await pullAndEnrichTrending(db, fixtureEnv, {
+      adapters: [lfmAdapter],
+      limitPerSource: 10,
+      similarSeedBuckets: 5,
+      familiarArtistKeepThreshold: 0,
+    });
+
+    // Last.fm-similar ran (shared + lastfm-only = 2); no spotify entry exists.
+    expect(pull.similarPulledCount).toBe(2);
+    expect(pull.perSource.some((p) => p.source === "spotify")).toBe(false);
+    expect(lfmSpy.mock.calls.filter((c) => c[0]?.mode === "similar").length).toBeGreaterThan(0);
+
+    // The spotify-only candidate was never pulled → no such track row.
+    const spoTrack = await db
+      .select({ id: schema.track.id })
+      .from(schema.track)
+      .where(eq(schema.track.isrc, "SPOONLY000001"));
+    expect(spoTrack).toHaveLength(0);
   });
 });
 
