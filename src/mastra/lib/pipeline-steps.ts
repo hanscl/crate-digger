@@ -50,7 +50,12 @@ export type PullEnrichSummary = {
   genresUpdated: number;
   mbGenresUpdated: number;
   discogsGenresUpdated: number;
-  /** Candidates pulled by the taste-seeded Last.fm `getSimilar` pass (LAB-39). */
+  /**
+   * Candidates pulled by the taste-seeded similar pass — COMBINED across all
+   * similar-capable sources (Last.fm `getSimilar` + Spotify `artist:X track:Y`
+   * search, LAB-39/LAB-41). Counts what each source's API returned before the
+   * per-artist throttle, so `pulledCount === sum(perSource.pulled)` holds.
+   */
   similarPulledCount: number;
   /** LAB-73 — similar-pull candidates dropped by the per-artist cap (lever 1). */
   similarArtistCappedCount: number;
@@ -89,14 +94,23 @@ const DEFAULT_FAMILIAR_ARTIST_KEEP_THRESHOLD = 3;
  * Adapter failures degrade silently (constraint #1) — `pullCandidates`
  * already returns `[]` rather than throwing.
  *
- * LAB-39 — taste-seeded similar pull: after the generic trending sweep, if a
- * Last.fm adapter is present we pick a centroid-nearest exemplar from each of
- * the top-N buckets (by member count) and call Last.fm `track.getSimilar`
- * seeded on it. Those candidates merge into the SAME pool — deduped, resolved,
- * and enriched identically — so refill draws from taste-relevant tracks rather
- * than only generic trending. Per-seed pulls are issued sequentially to
- * respect Last.fm's rate limits. Last.fm-only first cut; the pass is a strict
- * no-op when no `lastfm` adapter is available.
+ * LAB-39 — taste-seeded similar pull: after the generic trending sweep we pick
+ * a centroid-nearest exemplar from each of the top-N buckets (by member count)
+ * and call each similar-capable adapter's "more like this" seeded on it. Those
+ * candidates merge into the SAME pool — deduped, resolved, and enriched
+ * identically — so refill draws from taste-relevant tracks rather than only
+ * generic trending. Per-seed pulls are issued sequentially to respect each
+ * source's rate limits.
+ *
+ * LAB-41 — Spotify joins Last.fm as a SECOND taste-seeded similar source
+ * (Spotify's `artist:X track:Y` search; `/recommendations` is dead). Both
+ * sources are seeded from the SAME `selectBucketSeeds` set and SHARE one
+ * `keepCounts` + `artistRunCounts` pair, so the per-run per-artist cap (LAB-73
+ * lever 1) is a true GLOBAL across both sources, not per-source. Each source's
+ * pull is a strict no-op when its adapter is absent (Constraint #1) — the
+ * system still runs fully on Last.fm alone. Spotify-similar candidates route
+ * through the SAME `resolveInto`, so a track both sources return resolves to
+ * one canonical `track` row (Set idempotency in `resolveInto`); no extra dedup.
  */
 export async function pullAndEnrichTrending(
   db: Database,
@@ -170,60 +184,93 @@ export async function pullAndEnrichTrending(
     }
   }
 
-  // LAB-39 — taste-seeded similar pull. Strict no-op unless a Last.fm adapter
-  // is available (Last.fm-only first cut). Seeds are the centroid-nearest
-  // exemplar of each top-N bucket; per-seed `getSimilar` calls are issued
-  // sequentially to respect Last.fm rate limits — NEVER Promise.all.
-  // LAB-73 — the per-artist throttle (lever 1) is applied to each seed's
-  // results BEFORE resolution (a dropped candidate never resolves), with the
-  // per-artist counts accumulated ACROSS seeds so two seeds can't smuggle the
-  // same artist past the cap. `similarPulled` still counts what the API
-  // returned (so `pulledCount === sum(perSource.pulled)` holds); the throttle's
-  // effect is reported separately as capped/skipped — no silent truncation.
+  // LAB-39/LAB-41 — taste-seeded similar pull, run for EACH available
+  // similar-capable source (Last.fm + Spotify). Strict no-op for a source
+  // whose adapter isn't present (Constraint #1: the system still runs fully on
+  // Last.fm alone). Seeds are the centroid-nearest exemplar of each top-N
+  // bucket; per-seed pulls are issued sequentially to respect rate limits —
+  // NEVER Promise.all.
+  //
+  // The seeds and the LAB-73 throttle state (`keepCounts` + `artistRunCounts`)
+  // are computed ONCE and SHARED across both sources, so the per-run per-artist
+  // cap (lever 1) is a true GLOBAL: Last.fm and Spotify together can't smuggle
+  // more than `cap` tracks of the same artist past the throttle. The throttle
+  // is applied to each seed's results BEFORE resolution (a dropped candidate
+  // never resolves). `similarPulled` still counts what each API returned (so
+  // `pulledCount === sum(perSource.pulled)` holds); the throttle's effect is
+  // reported separately as capped/skipped — no silent truncation.
+  //
+  // Ordering: Last.fm-similar runs FIRST, then Spotify-similar. The shared
+  // artist cap fills deterministically in that order — given a fixed seed set,
+  // which source's candidate occupies the last cap slot for an artist is
+  // reproducible. Spotify-similar candidates route through the SAME
+  // `resolveInto` AFTER Last.fm-similar, so a track BOTH sources return (or that
+  // already exists from trending / Last.fm-similar) resolves to one canonical
+  // `track` row — `resolvedIds` Set idempotency + `r.created === false` mean no
+  // duplicate is created. This is the LAB-41 dedup; no extra dedup code needed.
   let similarPulled = 0;
   let similarArtistCappedCount = 0;
   let similarFamiliarSkippedCount = 0;
+  // Taste-seeded "similar" is an EXPLICIT, ORDERED allowlist wired here by id —
+  // NOT derived from the registry. Two reasons: (1) not every registered adapter
+  // supports a meaningful `mode:"similar"` pull (the trending sweep above is the
+  // uniform path; this subset is curated), and (2) the order is load-bearing
+  // (Last.fm before Spotify — see the deterministic cap-fill note above), whereas
+  // the registry registers Spotify first. A future similar-capable source must be
+  // added to this list; the `SourceAdapter` doc flags this as the one exception
+  // to the "register and nothing else in the pipeline changes" contract.
   const lastfm = adapters.find((a) => a.id === "lastfm");
-  if (lastfm) {
+  const spotify = adapters.find((a) => a.id === "spotify");
+  const similarSources = [lastfm, spotify].filter((a): a is SourceAdapter => a !== undefined);
+  if (similarSources.length > 0) {
     const seeds = await selectBucketSeeds(db, { maxBuckets: seedBuckets });
     // Keep-counts per artist, loaded once. Skipped entirely when the threshold
     // is 0 (the skip is disabled) so we don't pay for the query.
     const keepCounts =
       familiarKeepThreshold > 0 ? await loadKeepCountsByArtist(db) : new Map<string, number>();
+    // Shared across BOTH sources so the per-artist cap is a true global.
     const artistRunCounts = new Map<string, number>();
-    for (const seed of seeds) {
-      const cands = await lastfm.pullCandidates(
-        {
-          mode: "similar",
-          seedArtist: seed.seedArtist,
-          seedTrack: seed.seedTrack,
-          limit: similarLimit,
-        },
-        env,
-      );
-      similarPulled += cands.length;
-      const throttled = throttleSimilarByArtist(cands, {
-        cap: similarArtistCap,
-        keepThreshold: familiarKeepThreshold,
-        keepCounts,
-        running: artistRunCounts,
-      });
-      similarArtistCappedCount += throttled.cappedCount;
-      similarFamiliarSkippedCount += throttled.skippedCount;
-      for (const c of throttled.kept) {
-        await resolveInto(c);
+    for (const source of similarSources) {
+      let sourcePulled = 0;
+      for (const seed of seeds) {
+        const cands = await source.pullCandidates(
+          {
+            mode: "similar",
+            seedArtist: seed.seedArtist,
+            seedTrack: seed.seedTrack,
+            limit: similarLimit,
+          },
+          env,
+        );
+        sourcePulled += cands.length;
+        const throttled = throttleSimilarByArtist(cands, {
+          cap: similarArtistCap,
+          keepThreshold: familiarKeepThreshold,
+          keepCounts,
+          running: artistRunCounts,
+        });
+        similarArtistCappedCount += throttled.cappedCount;
+        similarFamiliarSkippedCount += throttled.skippedCount;
+        for (const c of throttled.kept) {
+          await resolveInto(c);
+        }
       }
+      similarPulled += sourcePulled;
+      // Keep the `pulledCount === sum(perSource.pulled)` invariant: fold this
+      // source's similar pulls into ITS OWN per-source entry rather than adding a
+      // second row. The trending sweep above pushed an entry for every adapter and
+      // similarSources ⊆ adapters, so the entry always exists — fail loud if a
+      // future refactor ever decouples the loops, rather than silently dropping
+      // the count and breaking the invariant.
+      const entry = perSource.find((p) => p.source === source.id);
+      if (!entry) {
+        throw new Error(
+          `similar source "${source.id}" has no trending perSource entry — invariant broken`,
+        );
+      }
+      entry.pulled += sourcePulled;
     }
     pulledCount += similarPulled;
-    // Keep the `pulledCount === sum(perSource.pulled)` invariant: fold the
-    // similar pulls into Last.fm's existing per-source entry (it already
-    // pushed one during the trending sweep) rather than adding a second row.
-    const lastfmEntry = perSource.find((p) => p.source === "lastfm");
-    if (lastfmEntry) {
-      lastfmEntry.pulled += similarPulled;
-    } else {
-      perSource.push({ source: "lastfm", pulled: similarPulled });
-    }
   }
 
   const ids = [...resolvedIds];
