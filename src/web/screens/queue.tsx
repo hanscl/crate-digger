@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useId, useState, type CSSProperties, type ReactNode } from "react";
 import { clsx } from "clsx";
 import { trpc } from "../trpc";
 import type { RouterOutputs } from "../types";
@@ -215,41 +215,40 @@ function CurrentTrack({
           )}
 
           <div className="flex gap-3">
-            <button
-              type="button"
+            <RatingButton
               disabled={submitting}
               onClick={() => onRate("keep")}
               className="btn primary"
               style={{ background: "var(--keep)", borderColor: "var(--keep)" }}
+              tip="Keep it — adds the track to its bucket and teaches the model to surface more like it."
             >
               <kbd className="kbd">J</kbd> keep
-            </button>
-            <button
-              type="button"
+            </RatingButton>
+            <RatingButton
               disabled={submitting}
               onClick={() => onRate("defer")}
               className="btn"
+              tip="Defer — skip for now; it can re-surface later. No taste signal recorded."
             >
               <kbd className="kbd">K</kbd> defer
-            </button>
-            <button
-              type="button"
+            </RatingButton>
+            <RatingButton
               disabled={submitting}
               onClick={() => onRate("dislike")}
               className="btn"
               style={{ borderColor: "var(--pass)", color: "var(--pass)" }}
+              tip="Dislike — soft-penalizes similar tracks going forward; never a hard filter."
             >
               <kbd className="kbd">L</kbd> dislike
-            </button>
-            <button
-              type="button"
+            </RatingButton>
+            <RatingButton
               disabled={submitting}
               onClick={() => onRate("neutral")}
               className="btn ghost"
-              title="seen it, indifferent — never re-surfaces, no taste signal"
+              tip="Seen it, indifferent — settles the track so it never re-surfaces, but records no taste signal."
             >
               <kbd className="kbd">N</kbd> neutral
-            </button>
+            </RatingButton>
           </div>
         </div>
 
@@ -286,6 +285,79 @@ function CurrentTrack({
 
       <ScoreRow data={data} />
     </div>
+  );
+}
+
+/**
+ * RatingButton — a rating control that doubles as an accessible tooltip
+ * trigger, so every key (J/K/L/N) self-describes on hover AND keyboard focus.
+ *
+ * We can't reuse the `InfoTip` primitive here because it renders its own
+ * `<button>`, and nesting a button inside a rating button is invalid HTML.
+ * Instead the rating `<button>` itself is the trigger: it carries
+ * `aria-describedby` pointing at a sibling `role="tooltip"` span (revealed on
+ * onMouseEnter/Leave + onFocus/onBlur, `aria-hidden` while collapsed). The tip
+ * styling/positioning/tokens mirror `InfoTip` (Cyan Tape: bg-bg-3,
+ * border-line-strong, the invisible-bridge trick, transition-opacity).
+ */
+function RatingButton({
+  onClick,
+  disabled,
+  className,
+  style,
+  tip,
+  children,
+}: {
+  onClick: () => void;
+  disabled: boolean;
+  className: string;
+  style?: CSSProperties;
+  tip: string;
+  children: ReactNode;
+}) {
+  const id = useId();
+  const tipId = `${id}-tip`;
+  const [open, setOpen] = useState(false);
+
+  return (
+    <span
+      className="relative inline-flex"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onClick}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        aria-describedby={tipId}
+        className={className}
+        style={style}
+      >
+        {children}
+      </button>
+      <span
+        id={tipId}
+        role="tooltip"
+        aria-hidden={!open}
+        className={clsx(
+          "absolute left-1/2 bottom-full z-20 mb-2 -translate-x-1/2",
+          // Invisible bridge across the mb-2 gap so sliding the cursor from the
+          // trigger onto the tip never crosses a dead-zone that would fire the
+          // wrapper's onMouseLeave and close the tip mid-transit.
+          "before:absolute before:inset-x-0 before:top-full before:h-2 before:content-['']",
+          "w-52 rounded-2 border border-line-strong bg-bg-3 px-3 py-2",
+          "text-left text-xs leading-snug text-ink-2 normal-case tracking-normal font-sans",
+          "shadow-[var(--shadow-2)] transition-opacity duration-100",
+          // While collapsed the tip is invisible and inert (matches aria-hidden);
+          // while open it captures pointer events so the cursor can rest on it.
+          open ? "opacity-100" : "pointer-events-none opacity-0",
+        )}
+      >
+        {tip}
+      </span>
+    </span>
   );
 }
 
