@@ -188,12 +188,14 @@ function fixtureCandidates(): RawCandidate[] {
 
 /**
  * Generic trending-only spotify fixture. Returns the 3 fixture candidates for
- * `trending`/`search` and `[]` for `similar` — it carries no taste-seeded
- * "more like this" behavior. LAB-41 made the spotify adapter a real
- * similar-capable source, so a fixture that returned the same 3 candidates for
- * `mode:"similar"` would silently inject them into the taste-seeded pass once a
- * bucket is seeded. Mode-gating keeps the trending-pool counts honest; tests
- * that exercise spotify-similar inject their own mode-aware mock.
+ * `trending`/`search` and `[]` for `similar`/`explore` — it carries no
+ * taste-seeded "more like this" or new-direction behavior. LAB-41 made the
+ * spotify adapter a real similar-capable source and LAB-40 a real
+ * explore-capable one, so a fixture that returned the same 3 candidates for
+ * `mode:"similar"`/`mode:"explore"` would silently inject them into the
+ * taste-seeded / explore passes once a bucket is seeded. Mode-gating keeps the
+ * trending-pool counts honest; tests that exercise spotify-similar or
+ * spotify-explore inject their own mode-aware mock.
  */
 function fixtureAdapter(): SourceAdapter {
   return {
@@ -201,7 +203,7 @@ function fixtureAdapter(): SourceAdapter {
     isPaid: false,
     isAvailable: () => true,
     pullCandidates: (async (params: { mode: string }) =>
-      params.mode === "similar"
+      params.mode === "similar" || params.mode === "explore"
         ? ([] as RawCandidate[])
         : fixtureCandidates()) as unknown as SourceAdapter["pullCandidates"],
   };
@@ -467,7 +469,10 @@ describe("daily-pipeline (LAB-39 taste-seeded similar pull)", () => {
       isPaid: false,
       isAvailable: () => true,
       pullCandidates: (async (params: { mode: string; limit: number }) => {
-        seenLimits.push(params.limit);
+        // Record only the trending pull's limit; the LAB-40 explore pass also
+        // calls this adapter (mode:"explore") and would otherwise pollute the
+        // assertion with its own limit.
+        if (params.mode === "trending") seenLimits.push(params.limit);
         return [] as RawCandidate[];
       }) as unknown as SourceAdapter["pullCandidates"],
     };
@@ -1092,5 +1097,104 @@ describe("surfaceStep — LAB-92 breakout projection onto candidates", () => {
     expect(bScore).toBeGreaterThan(aScore);
     expect(byId.get(aId)?.subScores?.breakoutPenalty).toBeCloseTo(0.15 * 0.1, 6);
     expect(byId.get(bId)?.subScores?.breakoutPenalty).toBe(0);
+  });
+});
+
+describe("daily-pipeline (LAB-40 explore: new-direction pulls outside bucket genres)", () => {
+  it("selects genres outside the user's buckets and surfaces an out-of-bucket track via broad", async () => {
+    // 1. Seed a ROCK bucket — the user's only represented genre. Explore is
+    //    disabled during seeding so the seed pool is exactly the rock track.
+    const rockSeed: RawCandidate = {
+      source: "spotify",
+      sourceTrackId: "rock-1",
+      isrc: "ROCK00000001",
+      spotifyId: "rock-1",
+      title: "Rock Seed",
+      artist: "Rock Band",
+      album: "Rock LP",
+      releaseYear: 2001,
+      durationMs: 200_000,
+      genres: ["rock"],
+      rawPayload: {},
+    };
+    const seedPull = await pullAndEnrichTrending(db, fixtureEnv, {
+      adapters: [
+        {
+          id: "spotify",
+          isPaid: false,
+          isAvailable: () => true,
+          pullCandidates: (async (p: { mode: string }) =>
+            p.mode === "trending"
+              ? [rockSeed]
+              : ([] as RawCandidate[])) as unknown as SourceAdapter["pullCandidates"],
+        },
+      ],
+      limitPerSource: 10,
+      exploreLimitPerSource: 0,
+    });
+    await seedBucketsEager(seedPull.resolvedTrackIds);
+    expect((await db.select().from(schema.bucket)).length).toBeGreaterThan(0);
+
+    // 2. Explore run — adapter returns a JAZZ track (genre absent from every
+    //    bucket) for mode:"explore", nothing for trending/similar. The genre
+    //    batch the pipeline passes must EXCLUDE the represented "rock".
+    const jazzCand: RawCandidate = {
+      source: "lastfm",
+      sourceTrackId: "jazz-1",
+      isrc: "JAZZ00000001",
+      spotifyId: null,
+      title: "Blue In Green",
+      artist: "Jazz Trio",
+      album: null,
+      releaseYear: 2024,
+      durationMs: 210_000,
+      genres: ["jazz"],
+      rawPayload: {},
+    };
+    const exploreSpy = vi.fn(async (p: { mode: string; genres?: string[] }) =>
+      p.mode === "explore" ? [jazzCand] : ([] as RawCandidate[]),
+    );
+    const exploreAdapter: SourceAdapter = {
+      id: "lastfm",
+      isPaid: false,
+      isAvailable: () => true,
+      pullCandidates: exploreSpy as unknown as SourceAdapter["pullCandidates"],
+    };
+
+    const pull = await pullAndEnrichTrending(db, fixtureEnv, {
+      adapters: [exploreAdapter],
+      exploreLimitPerSource: 5,
+    });
+
+    // The explore pass ran with a non-empty genre batch that excludes the
+    // represented "rock" — i.e. it reached OUTSIDE the user's current taste.
+    const exploreCalls = exploreSpy.mock.calls.filter((c) => c[0]?.mode === "explore");
+    expect(exploreCalls.length).toBeGreaterThan(0);
+    const passedGenres = (exploreCalls[0]![0] as { genres: string[] }).genres;
+    expect(passedGenres.length).toBeGreaterThan(0);
+    expect(passedGenres).not.toContain("rock");
+
+    // The jazz candidate round-tripped into a track row and is accounted for.
+    expect(pull.explorePulledCount).toBe(1);
+    const [jazzTrack] = await db
+      .select({ id: schema.track.id })
+      .from(schema.track)
+      .where(eq(schema.track.isrc, "JAZZ00000001"));
+    expect(jazzTrack).toBeDefined();
+    if (!jazzTrack) return;
+    expect(pull.resolvedTrackIds).toContain(jazzTrack.id);
+
+    // 3. Flag (builds + persists the embedding) then surface. The broad phase
+    //    surfaces the jazz track even though its genre is absent from every
+    //    bucket — Constraint #4: genres are scored, never hard-filtered.
+    await bucketAndName(db, fixtureEnv, pull.resolvedTrackIds);
+    const surface = await surfaceStep(db, pull.resolvedTrackIds);
+    expect(surface.surfacedCount).toBeGreaterThan(0);
+    expect(surface.broadCount).toBeGreaterThan(0);
+    const events = await db
+      .select()
+      .from(schema.surfaceEvent)
+      .where(eq(schema.surfaceEvent.trackId, jazzTrack.id));
+    expect(events.length).toBeGreaterThan(0);
   });
 });

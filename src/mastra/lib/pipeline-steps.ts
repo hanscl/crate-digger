@@ -11,7 +11,7 @@ import {
 } from "@/db/schema";
 import { flagCandidateBucket } from "@/lib/bucketing/assign";
 import { evaluateBucketRecommendations } from "@/lib/bucketing/recommendations";
-import { cosine } from "@/lib/embedding";
+import { cosine, genreSlotsFromVector } from "@/lib/embedding";
 import { enrichGenresFromDiscogs } from "@/lib/enrichment/discogs";
 import { selectBucketSeeds } from "@/lib/ingestion/exemplar";
 import { resolveCandidate, resolveSpotifyId } from "@/lib/enrichment/resolve";
@@ -25,6 +25,7 @@ import {
   type SourceId,
   createDefaultRegistry,
 } from "@/lib/ingestion";
+import { EXPLORE_GENRES_PER_RUN, selectExploreGenres } from "@/lib/ingestion/explore";
 import { artistKey, type Candidate } from "@/lib/ranking/types";
 import { runSurfacingBatch } from "@/lib/surfacing/pipeline";
 import type { Env } from "@/server/env";
@@ -61,6 +62,13 @@ export type PullEnrichSummary = {
   similarArtistCappedCount: number;
   /** LAB-73 — similar-pull candidates skipped because the artist already has ≥N keeps (lever 1). */
   similarFamiliarSkippedCount: number;
+  /**
+   * LAB-40 — candidates pulled by the explore pass (new-direction tracks for
+   * genres absent from the user's buckets), combined across explore-capable
+   * sources. Folds into `perSource` like the similar pull, so the
+   * `pulledCount === sum(perSource.pulled)` invariant still holds.
+   */
+  explorePulledCount: number;
 };
 
 // LAB-51 — fallback per-run pull throttle, used only when app_config has no
@@ -76,6 +84,9 @@ const DEFAULT_SIMILAR_SEED_BUCKETS = 5;
 // app_config has no row (tests) and no explicit option is passed.
 const DEFAULT_SIMILAR_ARTIST_CAP = 2;
 const DEFAULT_FAMILIAR_ARTIST_KEEP_THRESHOLD = 3;
+// LAB-40 — explore-phase per-source cap fallback, used only when app_config has
+// no row (tests) and no explicit option is passed. Mirrors the schema default.
+const DEFAULT_EXPLORE_LIMIT_PER_SOURCE = 2;
 
 /**
  * Step 1: pull `mode: "trending"` from every available adapter, resolve each
@@ -126,6 +137,8 @@ export async function pullAndEnrichTrending(
     similarArtistCap?: number;
     /** LAB-73 — skip similar-pulled artists with ≥N keeps (lever 1); 0 disables. */
     familiarArtistKeepThreshold?: number;
+    /** LAB-40 — per-source cap on the explore pull; 0 disables the explore phase. */
+    exploreLimitPerSource?: number;
   } = {},
 ): Promise<PullEnrichSummary> {
   // LAB-51 — per-run throttle. Precedence: explicit option > app_config > the
@@ -153,6 +166,14 @@ export async function pullAndEnrichTrending(
     options.familiarArtistKeepThreshold ??
     cfg.familiarArtistKeepThreshold ??
     DEFAULT_FAMILIAR_ARTIST_KEEP_THRESHOLD;
+  // LAB-40 — explore phase: per-source cap (same precedence chain) + the
+  // persisted rotation cursor over the genre vocabulary.
+  const exploreLimit =
+    options.exploreLimitPerSource ??
+    options.limitPerSource ??
+    cfg.exploreLimitPerSource ??
+    DEFAULT_EXPLORE_LIMIT_PER_SOURCE;
+  const exploreCursor = cfg.exploreCursor ?? 0;
   const adapters = options.adapters ?? createDefaultRegistry().available(env);
 
   const perSource: { source: SourceId; pulled: number }[] = [];
@@ -273,6 +294,58 @@ export async function pullAndEnrichTrending(
     pulledCount += similarPulled;
   }
 
+  // LAB-40 — explore pass: pull new-direction tracks for genres OUTSIDE the
+  // user's current buckets (the explore counterpart to the taste-seeded similar
+  // exploit pull). The genre batch is the unrepresented-slot slice rotated by a
+  // persisted cursor (`selectExploreGenres`), so consecutive runs reach
+  // different new directions. Runs over the SAME explore-capable allowlist as
+  // similar (Last.fm tag.getTopTracks + Spotify genre search); other adapters
+  // return [] for `mode:"explore"` (Constraint #1). Candidates route through the
+  // SAME `resolveInto` — deduped against trending/similar and enriched
+  // identically. Independent of the similar pass: explore runs in cold-start
+  // (no seeds) too, where every genre is "outside" and the whole vocabulary is
+  // fair game. `exploreLimit <= 0` disables the pass.
+  let explorePulled = 0;
+  if (exploreLimit > 0 && similarSources.length > 0) {
+    const representedSlots = await loadRepresentedGenreSlots(db);
+    const { genres: exploreGenres, nextCursor } = selectExploreGenres(
+      representedSlots,
+      exploreCursor,
+      EXPLORE_GENRES_PER_RUN,
+    );
+    if (exploreGenres.length > 0) {
+      for (const source of similarSources) {
+        const cands = await source.pullCandidates(
+          { mode: "explore", genres: exploreGenres, limit: exploreLimit },
+          env,
+        );
+        for (const c of cands) {
+          await resolveInto(c);
+        }
+        explorePulled += cands.length;
+        // Fold into the source's own per-source entry (same invariant as the
+        // similar pass: similarSources ⊆ adapters, so the trending sweep already
+        // created the entry — fail loud if a refactor decouples them).
+        const entry = perSource.find((p) => p.source === source.id);
+        if (!entry) {
+          throw new Error(
+            `explore source "${source.id}" has no trending perSource entry — invariant broken`,
+          );
+        }
+        entry.pulled += cands.length;
+      }
+      pulledCount += explorePulled;
+      // Persist the advanced cursor so the next run resumes past this batch and
+      // coverage rotates across runs. No-op when the app_config row is absent
+      // (tests) — rotation simply restarts from 0. Written only after the pulls
+      // so a mid-pull failure leaves the cursor put and the same genres retry.
+      await db
+        .update(appConfig)
+        .set({ exploreCursor: nextCursor, updatedAt: sql`NOW()` })
+        .where(eq(appConfig.id, 1));
+    }
+  }
+
   const ids = [...resolvedIds];
   const enrichResult = await enrichAudioFeaturesForTracks(db, ids);
   const genreResult = await enrichGenresFromLastfm(db, env, ids);
@@ -292,7 +365,23 @@ export async function pullAndEnrichTrending(
     similarPulledCount: similarPulled,
     similarArtistCappedCount,
     similarFamiliarSkippedCount,
+    explorePulledCount: explorePulled,
   };
+}
+
+/**
+ * LAB-40 — the set of genre slots represented across ALL buckets: the union of
+ * each centroid's slot set ({@link genreSlotsFromVector}). The explore pull
+ * targets slots NOT in this set, so discovery reaches outside current taste.
+ * Empty on cold start (no buckets) — then everything is fair game.
+ */
+async function loadRepresentedGenreSlots(db: Database): Promise<Set<number>> {
+  const rows = await db.select({ centroid: bucket.centroid }).from(bucket);
+  const slots = new Set<number>();
+  for (const r of rows) {
+    for (const s of genreSlotsFromVector(r.centroid)) slots.add(s);
+  }
+  return slots;
 }
 
 /**
@@ -372,6 +461,8 @@ async function loadPullThrottle(db: Database): Promise<{
   similarSeedBuckets?: number;
   similarArtistCap?: number;
   familiarArtistKeepThreshold?: number;
+  exploreLimitPerSource?: number;
+  exploreCursor?: number;
 }> {
   const [row] = await db
     .select({
@@ -380,6 +471,8 @@ async function loadPullThrottle(db: Database): Promise<{
       similarSeedBuckets: appConfig.similarSeedBuckets,
       similarArtistCap: appConfig.similarArtistCap,
       familiarArtistKeepThreshold: appConfig.familiarArtistKeepThreshold,
+      exploreLimitPerSource: appConfig.exploreLimitPerSource,
+      exploreCursor: appConfig.exploreCursor,
     })
     .from(appConfig)
     .limit(1);

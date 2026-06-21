@@ -339,6 +339,11 @@ export const appConfig = pgTable(
     trendingLimitPerSource: integer("trending_limit_per_source").notNull().default(3),
     similarLimitPerSource: integer("similar_limit_per_source").notNull().default(3),
     similarSeedBuckets: integer("similar_seed_buckets").notNull().default(5),
+    // LAB-40 — explore phase: per-source cap on the new-direction pull (top
+    // tracks for genres OUTSIDE the user's buckets — Last.fm tag.getTopTracks +
+    // Spotify genre search). Live knob like the other LAB-51 limits (no
+    // model_version bump); 0 disables the explore phase entirely.
+    exploreLimitPerSource: integer("explore_limit_per_source").notNull().default(2),
     // LAB-73 — artist-diversity knobs. Last.fm getSimilar is same-artist
     // biased and refill keep-similarity rewards same-artist tracks, so without
     // these the queue fills with repeat artists.
@@ -361,6 +366,13 @@ export const appConfig = pgTable(
     // bucket served each run (wrapping), so coverage rotates when the queue
     // ceiling binds instead of starving the same low-scoring/high-id buckets.
     refillCursor: integer("refill_cursor").notNull().default(0),
+    // LAB-40 — persisted rotating cursor over the genre vocabulary for the
+    // explore pull (the LAB-38 refill-cursor pattern, applied to genres). The
+    // explore phase serves unrepresented genre slots starting here and advances
+    // past the batch each run (wrapping), so consecutive runs reach DIFFERENT new
+    // directions instead of re-pulling the same first-N. Internal state, not a
+    // user-facing knob (like refillCursor).
+    exploreCursor: integer("explore_cursor").notNull().default(0),
     retrainCadence: text("retrain_cadence").notNull().default("daily"),
     spawnThreshold: doublePrecision("spawn_threshold").notNull().default(0.7),
     refillLambda: doublePrecision("refill_lambda").notNull().default(0.3),

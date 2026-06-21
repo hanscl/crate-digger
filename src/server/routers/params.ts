@@ -39,6 +39,9 @@ const PARAMS_INPUT = z.object({
   trendingLimitPerSource: z.number().int().min(0).max(25).optional(),
   similarLimitPerSource: z.number().int().min(0).max(25).optional(),
   similarSeedBuckets: z.number().int().min(0).max(15).optional(),
+  // LAB-40 — explore phase per-source cap. min(0) disables the explore pull
+  // (new-direction discovery off; trending + similar only).
+  exploreLimitPerSource: z.number().int().min(0).max(25).optional(),
   // LAB-73 — artist-diversity knobs (live config; no model_version bump).
   // similarArtistCap / surfaceArtistCap are caps (≥1); familiarArtistKeepThreshold
   // allows 0 to disable the pull-side familiar-artist skip.
@@ -78,6 +81,8 @@ export const paramsRouter = router({
       update.similarLimitPerSource = input.similarLimitPerSource;
     if (input.similarSeedBuckets !== undefined)
       update.similarSeedBuckets = input.similarSeedBuckets;
+    if (input.exploreLimitPerSource !== undefined)
+      update.exploreLimitPerSource = input.exploreLimitPerSource;
     if (input.similarArtistCap !== undefined) update.similarArtistCap = input.similarArtistCap;
     if (input.familiarArtistKeepThreshold !== undefined)
       update.familiarArtistKeepThreshold = input.familiarArtistKeepThreshold;

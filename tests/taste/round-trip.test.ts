@@ -324,6 +324,43 @@ describe("taste profile export/import (Constraint #8)", () => {
     expect(cfg?.familiarArtistKeepThreshold).toBe(5);
     expect(cfg?.surfaceArtistCap).toBe(2);
   });
+
+  it("round-trips the explore pull throttle in the config block (LAB-40)", async () => {
+    await db.insert(schema.appConfig).values({ id: 1, exploreLimitPerSource: 4 });
+    const exportPayload = await exportTaste(db);
+    expect(exportPayload.config?.exploreLimitPerSource).toBe(4);
+
+    const wire = JSON.parse(JSON.stringify(exportPayload));
+    await wipe();
+    await importTaste(db, wire);
+
+    const [cfg] = await db.select().from(schema.appConfig).limit(1);
+    expect(cfg?.exploreLimitPerSource).toBe(4);
+  });
+
+  it("imports a pre-LAB-40 config block that lacks the explore throttle (default applied)", async () => {
+    await importTaste(db, {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      config: {
+        novelty: 0.5,
+        sourceMix: 0.5,
+        queueCeiling: 50,
+        spawnThreshold: 0.7,
+        refillLambda: 0.3,
+        mergeThreshold: 0.92,
+        splitDislikeRate: 0.5,
+        trendingLimitPerSource: 3,
+        similarLimitPerSource: 3,
+        similarSeedBuckets: 5,
+        // no exploreLimitPerSource
+      },
+      buckets: [],
+      ratings: [],
+    });
+    const [cfg] = await db.select().from(schema.appConfig).limit(1);
+    expect(cfg?.exploreLimitPerSource).toBe(2); // DB default
+  });
 });
 
 describe("taste profile — LAB-61 membership origin round-trip", () => {
