@@ -81,7 +81,11 @@ export type AssignConfig = BucketGateConfig & { spawnThreshold: number };
 
 /**
  * Resolve the live assignment config. spawnThreshold comes straight from
- * app_config; audioWeight/genreGate come from the ACTIVE refill
+ * app_config — deliberately NOT modulated by the novelty knob: Constraint #6's
+ * originally-spec'd "novelty drives bucket-spawn aggressiveness (refill)" effect
+ * is deferred future work (LAB-42), so spawn aggressiveness stays an independent
+ * operator knob while novelty only scales the refill familiarity penalty
+ * (LAB-73). audioWeight/genreGate come from the ACTIVE refill
  * model_version's config so membership decisions and refill scoring always
  * run the same metric (Constraint #3: the version IS the config record).
  * Resolution:
