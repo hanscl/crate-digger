@@ -453,7 +453,11 @@ guard catches refactors that accidentally violate documented constraints.
   per-artist (+ skips artists with ≥N keeps), and surfacing emits at most N tracks per artist
   per run; overflow stays enriched-but-unsurfaced. Novelty scales the refill familiarity
   penalty and is version-frozen (Constraint #6, amended LAB-73 — a novelty change bumps the
-  refill `model_version`).
+  refill `model_version`). Novelty does NOT drive bucket-spawn aggressiveness: `spawn_threshold`
+  is a deliberately independent `app_config` knob (LAB-42), so surface strictness and
+  bucket-spawn aggressiveness tune separately. Constraint #6's originally-spec'd
+  bucket-spawn-aggressiveness (refill) and explore/exploit-weight (broad) effects remain
+  future work.
 - **Enrichment idempotency** (Phase 2): running enrichment twice on the same input produces
   identical `Track` records and does not duplicate.
 - **Ratings tag the surface-time `model_version`** (Constraint #3 — Phase 5): not the version
