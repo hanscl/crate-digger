@@ -25,6 +25,27 @@ const TOKEN_PATH = "/api/token";
 /** Chartmetric tolerates a brisk cadence; one limiter shared across concurrent runs. */
 const rateLimiter = createRateLimiter(250);
 
+/**
+ * Chart feeds are computed ON-DEMAND server-side: the first request for a given
+ * (country, date) is a cold-cache miss that Chartmetric builds and caches, which
+ * runs 5–20s (Shazam is the heaviest — 200 rows); every later call that day hits
+ * the warm cache at ~250ms. The daily pipeline is the first/only consumer of
+ * each fresh date, so it ALWAYS pays the cold path. Under the shared 8s fetch
+ * timeout every cold compute aborted mid-flight, the cache never warmed, and the
+ * weight-1.0 Shazam feed was silently dropped each run while ~39s/date-rung was
+ * burned on a doomed retry storm (verified live: cold 4.9–20.3s, warm ~0.25s;
+ * see scripts/lab-shazam-spike.ts + scripts/lab-shazam-latency.ts).
+ *
+ * So chart calls get a patient timeout that outlasts the cold compute: attempt 1
+ * now completes the cold build and warms the cache, so retries never fire on the
+ * cold path at all. Retry COUNT is deliberately left at the shared default — an
+ * earlier draft also cut it to 1, but with the timeout fixed that only stripped
+ * transient-error budget from the fast feeds (SoundCloud/TikTok/Spotify ~250ms,
+ * no cold-cache issue) for no benefit. Scoped to chart calls; the per-track
+ * resolve stays on the shared 8s default.
+ */
+const CHART_TIMEOUT_MS = 30_000;
+
 type TokenCache = { token: string; expiresAt: number };
 let tokenCache: TokenCache | undefined;
 let tokenInFlight: Promise<string | null> | undefined;
@@ -74,14 +95,14 @@ async function getAccessToken(env: Env): Promise<string | null> {
 }
 
 /** Authenticated GET + JSON parse. Returns null on any failure (token, HTTP, parse). */
-async function cmGet<T>(path: string, env: Env): Promise<T | null> {
+async function cmGet<T>(path: string, env: Env, timeoutMs?: number): Promise<T | null> {
   const token = await getAccessToken(env);
   if (!token) return null;
   const res = await rateLimiter.schedule(() =>
     fetchWithRetry(
       `${CHARTMETRIC_BASE}${path}`,
       { method: "GET", headers: { authorization: `Bearer ${token}` } },
-      { label: "chartmetric" },
+      { label: "chartmetric", timeoutMs },
     ),
   );
   if (!res) return null;
@@ -139,7 +160,11 @@ export async function getChart(
   let reached = false;
   for (const daysAgo of DATE_LADDER[feed.cadence]) {
     const date = isoDaysAgo(now, daysAgo);
-    const json = await cmGet(`${feed.path}?${qs(feed.query(country, date))}`, env);
+    const json = await cmGet(
+      `${feed.path}?${qs(feed.query(country, date))}`,
+      env,
+      CHART_TIMEOUT_MS,
+    );
     if (json !== null) reached = true;
     const rows = parseChartEntries(json);
     if (rows.length > 0) return rows.slice(0, POOL_ROWS_PER_FEED);
