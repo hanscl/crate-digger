@@ -33,15 +33,18 @@ const rateLimiter = createRateLimiter(250);
  * each fresh date, so it ALWAYS pays the cold path. Under the shared 8s fetch
  * timeout every cold compute aborted mid-flight, the cache never warmed, and the
  * weight-1.0 Shazam feed was silently dropped each run while ~39s/date-rung was
- * burned on the doomed 4× retry storm (verified live: cold 4.9–20.3s, warm
- * ~0.25s; see scripts/lab-shazam-spike.ts + scripts/lab-shazam-latency.ts).
+ * burned on a doomed retry storm (verified live: cold 4.9–20.3s, warm ~0.25s;
+ * see scripts/lab-shazam-spike.ts + scripts/lab-shazam-latency.ts).
  *
- * So chart calls get a patient timeout that outlasts the cold compute, plus a
- * single retry: retrying a too-short timeout only re-triggers the cold path and
- * never warms, so extra attempts can't help — they just multiply the dead wait.
- * Scoped to charts; the per-track resolve stays on the shared 8s default.
+ * So chart calls get a patient timeout that outlasts the cold compute: attempt 1
+ * now completes the cold build and warms the cache, so retries never fire on the
+ * cold path at all. Retry COUNT is deliberately left at the shared default — an
+ * earlier draft also cut it to 1, but with the timeout fixed that only stripped
+ * transient-error budget from the fast feeds (SoundCloud/TikTok/Spotify ~250ms,
+ * no cold-cache issue) for no benefit. Scoped to chart calls; the per-track
+ * resolve stays on the shared 8s default.
  */
-const CHART_FETCH_TUNING = { timeoutMs: 30_000, maxRetries: 1 } as const;
+const CHART_TIMEOUT_MS = 30_000;
 
 type TokenCache = { token: string; expiresAt: number };
 let tokenCache: TokenCache | undefined;
@@ -92,18 +95,14 @@ async function getAccessToken(env: Env): Promise<string | null> {
 }
 
 /** Authenticated GET + JSON parse. Returns null on any failure (token, HTTP, parse). */
-async function cmGet<T>(
-  path: string,
-  env: Env,
-  fetchTuning: { timeoutMs?: number; maxRetries?: number } = {},
-): Promise<T | null> {
+async function cmGet<T>(path: string, env: Env, timeoutMs?: number): Promise<T | null> {
   const token = await getAccessToken(env);
   if (!token) return null;
   const res = await rateLimiter.schedule(() =>
     fetchWithRetry(
       `${CHARTMETRIC_BASE}${path}`,
       { method: "GET", headers: { authorization: `Bearer ${token}` } },
-      { label: "chartmetric", ...fetchTuning },
+      { label: "chartmetric", timeoutMs },
     ),
   );
   if (!res) return null;
@@ -164,7 +163,7 @@ export async function getChart(
     const json = await cmGet(
       `${feed.path}?${qs(feed.query(country, date))}`,
       env,
-      CHART_FETCH_TUNING,
+      CHART_TIMEOUT_MS,
     );
     if (json !== null) reached = true;
     const rows = parseChartEntries(json);
