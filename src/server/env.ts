@@ -35,14 +35,6 @@ const schema = z.object({
   CHARTMETRIC_REFRESH_TOKEN: z.string().optional().default(""),
   // Chartmetric chart territory (ISO Alpha-2). Defaults to US.
   CHARTMETRIC_TRENDING_COUNTRY: z.string().optional().default("US"),
-  // Soundcharts (LAB-19) — ALTERNATIVE TikTok-velocity provider ($250/mo floor;
-  // live-verified). BOTH the app id and api key are required; the public sandbox
-  // creds are `soundcharts` / `soundcharts` (fixed demo data).
-  SOUNDCHARTS_APP_ID: z.string().optional().default(""),
-  SOUNDCHARTS_API_KEY: z.string().optional().default(""),
-  // Which TikTok chart to pull (Soundcharts slug). Defaults to the US
-  // "Breakout" velocity chart; e.g. tiktok-breakout-gb, tiktok-breakout-de.
-  SOUNDCHARTS_TIKTOK_CHART_SLUG: z.string().optional().default("tiktok-breakout-us"),
   PORT: z.coerce.number().int().positive().default(3000),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   CRON_DISABLED: z.string().optional().default(""),
