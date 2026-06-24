@@ -20,9 +20,6 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     VIBERATE_TRENDING_COUNTRY: "US",
     CHARTMETRIC_REFRESH_TOKEN: "",
     CHARTMETRIC_TRENDING_COUNTRY: "US",
-    SOUNDCHARTS_APP_ID: "",
-    SOUNDCHARTS_API_KEY: "",
-    SOUNDCHARTS_TIKTOK_CHART_SLUG: "tiktok-breakout-us",
     PORT: 3000,
     NODE_ENV: "test",
     CRON_DISABLED: "",
@@ -35,8 +32,6 @@ const credsByAdapter: Record<string, Partial<Env>> = {
   lastfm: { LASTFM_API_KEY: "key" },
   viberate: { VIBERATE_API_KEY: "key" },
   chartmetric: { CHARTMETRIC_REFRESH_TOKEN: "refresh-token" },
-  // Soundcharts is now the TikTok adapter's only provider (Chartmetric → LAB-117).
-  tiktok: { SOUNDCHARTS_APP_ID: "app", SOUNDCHARTS_API_KEY: "key" },
 };
 
 beforeEach(() => {
@@ -64,7 +59,7 @@ async function settle<T>(p: Promise<T>): Promise<T> {
 describe("source adapter contract", () => {
   it("registers at least the documented adapters", () => {
     const ids = allAdapters.map((a) => a.id).sort();
-    expect(ids).toEqual(["chartmetric", "lastfm", "spotify", "tiktok", "viberate"]);
+    expect(ids).toEqual(["chartmetric", "lastfm", "spotify", "viberate"]);
   });
 
   for (const adapter of allAdapters) {
