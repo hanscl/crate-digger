@@ -239,6 +239,30 @@ async function pullTrending(limit: number, env: Env): Promise<RawCandidate[]> {
   return pullSearch(`year:${year}`, limit, env);
 }
 
+/**
+ * LAB-40 — explore pull: a genre-filtered `/search` per caller-supplied genre
+ * (genres the user's buckets don't cover), replacing the flat `year:<current>`
+ * trending query's mainstream bias with new-direction reach. The `genre:"…"`
+ * filter is quoted so multi-word genres don't terminate the query early. Splits
+ * the per-source `limit` across genres and concatenates; per-genre dedupe is
+ * left to the downstream candidate resolution (ISRC/spotifyId), as with the
+ * other pulls. A genre that returns nothing degrades to skipping it.
+ */
+async function pullExplore(
+  genres: readonly string[],
+  limit: number,
+  env: Env,
+): Promise<RawCandidate[]> {
+  if (genres.length === 0) return [];
+  const perGenre = Math.max(1, Math.ceil(limit / genres.length));
+  const out: RawCandidate[] = [];
+  for (const genre of genres) {
+    if (out.length >= limit) break;
+    out.push(...(await pullSearch(`genre:"${genre.replace(/"/g, " ")}"`, perGenre, env)));
+  }
+  return out.slice(0, limit);
+}
+
 async function pullSimilar(
   params: SimilarPullParams,
   limit: number,
@@ -271,6 +295,8 @@ export const spotifyAdapter: SourceAdapter = {
           return await pullTrending(limit, env);
         case "similar":
           return await pullSimilar(params, limit, env);
+        case "explore":
+          return await pullExplore(params.genres, limit, env);
       }
     } catch (err) {
       console.error("[spotify] pullCandidates threw — degrading to []", err);

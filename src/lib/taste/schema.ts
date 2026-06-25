@@ -78,6 +78,11 @@ export const TASTE_CONFIG_SCHEMA = z.object({
   trendingLimitPerSource: z.number().int().nonnegative(),
   similarLimitPerSource: z.number().int().nonnegative(),
   similarSeedBuckets: z.number().int().nonnegative(),
+  // LAB-40 — explore pull throttle travels with the taste profile. Optional so
+  // pre-LAB-40 exports (which lack it) still import (LAB-53 precedent):
+  // importTaste's upsert falls back to the app_config column default. (The
+  // explore cursor is internal rotation state — like refillCursor, NOT exported.)
+  exploreLimitPerSource: z.number().int().nonnegative().optional(),
   // LAB-73 — artist-diversity knobs travel with the taste profile. Optional so
   // pre-LAB-73 exports (which lack them) still import (LAB-53 precedent):
   // importTaste's upsert falls back to the app_config column defaults.

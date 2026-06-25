@@ -127,6 +127,37 @@ async function pullTrending(limit: number, env: Env): Promise<RawCandidate[]> {
   return (Array.isArray(raw) ? raw : [raw]).map((t) => lastfmTrackToCandidate(t, "seconds"));
 }
 
+/**
+ * LAB-40 — explore pull: `tag.getTopTracks` for each caller-supplied tag (genres
+ * the user's buckets don't cover). Splits the per-source `limit` across the tags
+ * and concatenates; a single tag's failure degrades to skipping it (lastfmGet
+ * returns null), never the whole pull. tag.getTopTracks mirrors chart.getTopTracks'
+ * response shape and second-based durations, so the existing mapping is reused.
+ */
+async function pullExplore(
+  genres: readonly string[],
+  limit: number,
+  env: Env,
+): Promise<RawCandidate[]> {
+  if (genres.length === 0) return [];
+  const perTag = Math.max(1, Math.ceil(limit / genres.length));
+  const out: RawCandidate[] = [];
+  for (const tag of genres) {
+    if (out.length >= limit) break;
+    const data = await lastfmGet<{ tracks?: { track?: LastfmTrack[] | LastfmTrack } }>(
+      "tag.getTopTracks",
+      { tag, limit: Math.min(perTag, 50) },
+      env,
+    );
+    const raw = data?.tracks?.track;
+    if (!raw) continue;
+    for (const t of Array.isArray(raw) ? raw : [raw]) {
+      out.push(lastfmTrackToCandidate(t, "seconds"));
+    }
+  }
+  return out.slice(0, limit);
+}
+
 export const lastfmAdapter: SourceAdapter = {
   id: "lastfm",
   isPaid: false,
@@ -144,6 +175,8 @@ export const lastfmAdapter: SourceAdapter = {
           return await pullSimilar(params, limit, env);
         case "trending":
           return await pullTrending(limit, env);
+        case "explore":
+          return await pullExplore(params.genres, limit, env);
       }
     } catch (err) {
       console.error("[lastfm] pullCandidates threw — degrading to []", err);

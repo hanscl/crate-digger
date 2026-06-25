@@ -99,6 +99,7 @@ export async function exportTaste(db: Database): Promise<TasteExport> {
           trendingLimitPerSource: cfg.trendingLimitPerSource,
           similarLimitPerSource: cfg.similarLimitPerSource,
           similarSeedBuckets: cfg.similarSeedBuckets,
+          exploreLimitPerSource: cfg.exploreLimitPerSource,
           similarArtistCap: cfg.similarArtistCap,
           familiarArtistKeepThreshold: cfg.familiarArtistKeepThreshold,
           surfaceArtistCap: cfg.surfaceArtistCap,
